@@ -10,7 +10,6 @@
 #     -DCMAKE_CUDA_ARCHITECTURES=87
 
 cmake -B build -DGGML_CUDA=ON \
-    -DGGML_CUDA_FORCE_DMMV=ON \
     -DCMAKE_CUDA_ARCHITECTURES=87
 
 cmake --build build --config Release --target llama-cli -j 12

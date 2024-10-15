@@ -1081,6 +1081,7 @@ static __global__ void mul_mat_p021_f16_f32(
     tmp = warp_reduce_sum(tmp);
 
     if (threadIdx.x == 0) {
+        //> 这里放的是对应的一个 channel (head) 的一种 row (seq_len) 的结果。
         dst[idst] = tmp;
     }
 }
@@ -1132,7 +1133,12 @@ static void ggml_mul_mat_p021_f16_f32_cuda(
     const void * vx, const float * y, float * dst, const int ncols_x, const int nrows_x,
     const int nchannels_x, const int nchannels_y, cudaStream_t stream) {
 
+    //> 启动 nrows_x 个 thread_block, 每一个 thread_block 处理一个 channel 的一行
     const dim3 block_nums(1, nrows_x, nchannels_y);
+    //> 每一个 thread_block 启动 WARP_SIZE 个 thread, 每一个 thread 处理一个 channel
+    //? 这里是不是在暗示，head 的数量不能超过 32 个？
+    //! 是的，因为每一个 thread 处理一个 channel, 而每一个 thread_block 处理一行
+    //? 现在不会有大模型超过 32 个 head 吗？（存疑）
     const dim3 block_dims(WARP_SIZE, 1, 1);
     mul_mat_p021_f16_f32<<<block_nums, block_dims, 0, stream>>>(vx, y, dst, ncols_x, nrows_x, nchannels_x, nchannels_y);
 }
@@ -1414,6 +1420,7 @@ static void ggml_cuda_op_mul_mat(
         tensor_split = buft_ctx->tensor_split;
     }
 
+    //> 这个结构体用于存储每个设备的数据。主要用于存储每个设备的数据的指针。
     struct dev_data {
         int cc;
 
@@ -1435,6 +1442,8 @@ static void ggml_cuda_op_mul_mat(
 
     int used_devices = 0;
 
+    //> 这里初始化每个设备的 row_low 和 row_high，用于后续的计算。
+    //! 可以考虑用类似的方法，实现 CPU 和 GPU 的混合计算。
     for (int id = 0; id < ggml_backend_cuda_get_device_count(); ++id) {
         dev[id].cc = ggml_cuda_info().devices[id].cc;
 
@@ -1464,6 +1473,7 @@ static void ggml_cuda_op_mul_mat(
     }
 
     for (int id = 0; id < ggml_backend_cuda_get_device_count(); ++id) {
+        //> 如果当前设备不是 ctx.device，或者当前设备的 row_low 和 row_high 相等，则跳过当前设备。
         if ((!split && id != ctx.device) || dev[id].row_low == dev[id].row_high) {
             continue;
         }
@@ -1474,27 +1484,39 @@ static void ggml_cuda_op_mul_mat(
         const bool  dst_on_device = id == dst_ctx->device;
 
         ggml_cuda_set_device(id);
+        //> 获取当前设备的 stream, 0 表示 default stream.
+        //? 这里为什么是 default stream？
+        //> 因为这里没有用到 event，所以用默认的 stream 就可以了。
+        //? 为什么用到 event 就不能用 default stream？
+        //> 因为 event 需要和 stream 关联，而 default stream 没有关联 event。
         cudaStream_t stream = ctx.stream(id, 0);
 
         if (src0_is_contiguous) {
+            //! 如果 src0 是连续的，则直接使用 src0 的 data 作为 dev[id].src0_dd
             dev[id].src0_dd = split ? (char *) src0_extra->data_device[id] : (char *) src0->data;
         } else {
+            //! 如果 src0 不是连续的，则需要分配内存，并从 src0 的 data 中复制数据到 dev[id].src0_dd
             dev[id].src0_dd = dev[id].src0_dd_alloc.alloc(ctx.pool(id), ggml_nbytes(src0));
         }
 
         // If src0 is on a temporary compute buffers (partial offloading) there may be some padding that needs to be cleared:
+        //> 如果 src0 是临时计算缓冲区（部分卸载），则可能需要清除一些填充：
         if (ne00 % MATRIX_ROW_PADDING != 0 && ggml_is_quantized(src0->type) && ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE && src0->view_src == nullptr) {
             const int64_t nbytes_data    = ggml_row_size(src0->type, (dev[id].row_high - dev[id].row_low)*ne00);
             const int64_t nbytes_padding = ggml_row_size(src0->type, MATRIX_ROW_PADDING - ne00 % MATRIX_ROW_PADDING);
             CUDA_CHECK(cudaMemsetAsync(dev[id].src0_dd + nbytes_data , 0, nbytes_padding, stream));
         }
 
+        //> 如果 src1 是连续的，则直接使用 src1 的 data 作为 dev[id].src1_ddf
         if (src1_on_device && src1_is_contiguous) {
             dev[id].src1_ddf = (float *) src1->data;
         } else {
+            //> 如果 src1 不是连续的，则需要分配内存，并从 src1 的 data 中复制数据到 dev[id].src1_ddf
             dev[id].src1_ddf = dev[id].src1_ddf_alloc.alloc(ctx.pool(id), ggml_nelements(src1));
         }
 
+        //> 如果需要量化 src1，则需要分配内存，并从 src1 的 data 中复制数据到 dev[id].src1_ddq
+        //> 这个 quantize_src1 是函数指针，指向量化 src1 的函数。
         if (quantize_src1) {
             size_t src_1_ddq_size = nrows1*src1_padded_col_size*q8_1_ts/q8_1_bs;
             if (quantize_src1 == quantize_mmq_q8_1_cuda) {
@@ -1518,6 +1540,7 @@ static void ggml_cuda_op_mul_mat(
 
     // if multiple devices are used they need to wait for the main device
     // here an event is recorded that signals that the main device has finished calculating the input data
+    //> 这段代码是用于在多个设备之间同步的，换句话说，下面的代码是并行在多个设备上运行的。
     if (split && used_devices > 1) {
         ggml_cuda_set_device(ctx.device);
         CUDA_CHECK(cudaEventRecord(src0_extra->events[ctx.device][0], ctx.stream()));
@@ -1525,10 +1548,12 @@ static void ggml_cuda_op_mul_mat(
 
     const int64_t src1_col_stride = split && used_devices > 1 ? MUL_MAT_SRC1_COL_STRIDE : ne11;
     for (int64_t src1_col_0 = 0; src1_col_0 < ne11; src1_col_0 += src1_col_stride) {
+        //> is 是当前设备在当前 stream 中的索引。
         const int64_t is = split ? (src1_col_0/src1_col_stride) % GGML_CUDA_MAX_STREAMS : 0;
         const int64_t src1_ncols = src1_col_0 + src1_col_stride > ne11 ? ne11 - src1_col_0 : src1_col_stride;
 
         for (int id = 0; id < ggml_backend_cuda_get_device_count(); ++id) {
+            //> 如果当前设备不是 ctx.device，或者当前设备的 row_low 和 row_high 相等，则跳过当前设备。
             if ((!split && id != ctx.device) || dev[id].row_low == dev[id].row_high) {
                 continue;
             }
@@ -1541,10 +1566,13 @@ static void ggml_cuda_op_mul_mat(
             cudaStream_t stream = ctx.stream(id, is);
 
             // wait for main GPU data if necessary
+            //> 如果当前设备不是 ctx.device，或者当前设备的 stream 不是 0，则等待 ctx.device 的 stream 0 的事件。
             if (split && (id != ctx.device || is != 0)) {
+                //> 等待 ctx.device 的 stream 0 的事件（Sync 所有的设备）。
                 CUDA_CHECK(cudaStreamWaitEvent(stream, src0_extra->events[ctx.device][0], 0));
             }
 
+            //> 沿着 src1 的 channel * batch 维度进行计算。
             for (int64_t i0 = 0; i0 < ne13*ne12; ++i0) {
                 const int64_t i03 = i0 / ne12;
                 const int64_t i02 = i0 % ne12;
@@ -1605,9 +1633,12 @@ static void ggml_cuda_op_mul_mat(
                     CUDA_CHECK(ggml_cuda_cpy_tensor_2d(src0_dd_i, src0, i03, i02/i02_divisor, dev[id].row_low, dev[id].row_high, stream));
                 }
 
-                // do the computation
+                //! do the computation
+                //> ======================================================================================
                 op(ctx, src0, src1, dst, src0_dd_i, src1_ddf_i, src1_ddq_i, dst_dd_i,
                     dev[id].row_low, dev[id].row_high, src1_ncols, src1_padded_col_size, stream);
+                //> ======================================================================================
+                
                 CUDA_CHECK(cudaGetLastError());
 
                 // copy dst to host or other device if necessary
@@ -1665,11 +1696,11 @@ static void ggml_cuda_mul_mat_vec_p021(ggml_backend_cuda_context & ctx, const gg
     GGML_ASSERT(src0->type == GGML_TYPE_F16);
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
-    const int64_t ne00 = src0->ne[0];
-    const int64_t ne01 = src0->ne[1];
-    const int64_t ne02 = src0->ne[2];
+    const int64_t ne00 = src0->ne[0]; //> col_x  :  head_dim
+    const int64_t ne01 = src0->ne[1]; //> row_x  :  seq_len
+    const int64_t ne02 = src0->ne[2]; //> ch_x   :  num_heads
 
-    const int64_t ne12 = src1->ne[2];
+    const int64_t ne12 = src1->ne[2]; //> ch_y   :  num_heads
 
     cudaStream_t main_stream = ctx.stream();
 
@@ -1677,6 +1708,7 @@ static void ggml_cuda_mul_mat_vec_p021(ggml_backend_cuda_context & ctx, const gg
     float * src1_ddf = (float *) src1->data;
     float * dst_ddf  = (float *) dst->data;
 
+    //>                                                        col_x  row_x  ch_x  ch_y
     ggml_mul_mat_p021_f16_f32_cuda(src0_ddq, src1_ddf, dst_ddf, ne00, ne01, ne02, ne12, main_stream);
 }
 
@@ -1688,14 +1720,17 @@ static void ggml_cuda_mul_mat_vec_nc(ggml_backend_cuda_context & ctx, const ggml
     GGML_ASSERT(src0->type == GGML_TYPE_F16);
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
-    const int64_t ne00 = src0->ne[0];
-    const int64_t ne01 = src0->ne[1];
-    const int64_t ne02 = src0->ne[2];
+    //> src1是 ne[0](head_dim) 和 ne[1](seq_len) 转置的
 
-    const int64_t nb01 = src0->nb[1];
-    const int64_t nb02 = src0->nb[2];
+    const int64_t ne00 = src0->ne[0]; //> col_x  :  head_dim    
+    const int64_t ne01 = src0->ne[1]; //> row_x  :  seq_len
+    const int64_t ne02 = src0->ne[2]; //> ch_x   :  num_heads
 
-    const int64_t ne12 = src1->ne[2];
+    //> 这里调整转置的 nb 设置问题。
+    const int64_t nb01 = src0->nb[1]; //> row_x  :  seq_len
+    const int64_t nb02 = src0->nb[2]; //> ch_x   :  num_heads
+
+    const int64_t ne12 = src1->ne[2]; //> ch_y   :  num_heads
 
     cudaStream_t main_stream = ctx.stream();
 
@@ -1703,6 +1738,7 @@ static void ggml_cuda_mul_mat_vec_nc(ggml_backend_cuda_context & ctx, const ggml
     float * src1_ddf = (float *) src1->data;
     float * dst_ddf  = (float *) dst->data;
 
+    //> 因为 src1 是转置的，所以这里需要设置 row_stride_x 和 channel_stride_x，用于跳着访问。
     const int64_t row_stride_x = nb01 / sizeof(half);
     const int64_t channel_stride_x = nb02 / sizeof(half);
 
@@ -1734,6 +1770,7 @@ static __global__ void k_compute_batched_ptrs(
 }
 
 static void ggml_cuda_mul_mat_batched_cublas(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
+    //> 这里 src0 和 src1 都是 F16 类型，并且都没有转置。
     GGML_ASSERT(!ggml_is_transposed(src0));
     GGML_ASSERT(!ggml_is_transposed(src1));
 
@@ -1774,6 +1811,7 @@ static void ggml_cuda_mul_mat_batched_cublas(ggml_backend_cuda_context & ctx, co
     size_t nbd2 = dst->nb[2];
     size_t nbd3 = dst->nb[3];
 
+    //> beta 是 dst 的系数。不需要.
     const half  alpha_f16 = 1.0f;
     const half  beta_f16  = 0.0f;
 
@@ -1802,8 +1840,8 @@ static void ggml_cuda_mul_mat_batched_cublas(ggml_backend_cuda_context & ctx, co
     GGML_ASSERT(ne13 % ne03 == 0);
 
     // broadcast factors
-    const int64_t r2 = ne12/ne02;
-    const int64_t r3 = ne13/ne03;
+    const int64_t r2 = ne12/ne02; //> src1 的 seq_len 是 src0 的 seq_len 的 r2 倍
+    const int64_t r3 = ne13/ne03; //> src1 的 num_heads 是 src0 的 num_heads 的 r3 倍
 
 #if 0
     // use cublasGemmEx
@@ -1834,9 +1872,9 @@ static void ggml_cuda_mul_mat_batched_cublas(ggml_backend_cuda_context & ctx, co
         CUBLAS_CHECK(
         cublasGemmStridedBatchedEx(ctx.cublas_handle(), CUBLAS_OP_T, CUBLAS_OP_N,
                 ne01, ne11, ne10,
-                alpha, (const char *) src0_f16, CUDA_R_16F,   nb01/nb00, nb02/nb00,  // strideA
-                       (const char *) src1_f16, CUDA_R_16F,   nb11/nb10, nb12/nb10,  // strideB
-                beta,  (      char *)    dst_t, cu_data_type, ne01,       nb2/nb0,   // strideC
+                alpha, (const char *) src0_f16, CUDA_R_16F,   nb01/nb00, nb02/nb00,  // strideA, nb01 / nb00 (head_dim), nb02 / nb00 (head_dim * seq_len)
+                       (const char *) src1_f16, CUDA_R_16F,   nb11/nb10, nb12/nb10,  // strideB, nb11 / nb10 (head_dim), nb12 / nb10 (head_dim * seq_len)
+                beta,  (      char *)    dst_t, cu_data_type, ne01,       nb2/nb0,   // strideC, ne01 (head_dim), nb2 / nb0 (head_dim * seq_len)
                 ne12*ne13,
                 cu_compute_type,
                 CUBLAS_GEMM_DEFAULT_TENSOR_OP));
@@ -1879,10 +1917,21 @@ static void ggml_cuda_mul_mat_batched_cublas(ggml_backend_cuda_context & ctx, co
     }
 }
 
+
+/**
+ * @brief 矩阵乘法
+ * 
+ * @param ctx    ggml context
+ * @param src0   weights
+ * @param src1   input
+ * @param dst    output_activation
+ */
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     const bool split = ggml_backend_buffer_is_cuda_split(src0->buffer);
 
-    bool use_dequantize_mul_mat_vec = ggml_cuda_dmmv_type_supported(src0->type)
+    // printf("CUDA ggml_cuda_mul_mat: Tensor(%s) MUL_MAT OP with src[0]: %s and src[1]: %s.\n", dst->name, src0->name, src1->name);
+
+    bool use_dequantize_mul_mat_vec =  ggml_cuda_dmmv_type_supported(src0->type)
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32
         && src0->ne[0] % (GGML_CUDA_DMMV_X*2) == 0 && src1->ne[1] == 1;
     bool          use_mul_mat_vec_q =  ggml_is_quantized(src0->type)
@@ -1918,30 +1967,58 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     }
 
     // debug helpers
-    //printf("src0: %8d %8d %8d %8d\n", src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3]);
-    //printf("      %8d %8d %8d %8d\n", src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3]);
-    //printf("src1: %8d %8d %8d %8d\n", src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3]);
-    //printf("      %8d %8d %8d %8d\n", src1->nb[0], src1->nb[1], src1->nb[2], src1->nb[3]);
-    //printf("src0 is contiguous %d, transposed %d, type = %s, name = %s\n", ggml_is_contiguous(src0), ggml_is_transposed(src0), ggml_type_name(src0->type), src0->name);
-    //printf("src1 is contiguous %d, transposed %d, type = %s, name = %s\n", ggml_is_contiguous(src1), ggml_is_transposed(src1), ggml_type_name(src1->type), src1->name);
+    // printf("src0: %8d %8d %8d %8d\n", src0->ne[0], src0->ne[1], src0->ne[2], src0->ne[3]);
+    // printf("      %8d %8d %8d %8d\n", src0->nb[0], src0->nb[1], src0->nb[2], src0->nb[3]);
+    // printf("src1: %8d %8d %8d %8d\n", src1->ne[0], src1->ne[1], src1->ne[2], src1->ne[3]);
+    // printf("      %8d %8d %8d %8d\n", src1->nb[0], src1->nb[1], src1->nb[2], src1->nb[3]);
+    // printf("src0 is contiguous %d, transposed %d, type = %s, name = %s\n", ggml_is_contiguous(src0), ggml_is_transposed(src0), ggml_type_name(src0->type), src0->name);
+    // printf("src1 is contiguous %d, transposed %d, type = %s, name = %s\n", ggml_is_contiguous(src1), ggml_is_transposed(src1), ggml_type_name(src1->type), src1->name);
 
+    //? 为什么这个src0 总是non-contiguous的？
+    //> 回答：因为src0是weights，所以总是non-contiguous的。
+    //? 为什么是weight就non-contiguous的？
+    //> 回答：因为weight是模型参数，通常是稀疏的，所以不是连续存储的。
+    //? 但是我这个llama.cpp 应该是连续存储的啊
+    //> 回答：是的，llama.cpp 应该是连续存储的，但是在这个函数里面，总是non-contiguous的。
+    //? 为什么？
+    //> 回答：因为这个函数是用来计算矩阵乘法的，而矩阵乘法的输入通常不是连续存储的。
+    //? 为什么矩阵乘法的输入通常不是连续存储的？造出对应的代码。
+
+    //> 如果 src0 是 F16 类型，并且 src1 是 F32 类型，并且 src1 的 seq_len 为 1 (Only for decode mode)，并且没有使用 FlashAttention
     if (!split && any_gpus_with_slow_fp16 && src0->type == GGML_TYPE_F16 && ggml_is_permuted(src0) && ggml_is_permuted(src1) && src1->ne[1] == 1) {
+        // printf("Entering ggml_cuda_mul_mat_vec_p021\n");
+        
         // FP32 precision KQ single-batch for batch size 1 without FlashAttention
         ggml_cuda_mul_mat_vec_p021(ctx, src0, src1, dst);
     } else if (!split && any_gpus_with_slow_fp16 && src0->type == GGML_TYPE_F16 && !ggml_is_contiguous(src0) && !ggml_is_transposed(src1) && src1->ne[1] == 1) {
+        // printf("Entering ggml_cuda_mul_mat_vec_nc\n");
+        
         // FP32 precision KQV single-batch for batch size 1 without FlashAttention
         ggml_cuda_mul_mat_vec_nc(ctx, src0, src1, dst);
     } else if (!split && src0->type == GGML_TYPE_F16 && (src1->type == GGML_TYPE_F16 || !any_gpus_with_slow_fp16)
                && !ggml_is_transposed(src0) && !ggml_is_transposed(src1) && src1->ne[2]*src1->ne[3] > 1) {
+        // printf("Entering ggml_cuda_mul_mat_batched_cublas\n");
+        
         // KQ + KQV multi-batch without FlashAttention
         ggml_cuda_mul_mat_batched_cublas(ctx, src0, src1, dst);
     } else if (use_dequantize_mul_mat_vec) {
+        // printf("Entering ggml_cuda_op_dequantize_mul_mat_vec\n");
+
+        //> 这个 ‘ggml_cuda_op_dequantize_mul_mat_vec’ 会进入 dmmv kernel 的实现
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_dequantize_mul_mat_vec, nullptr);
     } else if (use_mul_mat_vec_q) {
+        // printf("Entering ggml_cuda_op_mul_mat_vec_q\n");
+        
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_vec_q, quantize_row_q8_1_cuda);
     } else if (use_mul_mat_q) {
+        // printf("Entering ggml_cuda_op_mul_mat_q\n");
+        
+        //> 输入的 batch 超过一定的阈值（MMVQ_MAX_BATCH_SIZE），则需要调用这个函数。
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_q, quantize_mmq_q8_1_cuda);
     } else {
+        // printf("Entering ggml_cuda_op_mul_mat_cublas\n");
+        
+        //> 如果以上条件都不满足，则使用 cublas 进行矩阵乘法。
         ggml_cuda_op_mul_mat(ctx, src0, src1, dst, ggml_cuda_op_mul_mat_cublas, nullptr);
     }
 }
@@ -2000,6 +2077,11 @@ static __global__ void k_copy_dst_from_contiguous(char * __restrict__ dst_origin
     }
 }
 
+//? 这个ggml_cuda_mul_mat_id和ggml_cuda_mul_mat的区别是什么？
+//> 回答：
+//> 1. ggml_cuda_mul_mat_id 是 ggml_cuda_mul_mat 的特例，用于处理输入的 batch 超过一定的阈值（MMVQ_MAX_BATCH_SIZE），则需要调用这个函数。
+//> 2. 在 ggml_cuda_mul_mat_id 中，会使用 k_copy_src1_to_contiguous 和 k_copy_dst_from_contiguous 将 src1 和 dst 的数据复制到连续的内存中，
+//> 然后调用 ggml_cuda_mul_mat 进行矩阵乘法。
 static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
@@ -2539,7 +2621,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     if (use_cuda_graph) {
         if (cuda_ctx->cuda_graph->instance == nullptr) {
-            cuda_graph_update_required = true;
+            required = true;
         }
 
         // Check if the graph size has changed
@@ -2618,6 +2700,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
         // Disable CUDA graphs (from the next token) if the use-case is demanding too many consecutive graph updates.
         if (use_cuda_graph && cuda_graph_update_required) {
             cuda_ctx->cuda_graph->number_consecutive_updates++;
+            // printf("\n\n\nnumber_consecutive_updates: %d\n\n\n", cuda_ctx->cuda_graph->number_consecutive_updates);
         } else {
             cuda_ctx->cuda_graph->number_consecutive_updates = 0;
         }

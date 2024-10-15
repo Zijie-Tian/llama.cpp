@@ -143,8 +143,8 @@ typedef sycl::half2 ggml_half2;
 
 #define QK4_0 32
 typedef struct {
-    ggml_half d;           // delta
-    uint8_t qs[QK4_0 / 2]; // nibbles / quants
+    ggml_half d;           // delta (量化的 scale)
+    uint8_t qs[QK4_0 / 2]; // nibbles / quants (量化的 weights)
 } block_q4_0;
 static_assert(sizeof(block_q4_0) == sizeof(ggml_half) + QK4_0 / 2, "wrong q4_0 block size/padding");
 
@@ -152,12 +152,12 @@ static_assert(sizeof(block_q4_0) == sizeof(ggml_half) + QK4_0 / 2, "wrong q4_0 b
 typedef struct {
     union {
         struct {
-            ggml_half d; // delta
-            ggml_half m; // min
+            ggml_half d; // delta (量化的 scale)
+            ggml_half m; // min (量化的 min, zero point)
         } GGML_COMMON_AGGR;
         ggml_half2 dm;
     };
-    uint8_t qs[QK4_1 / 2]; // nibbles / quants
+    uint8_t qs[QK4_1 / 2]; // nibbles / quants (量化的 weights)
 } block_q4_1;
 static_assert(sizeof(block_q4_1) == 2 * sizeof(ggml_half) + QK4_1 / 2, "wrong q4_1 block size/padding");
 

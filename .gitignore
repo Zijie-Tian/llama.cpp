@@ -43,6 +43,7 @@ lcov-report/
 tags
 .build/
 build*
+profile_output/
 !build.sh
 !build-info.cmake
 !build-info.cpp.in

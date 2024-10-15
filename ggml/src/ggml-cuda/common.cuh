@@ -520,7 +520,9 @@ int ggml_cuda_get_device();
 struct ggml_cuda_pool {
     virtual ~ggml_cuda_pool() = default;
 
+    //> 分配内存，并返回实际分配的内存大小。
     virtual void * alloc(size_t size, size_t * actual_size) = 0;
+    //> 释放内存。
     virtual void free(void * ptr, size_t size) = 0;
 };
 
@@ -553,6 +555,7 @@ struct ggml_cuda_pool_alloc {
         return ptr;
     }
 
+    //> 直接内部调用 alloc 函数，并返回分配的内存。
     T * alloc(ggml_cuda_pool & pool, size_t size) {
         this->pool = &pool;
         return alloc(size);
@@ -619,6 +622,7 @@ struct ggml_backend_cuda_context {
     std::string name;
     cudaEvent_t copy_event = nullptr;
 
+    //> 每个设备一个 stream，每个 stream 有多个 stream。
     cudaStream_t streams[GGML_CUDA_MAX_DEVICES][GGML_CUDA_MAX_STREAMS] = { { nullptr } };
     cublasHandle_t cublas_handles[GGML_CUDA_MAX_DEVICES] = {nullptr};
 
@@ -671,8 +675,19 @@ struct ggml_backend_cuda_context {
     }
 
     // pool
+    //? pool 是什么？
+    //> pool 是一个内存池，用于分配和释放内存。
+    //? 这个 pool 可以干什么?
+    //> 这个 pool 可以分配和释放内存。
+    //? 可以良好处理内存碎片问题吗？
+    //> 可以。
     std::unique_ptr<ggml_cuda_pool> pools[GGML_CUDA_MAX_DEVICES];
 
+    //> 为每个设备创建一个 pool。
+    //? 为什么每个设备需要一个 pool？
+    //> 因为每个设备的数据类型可能不同，所以需要为每个设备创建一个 pool。
+    //? 为什么每个设备的数据类型可能不同？
+    //! 因为每个设备的数据类型可能不同，所以需要为每个设备创建一个 pool。
     static std::unique_ptr<ggml_cuda_pool> new_pool_for_device(int device);
 
     ggml_cuda_pool & pool(int device) {

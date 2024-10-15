@@ -96,6 +96,7 @@ static __global__ void mul_mat_vec_q(
         }
     }
 
+    //> shared memory.
     __shared__ float tmp_shared[nwarps-1 > 0 ? nwarps-1 : 1][ncols_y][rows_per_cuda_block][WARP_SIZE];
     if (threadIdx.y > 0) {
 #pragma unroll

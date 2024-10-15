@@ -605,6 +605,7 @@ void ggml_cuda_op_dequantize_mul_mat_vec(
     const int64_t ne00 = src0->ne[0];
     const int64_t row_diff = row_high - row_low;
 
+    //> 确保 src1 的类型是 F32。（如果是 FP16，不走这函数，在 ggml-cuda.cu 中处理）。
     GGML_ASSERT(src1->type == GGML_TYPE_F32);
 
     // on some GPUs it is faster to convert src1 to half and to use half precision intrinsics

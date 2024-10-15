@@ -12440,6 +12440,8 @@ static void ggml_compute_forward_mul_mat(
         const struct ggml_compute_params * params,
               struct ggml_tensor * dst) {
 
+    // printf("ggml_compute_forward_mul_mat: Tensor(%s) MUL_MAT OP with src[0]: %s and src[1]: %s.\n", dst->name, dst->src[0]->name, dst->src[1]->name);
+
     const struct ggml_tensor * src0 = dst->src[0];
     const struct ggml_tensor * src1 = dst->src[1];
 

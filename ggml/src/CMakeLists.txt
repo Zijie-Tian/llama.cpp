@@ -1247,6 +1247,8 @@ if (GGML_CUDA)
         list(APPEND CUDA_FLAGS -Xcompiler ${CUDA_CXX_FLAGS_JOINED})
     endif()
 
+    # message(STATUS "ARCH_FLAGS: ${ARCH_FLAGS}")
+
     add_compile_options("$<$<COMPILE_LANGUAGE:CUDA>:${CUDA_FLAGS}>")
 endif()
 
