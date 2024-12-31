@@ -795,6 +795,17 @@ GGML_CALL static enum ggml_status ggml_backend_cpu_graph_plan_compute(ggml_backe
     GGML_UNUSED(backend);
 }
 
+// static char * ggml_get_src_shape(struct ggml_tensor * tensor) {
+//     static char buf[128];
+//     if (tensor != NULL && tensor->ne != NULL && tensor->ne[0] != 0 && tensor->ne[1] != 0 && tensor->ne[2] != 0 && tensor->ne[3] != 0) {
+//         snprintf(buf, sizeof(buf), "%d,%d,%d,%d", tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+//         // snprintf(buf, sizeof(buf), "YES");
+//     } else {
+//         snprintf(buf, sizeof(buf), "NULL");
+//     }
+//     return buf;
+// }
+
 GGML_CALL static enum ggml_status ggml_backend_cpu_graph_compute(ggml_backend_t backend, struct ggml_cgraph * cgraph) {
     struct ggml_backend_cpu_context * cpu_ctx = (struct ggml_backend_cpu_context *)backend->context;
 
@@ -813,6 +824,12 @@ GGML_CALL static enum ggml_status ggml_backend_cpu_graph_compute(ggml_backend_t 
 
     cplan.abort_callback      = cpu_ctx->abort_callback;
     cplan.abort_callback_data = cpu_ctx->abort_callback_data;
+
+    // for (int node_n = 0; node_n < cgraph->n_nodes; node_n++) {
+    //     struct ggml_tensor * node = cgraph->nodes[node_n];
+
+    //     printf("%s([%s], [%s]) -> [%s]\n", ggml_op_desc(node), ggml_get_src_shape(node->src[0]), ggml_get_src_shape(node->src[1]), ggml_get_src_shape(node));
+    // }
 
     return ggml_graph_compute(cgraph, &cplan);
 }

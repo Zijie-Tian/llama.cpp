@@ -32,6 +32,7 @@
 #include "ggml-cuda/unary.cuh"
 #include "ggml-cuda/upscale.cuh"
 
+#include <sstream>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -56,6 +57,17 @@ static void ggml_cuda_default_log_callback(enum ggml_log_level level, const char
     GGML_UNUSED(level);
     GGML_UNUSED(user_data);
     fprintf(stderr, "%s", msg);
+}
+
+static char * ggml_get_src_shape(const struct ggml_tensor * tensor) {
+    static char buf[128];
+    if (tensor != NULL && tensor->ne != NULL) {
+        snprintf(buf, sizeof(buf), "%d,%d,%d,%d", tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+        // snprintf(buf, sizeof(buf), "YES");
+    } else {
+        snprintf(buf, sizeof(buf), "NULL");
+    }
+    return buf;
 }
 
 ggml_log_callback ggml_cuda_log_callback = ggml_cuda_default_log_callback;
@@ -1910,6 +1922,10 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     bool              use_mul_mat_q =  ggml_is_quantized(src0->type)
         && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32;
 
+    // printf("src0: %s\n", ggml_get_src_shape(src0));
+    // printf("src1: %s\n", ggml_get_src_shape(src1));
+    // printf("dst: %s\n", ggml_get_src_shape(dst));
+
     // if mmvq is available it's a better choice than dmmv:
 #ifndef GGML_CUDA_FORCE_DMMV
     use_dequantize_mul_mat_vec = use_dequantize_mul_mat_vec && !use_mul_mat_vec_q;
@@ -2155,6 +2171,12 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
             }
         }
     }
+}
+
+static char * ggml_cuda_get_src_shape(ggml_tensor * tensor) {
+    static char buf[128];
+    snprintf(buf, sizeof(buf), "%d,%d,%d,%d", tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+    return buf;
 }
 
 static bool ggml_cuda_compute_forward(ggml_backend_cuda_context & ctx, struct ggml_tensor * dst) {
@@ -2480,6 +2502,12 @@ static bool ggml_graph_node_has_matching_properties(ggml_tensor * node, ggml_gra
 GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, ggml_cgraph * cgraph) {
     ggml_backend_cuda_context * cuda_ctx = (ggml_backend_cuda_context *)backend->context;
 
+    // for (int node_n = 0; node_n < cgraph->n_nodes; node_n++) {
+    //     struct ggml_tensor * node = cgraph->nodes[node_n];
+
+    //     printf("%s([%s], [%s]) -> [%s]\n", ggml_op_desc(node), ggml_get_src_shape(node->src[0]), ggml_get_src_shape(node->src[1]), ggml_get_src_shape(node));
+    // }
+
     ggml_cuda_set_device(cuda_ctx->device);
 
 #ifdef USE_CUDA_GRAPH
@@ -2625,6 +2653,12 @@ GGML_CALL static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t
                 if (ggml_is_empty(node) || node->op == GGML_OP_RESHAPE || node->op == GGML_OP_TRANSPOSE || node->op == GGML_OP_VIEW || node->op == GGML_OP_PERMUTE || node->op == GGML_OP_NONE) {
                     continue;
                 }
+
+                // if (node != NULL && node->src[0] != NULL && node->src[1] != NULL) {
+                //     printf("%s([%s], [%s]) -> [%s]\n", ggml_op_desc(node), ggml_get_src_shape(node->src[0]), ggml_get_src_shape(node->src[1]), ggml_get_src_shape(node));
+                // } else {
+                //     printf("%s() -> [%s]\n", ggml_op_desc(node), ggml_get_src_shape(node));
+                // }
 
 #ifndef NDEBUG
                 assert(node->buffer->buft == ggml_backend_cuda_buffer_type(cuda_ctx->device));

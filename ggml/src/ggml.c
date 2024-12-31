@@ -17458,6 +17458,12 @@ static void ggml_compute_forward_cross_entropy_loss_back(
 
 /////////////////////////////////
 
+static char * ggml_get_src_shape(struct ggml_tensor * tensor) {
+    char buf[128];
+    snprintf(buf, sizeof(buf), "%d,%d,%d,%d", tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
+    return buf;
+}
+
 static void ggml_compute_forward(struct ggml_compute_params * params, struct ggml_tensor * tensor) {
     GGML_ASSERT(params);
 
@@ -20201,6 +20207,12 @@ enum ggml_status ggml_graph_compute_with_ctx(struct ggml_context * ctx, struct g
     struct ggml_object * obj = ggml_new_object(ctx, GGML_OBJECT_TYPE_WORK_BUFFER, cplan.work_size);
 
     cplan.work_data = (uint8_t *)ctx->mem_buffer + obj->offs;
+
+    for (int node_n = 0; node_n < cgraph->n_nodes; node_n++) {
+        struct ggml_tensor * node = cgraph->nodes[node_n];
+
+        printf("%s([%s], [%s]) -> [%s]\n", ggml_op_desc(node), ggml_get_src_shape(node->src[0]), ggml_get_src_shape(node->src[1]), ggml_get_src_shape(node));
+    }
 
     return ggml_graph_compute(cgraph, &cplan);
 }
