@@ -133,3 +133,5 @@ poetry.toml
 
 # Test models for lora adapters
 /lora-tests
+
+*.csv
