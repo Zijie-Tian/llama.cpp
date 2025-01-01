@@ -2,14 +2,16 @@
 
 echo "Starting batch evaluation..."
 
+export CUDA_VISIBLE_DEVICES=1
+
 # 定义量化模型路径
-QUANT_MODEL_PATH=/data/models/LLaMA/LLama-2-7B-hf-quant/
+QUANT_MODEL_PATH=/data/tzj/models/Qwen2.5-3B-imatrix/
 
 # 定义 llama.cpp 路径
 LLAMA_CPP_PATH=$(realpath $(dirname "$0")/..)
 
 # 定义测试数据集路径
-TEST_DATA_PATH=/extern/datasets/cosmo.zip/pub/datasets/wikitext-2-raw/wiki.test.raw
+TEST_DATA_PATH=/data/tzj/datasets/wikitext-2-raw/wiki.test.raw
 
 # 定义输出结果文件
 OUTPUT_FILE=$LLAMA_CPP_PATH/ppl_results.csv
@@ -38,9 +40,6 @@ for model in "${quant_models[@]}"; do
     # 检查当前量化类型是否需要排除
     if [[ " ${exclude_types[@]} " =~ " ${quant_type} " ]]; then
         echo "Skipping excluded quantization type: $quant_type"
-        continue
-    else 
-        echo "Processing quantization type: $quant_type"
         continue
     fi
 
