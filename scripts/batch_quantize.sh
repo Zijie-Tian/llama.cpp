@@ -82,8 +82,8 @@ bpw_values=(
 
 LLAMA_CPP_PATH=$(realpath $(dirname "$0")/..)
 
-HF_MODEL_PATH=/data/tzj/huggingface/Qwen2.5-3B
-QUANT_MODEL_PATH=/data/tzj/models/Qwen2.5-3B-quant/
+HF_MODEL_PATH=/data/tzj/huggingface/Qwen2.5-0.5B
+QUANT_MODEL_PATH=/data/tzj/models/Qwen2.5-0.5B-quant/
 
 mkdir -p $QUANT_MODEL_PATH
 

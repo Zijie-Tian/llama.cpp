@@ -5,7 +5,7 @@ echo "Starting batch evaluation..."
 export CUDA_VISIBLE_DEVICES=1
 
 # 定义量化模型路径
-QUANT_MODEL_PATH=/data/tzj/models/Qwen2.5-3B-imatrix/
+QUANT_MODEL_PATH=/data/tzj/models/Qwen2.5-0.5B-imatrix/
 
 # 定义 llama.cpp 路径
 LLAMA_CPP_PATH=$(realpath $(dirname "$0")/..)
