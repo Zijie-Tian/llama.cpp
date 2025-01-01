@@ -21,14 +21,29 @@ cd $LLAMA_CPP_PATH/build/
 # 清空或创建输出文件，并写入表头
 echo "Quantization Type,Model Size (GiB),PPL Avg,PPL Std Dev,Prefill Speed (t/s),Prefill Std Dev (t/s),Decode Speed (t/s),Decode Std Dev (t/s)" > $OUTPUT_FILE
 
+# 定义需要排除的量化类型
+exclude_types=(    
+    "TQ2_0"
+    "TQ1_0"
+)
+
 # 获取所有量化模型文件
 quant_models=($QUANT_MODEL_PATH/ggml-model-*.gguf)
 
 # 遍历每个量化模型并计算 PPL 和速度
 for model in "${quant_models[@]}"; do
     # 提取量化类型
-    quant_type=$(basename $model | sed 's/ggml-model-`\(.*\)`\.gguf/\1/')
+    quant_type=$(basename $model | sed 's/ggml-model-\(.*\)\.gguf/\1/')
     
+    # 检查当前量化类型是否需要排除
+    if [[ " ${exclude_types[@]} " =~ " ${quant_type} " ]]; then
+        echo "Skipping excluded quantization type: $quant_type"
+        continue
+    else 
+        echo "Processing quantization type: $quant_type"
+        continue
+    fi
+
     echo "Processing quantization type: $quant_type"
     
     # 使用 llama-perplexity 工具计算 PPL，并捕获输出
