@@ -82,17 +82,17 @@ bpw_values=(
 
 LLAMA_CPP_PATH=$(realpath $(dirname "$0")/..)
 
-HF_MODEL_PATH=/data/hf_models/LLaMA/LLama-2-7B-hf
-QUANT_MODEL_PATH=/data/models/LLaMA/LLama-2-7B-hf-quant/
+HF_MODEL_PATH=/data/tzj/huggingface/LLama-2-7B-hf
+QUANT_MODEL_PATH=/data/tzj/models/LLama-2-7B-hf-quant/
 
 mkdir -p $QUANT_MODEL_PATH
 
 # Check if the f16 file already exists
-if [ -f "$QUANT_MODEL_PATH/ggml-model-f16.gguf" ]; then
+if [ -f "$QUANT_MODEL_PATH/ggml-model-F16.gguf" ]; then
     echo "f16 file already exists. Skipping conversion."
 else
     cd $LLAMA_CPP_PATH
-    python convert_hf_to_gguf.py $HF_MODEL_PATH --outtype f16 --outfile $QUANT_MODEL_PATH/ggml-model-f16.gguf
+    python convert_hf_to_gguf.py $HF_MODEL_PATH --outtype f16 --outfile $QUANT_MODEL_PATH/ggml-model-F16.gguf
 fi
 
 cd $LLAMA_CPP_PATH/build/
