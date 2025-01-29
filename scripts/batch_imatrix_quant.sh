@@ -82,8 +82,9 @@ bpw_values=(
 
 LLAMA_CPP_PATH=$(realpath $(dirname "$0")/..)
 
-HF_MODEL_PATH=/data/tzj/huggingface/Qwen2.5-0.5B
-QUANT_MODEL_PATH=/data/tzj/models/Qwen2.5-0.5B-imatrix/
+HF_MODEL_PATH=/data/hf_models/Qwen2.5/Qwen2.5-0.5B
+QUANT_MODEL_PATH=/data/models/Qwen2.5/Qwen2.5-0.5B-imatrix/
+DATA_PATH=/extern/datasets/cosmo.zip/pub/datasets/wikitext-2-raw/wiki.valid.raw
 
 mkdir -p $QUANT_MODEL_PATH
 
@@ -103,7 +104,7 @@ if [ -f "$IMATRIX_FILE" ]; then
     echo "imatrix file already exists. Skipping imatrix calculation."
 else
     echo "Calculating imatrix..."
-    ./bin/llama-imatrix -m $QUANT_MODEL_PATH/ggml-model-F16.gguf -f /data/tzj/datasets/wikitext-2-raw/wiki.valid.raw -o $IMATRIX_FILE -ngl 100
+    ./bin/llama-imatrix -m $QUANT_MODEL_PATH/ggml-model-F16.gguf -f $DATA_PATH -o $IMATRIX_FILE -ngl 100
 fi
 
 # Loop through each quantization type and execute the command
@@ -111,7 +112,7 @@ for i in {1..${#quant_types[@]}}; do
     quant_type=${quant_types[i]}
     bpw=${bpw_values[i]}
     output_file="$QUANT_MODEL_PATH/ggml-model-${quant_type}.gguf"
-    
+
     if [ -f "$output_file" ]; then
         echo "File for quantization type $quant_type already exists. Skipping."
     else
