@@ -142,3 +142,4 @@ poetry.toml
 # Local scripts
 /run-vim.sh
 /run-chat.sh
+bench_results
