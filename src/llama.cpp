@@ -3490,6 +3490,8 @@ struct llama_context {
     struct llama_kv_cache       kv_self;
     struct llama_control_vector cvec;
 
+    bool profile_active = false;
+
     std::unordered_map<struct llama_lora_adapter *, float> lora_adapters;
 
     std::vector<ggml_backend_ptr> backends;

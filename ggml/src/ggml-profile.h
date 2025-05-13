@@ -24,12 +24,19 @@ struct ggml_profile_output;
 struct ggml_profile_data {
     struct ggml_profile_output *output;
     struct ggml_profile_timing ** timing; // per op / per thread timing
+    bool profile_active;                  // whether profiling is active or not
 };
 
 // check if profiling is enabled for this graph
 static inline bool ggml_graph_profile_enabled(const struct ggml_cgraph *cg)
 {
     return cg->prof != NULL;
+}
+
+// check if profiling is active for this graph
+static inline bool ggml_graph_profile_active(const struct ggml_cgraph *cg)
+{
+    return cg->prof != NULL && cg->prof->profile_active;
 }
 
 // get pointer to the timing data for specific node / thread
@@ -75,6 +82,12 @@ static inline void ggml_graph_profile_event(const struct ggml_cgraph *cg, enum g
     GGML_UNUSED(ith);
 }
 
+static inline void ggml_graph_profile_set_active(struct ggml_cgraph *cg, bool active)
+{
+    GGML_UNUSED(cg);
+    GGML_UNUSED(active);
+}
+
 #else
 
 void ggml_graph_profile_init(struct ggml_cgraph *cg, int n_threads);
@@ -82,6 +95,7 @@ void ggml_graph_profile_start(struct ggml_cgraph *cg, int n_threads);
 void ggml_graph_profile_finish(struct ggml_cgraph *cg, int n_threads);
 void ggml_graph_profile_free(struct ggml_cgraph *cg);
 void ggml_graph_profile_event(const struct ggml_cgraph *cg, enum ggml_profile_event e, int node_n, int ith);
+void ggml_graph_profile_set_active(struct ggml_cgraph *cg, bool active);
 
 #endif // GGML_GRAPH_PROFILER
 

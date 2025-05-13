@@ -45,6 +45,9 @@ extern "C" void ggml_graph_profile_init(struct ggml_cgraph *cg, int n_threads)
         cg->prof->timing[i] = (struct ggml_profile_timing *) ptr; ptr += node_size;
     }
 
+    // By default, profiling is inactive until explicitly activated
+    cg->prof->profile_active = false;
+
     // init the output
     ggml_profile_output *out = cg->prof->output;
     if (!strcmp("stderr", env) || !strcmp("1", env)) {
@@ -54,13 +57,14 @@ extern "C" void ggml_graph_profile_init(struct ggml_cgraph *cg, int n_threads)
         out->prefix = "";
         out->stream = fopen(env, "w");
     }
-
 }
 
 extern "C" void ggml_graph_profile_start(struct ggml_cgraph *cg, int n_threads)
 {
     if (!cg->prof) { ggml_graph_profile_init(cg, n_threads); }
     if (!cg->prof) { return; }
+    
+    // Profiling is initialized but not active until explicitly enabled
 }
 
 static inline int ggml_profile_format_tensor_dims(char *str, struct ggml_tensor *t)
@@ -114,6 +118,9 @@ static inline void ggml_profile_format_op_types(char *str, struct ggml_tensor *t
 extern "C" void ggml_graph_profile_finish(struct ggml_cgraph *cg, int n_threads)
 {
     if (!cg->prof) { return; }
+    
+    // Only output profile data if profiling was active
+    if (!cg->prof->profile_active) { return; }
 
     ggml_profile_output *out = cg->prof->output;
 
@@ -164,9 +171,19 @@ extern "C" void ggml_graph_profile_free(struct ggml_cgraph *cg)
     free(cg->prof); cg->prof = nullptr;
 }
 
+extern "C" void ggml_graph_profile_set_active(struct ggml_cgraph *cg, bool active)
+{
+    if (!cg->prof) { return; }
+    
+    cg->prof->profile_active = active;
+}
+
 extern "C" void ggml_graph_profile_event(const struct ggml_cgraph *cg, enum ggml_profile_event e, int node_n, int ith)
 {
     if (!cg->prof) { return; }
+    
+    // Skip event recording if profiling is not active
+    if (!cg->prof->profile_active) { return; }
 
     using clock = std::chrono::high_resolution_clock;
 
