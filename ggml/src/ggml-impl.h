@@ -288,6 +288,7 @@ struct ggml_cgraph {
     int size;    // maximum number of nodes/leafs/grads/grad_accs
     int n_nodes; // number of nodes currently in use
     int n_leafs; // number of leafs currently in use
+    bool profile; // whether to profile the graph
 
     struct ggml_tensor ** nodes;     // tensors with data that can change if the graph is evaluated
     struct ggml_tensor ** grads;     // the outputs of these tensors are the gradients of the nodes

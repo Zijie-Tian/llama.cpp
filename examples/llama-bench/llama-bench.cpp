@@ -1596,7 +1596,7 @@ int main(int argc, char ** argv) {
                             i + 1, params.reps);
                 }
                 test_prompt(ctx, t.n_prompt, t.n_batch, t.n_threads);
-            }
+            }        
             if (t.n_gen > 0) {
                 if (params.progress) {
                     fprintf(stderr, "llama-bench: benchmark %d/%zu: generation run %d/%d\n", params_idx, params_count,
