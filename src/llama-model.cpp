@@ -4160,8 +4160,8 @@ bool llama_model::load_tensors(llama_model_loader & ml) {
                 pimpl->bufs.emplace_back(buf);
                 buf_map.emplace(idx, buf);
             }
-        }
-        else {
+        } else {
+            //> Allocate buffer from buft.
             ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors_from_buft(ctx, buft);
             if (buf == nullptr) {
                 throw std::runtime_error(format("unable to allocate %s buffer", ggml_backend_buft_name(buft)));
