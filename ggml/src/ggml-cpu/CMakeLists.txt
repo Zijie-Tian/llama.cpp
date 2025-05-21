@@ -104,6 +104,10 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
     if (GGML_QLUTATTN)
         target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_QLUTATTN)
         target_include_directories(${GGML_CPU_NAME} PRIVATE ggml-cpu/qlutattn)
+        list(APPEND GGML_CPU_SOURCES
+            ggml-cpu/qlutattn/qlutattn.cpp
+            ggml-cpu/qlutattn/qlutattn.h
+        )
     endif()
 
     if (GGML_CPU_HBM)
@@ -179,7 +183,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
                     list(APPEND ARCH_FLAGS -march=${GGML_CPU_ARM_ARCH})
                 endif()
             endif()
-            if (GGML_TMAC)
+            if (GGML_TMAC OR GGML_QLUTATTN)
                 # ARM Windows with LLVM clang GNU interface
                 # We need fullfp16 for T-MAC
                 # TODO: check_cxx_source_compiles
@@ -369,7 +373,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
                 list(APPEND ARCH_FLAGS -mcpu=${GGML_CPU_POWERPC_CPUTYPE})
             endif()
         endif()
-    elseif (${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64" AND GGML_TMAC)
+    elseif (${CMAKE_SYSTEM_PROCESSOR} MATCHES "aarch64" AND (GGML_TMAC OR GGML_QLUTATTN))
         # We need fullfp16 for T-MAC
         # TODO: we need to simplify this logic through check_cxx_source_compiles or Presets?
         check_cxx_source_compiles("#include <arm_neon.h>\nint main() { int8x16_t _a, _b; int32x4_t _s = vmlaq_f32(_s, _a, _b); return 0; }" GGML_COMPILER_SUPPORT_MATMUL_INT8)

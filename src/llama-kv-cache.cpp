@@ -28,6 +28,7 @@ llama_kv_cache_unified::llama_kv_cache_unified(
                 ggml_type   type_v,
                      bool   v_trans,
                      bool   offload,
+                     bool   use_extra_kv_buft,
                  uint32_t   kv_size,
                  uint32_t   padding) : model(model), hparams(model.hparams), v_trans(v_trans), padding(padding) {
     const int32_t n_layer = hparams.n_layer;
@@ -84,15 +85,41 @@ llama_kv_cache_unified::llama_kv_cache_unified(
 
         const char * dev_name = "CPU";
 
-        ggml_backend_buffer_type_t buft = ggml_backend_cpu_buffer_type();
 
-        if (offload) {
-            auto * dev = model.dev_layer(i);
-            buft = ggml_backend_dev_buffer_type(dev);
+        ggml_backend_buffer_type_t buft = nullptr;
 
-            dev_name = ggml_backend_dev_name(dev);
+        if (use_extra_kv_buft) {
+            buft = ggml_backend_cpu_buffer_type();
+
+            if (offload) {
+                auto * dev = model.dev_layer(i);
+                buft = ggml_backend_dev_buffer_type(dev);
+
+                dev_name = ggml_backend_dev_name(dev);
+            }
+        } else {
+            auto * cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+            auto * cpu_reg = ggml_backend_dev_backend_reg(cpu_dev);
+            auto ggml_backend_dev_get_extra_bufts_fn = (ggml_backend_dev_get_extra_bufts_t) 
+                ggml_backend_reg_get_proc_address(cpu_reg, "ggml_backend_dev_get_extra_bufts");
+            
+            if (ggml_backend_dev_get_extra_bufts_fn) {
+                ggml_backend_buffer_type_t * extra_bufts = ggml_backend_dev_get_extra_bufts_fn(cpu_dev);
+                while (extra_bufts && *extra_bufts) {
+                    
+                    // if (extra_bufts -> get_name())
+                    // buft_list.emplace_back(cpu_dev, *extra_bufts);
+
+                    ++extra_bufts;
+                }
+            }    
+
+            // ggml_backend_buffer_type_t bufts[2];
+            // ggml_backend_dev_get_extra_bufts_fn(cpu_dev, bufts, 2);
+
+            buft = ggml_backend_cpu_buffer_type();
         }
-
+        
         LLAMA_LOG_DEBUG("%s: layer %3d: dev = %s\n", __func__, i, dev_name);
 
         ggml_context * ctx = ctx_for_buft(buft);
@@ -528,7 +555,7 @@ bool llama_kv_cache_unified::find_slot(
     // if we start defragmenting the cache, the benefit from this will be more important
     n = std::min(size, std::max(padding, GGML_PAD(cell_max(), padding)));
 
-    //printf("n = %5d, used = %5d, head = %5d\n", n, used, head);
+    printf("\n| %-5d | %-5d | %-5d |\n", n, used, head);
 
     return true;
 }

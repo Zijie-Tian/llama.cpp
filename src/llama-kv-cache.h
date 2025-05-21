@@ -117,6 +117,7 @@ public:
                     ggml_type   type_v,
                          bool   v_trans,
                          bool   offload,
+                         bool   use_extra_buft,
                      uint32_t   kv_size,
                      uint32_t   padding);
 
