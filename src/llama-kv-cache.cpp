@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <stdexcept>
@@ -88,7 +89,7 @@ llama_kv_cache_unified::llama_kv_cache_unified(
 
         ggml_backend_buffer_type_t buft = nullptr;
 
-        if (use_extra_kv_buft) {
+        if (!use_extra_kv_buft) {
             buft = ggml_backend_cpu_buffer_type();
 
             if (offload) {
@@ -105,9 +106,13 @@ llama_kv_cache_unified::llama_kv_cache_unified(
             
             if (ggml_backend_dev_get_extra_bufts_fn) {
                 ggml_backend_buffer_type_t * extra_bufts = ggml_backend_dev_get_extra_bufts_fn(cpu_dev);
+                
+                buft = *extra_bufts;
+
                 while (extra_bufts && *extra_bufts) {
-                    
-                    // if (extra_bufts -> get_name())
+                    // if (strcmp(ggml_backend_buffer_name(*extra_bufts), "QLUTATTN") == 0) {
+                    //     buft = *extra_bufts;
+                    // }
                     // buft_list.emplace_back(cpu_dev, *extra_bufts);
 
                     ++extra_bufts;

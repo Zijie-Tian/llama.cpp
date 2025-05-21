@@ -27,8 +27,6 @@ public:
 
 private:
     bool forward_flash_attn(struct ggml_compute_params * params, struct ggml_tensor * op) {
-        // 这里是占位符 - 实际实现不需要完成
-        // 只需要捕获FLASH_ATTN算子，且输入KV类型为Q4_0的即可
         printf("QLUTATTN: Captured FLASH_ATTN operation\n");
         return true;
     }
@@ -39,19 +37,15 @@ static ggml::cpu::tensor_traits * get_tensor_traits(ggml_backend_buffer_t buffer
     return &traits;
 }
 
-// 仅支持Q4_0类型
 static bool is_type_supported(ggml_type type) {
     return type == GGML_TYPE_Q4_0;
 }
 
-// 检查操作是否可以被qlutattn处理
 static bool ggml_qlutattn_can_flash_attn(const struct ggml_tensor * op) {
     if (op->op != GGML_OP_FLASH_ATTN) {
         return false;
     }
 
-    // 检查输入是否为Q4_0类型
-    // 假设第一个输入是query，第二个是key，第三个是value
     if (op->n_tasks >= 2 && op->src[1] != nullptr && op->src[1]->type != GGML_TYPE_Q4_0) {
         return false;
     }

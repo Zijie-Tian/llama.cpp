@@ -6,6 +6,7 @@
 #include "ggml-impl.h"
 #include "amx/amx.h"
 #include "tmac/tmac.h"
+#include "qlutattn/qlutattn.h"
 
 #include <cctype>
 #include <string>
@@ -61,6 +62,12 @@ std::vector<ggml_backend_buffer_type_t>& ggml_backend_cpu_get_extra_buffers_type
 #ifdef GGML_USE_CPU_AARCH64
         if (ggml_backend_cpu_aarch64_buffer_type()) {
             bufts.push_back(ggml_backend_cpu_aarch64_buffer_type());
+        }
+#endif
+
+#ifdef GGML_USE_QLUTATTN
+        if (ggml_backend_qlutattn_buffer_type()) {
+            bufts.push_back(ggml_backend_qlutattn_buffer_type());
         }
 #endif
 
