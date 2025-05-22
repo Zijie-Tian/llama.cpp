@@ -704,6 +704,7 @@ static void ggml_compute_forward_dup_f32(
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
+                        //> split along the last dimension in multi-threads.
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             const char * src0_ptr = (char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03;
                             memcpy(dst_ptr + id, src0_ptr, rs);
@@ -712,6 +713,8 @@ static void ggml_compute_forward_dup_f32(
                         id += rs * (ne01 - ir1);
                     }
                 }
+            } else if (dst->type == GGML_TYPE_QLUTATTN_W2G128 || dst->type == GGML_TYPE_QLUTATTN_W4G128) {
+                
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
                 ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
 
@@ -722,6 +725,7 @@ static void ggml_compute_forward_dup_f32(
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         id += rs * ir0;
+                        //> split along the last dimension in multi-threads.
                         for (int i01 = ir0; i01 < ir1; i01++) {
                             const float * src0_ptr = (float *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
                             quantize_row_q(src0_ptr, dst_ptr + id, ne00);
@@ -1116,6 +1120,9 @@ static void ggml_compute_forward_dup_bytes(
     }
 }
 
+//> ===================================================================================================
+//> Here do the KVcache quantization
+//> ===================================================================================================
 static void ggml_compute_forward_dup_q(
         const ggml_compute_params * params,
               ggml_tensor * dst) {

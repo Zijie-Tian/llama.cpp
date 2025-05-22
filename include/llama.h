@@ -359,6 +359,10 @@ extern "C" {
 
         enum ggml_type type_k; // data type for K cache [EXPERIMENTAL]
         enum ggml_type type_v; // data type for V cache [EXPERIMENTAL]
+        // // sliding window KV cache configuration
+        // uint32_t       kv_window_size;      // window size in tokens (0 = no windowing)
+        // enum ggml_type cache_outer_type_k;  // outer KV cache type for K tokens outside window
+        // enum ggml_type cache_outer_type_v;  // outer KV cache type for V tokens outside window
 
         // Abort callback
         // if it returns true, execution of llama_decode() will be aborted

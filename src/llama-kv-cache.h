@@ -9,6 +9,7 @@
 
 #include <set>
 #include <vector>
+#include <memory>
 
 struct llama_cparams;
 struct llama_hparams;
@@ -258,6 +259,156 @@ private:
     bool state_read_meta(llama_io_read_i & io, uint32_t cell_count, llama_seq_id dest_seq_id = -1);
     bool state_read_data(llama_io_read_i & io, uint32_t cell_count);
 };
+
+// windowed KV cache: keeps the most recent window_size tokens at full precision,
+// older tokens can be quantized or evicted to save memory.
+// Implements llama_kv_cache via internal unified cache
+class llama_kv_cache_windowed : public llama_kv_cache {
+public:
+    // Cell structure for storing KV cache entries
+    struct kv_cell {
+        llama_pos pos   = -1;  // Position in sequence
+        llama_pos delta =  0;  // Position offset
+
+        std::set<llama_seq_id> seq_id;  // Sequence IDs using this cell
+
+        // Helper methods
+        bool has_seq_id(const llama_seq_id & id) const { return seq_id.find(id) != seq_id.end(); }
+        bool is_empty() const { return seq_id.empty(); }
+        bool is_same_seq(const kv_cell & other) const { return seq_id == other.seq_id; }
+    };
+
+    // Construction/Destruction
+    llama_kv_cache_windowed(
+        const llama_model & model,
+        ggml_type type_k,
+        ggml_type type_v, 
+        bool v_trans,
+        bool offload,
+        bool use_extra_buft,
+        uint32_t kv_size,
+        uint32_t padding,
+        uint32_t window_size);
+    ~llama_kv_cache_windowed() override = default;
+
+    // Sequence management
+    void clear() override;
+    bool seq_rm(llama_seq_id seq_id, llama_pos p0, llama_pos p1) override;
+    void seq_cp(llama_seq_id seq_id_src, llama_seq_id seq_id_dst, llama_pos p0, llama_pos p1) override;
+    void seq_keep(llama_seq_id seq_id) override;
+    void seq_add(llama_seq_id seq_id, llama_pos p0, llama_pos p1, llama_pos delta) override;
+    void seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos p1, int d) override;
+    llama_pos seq_pos_max(llama_seq_id seq_id) const override;
+
+    // Cache operations
+    void restore() override;
+    void commit() override;
+    bool update(llama_context & ctx) override;
+    void defrag_sched(float thold) override;
+    void set_full() override;
+
+    // Batch processing
+    llama_sbatch sbatch_init(const llama_batch & batch, bool logits_all) override;
+    llama_ubatch ubatch_next(llama_sbatch & sbatch, uint32_t n_ubatch, bool embd_pooled) const override;
+    bool find_slot(const llama_ubatch & ubatch) override;
+
+    // Cache state info
+    int32_t get_n_tokens() const override;
+    int32_t get_used_cells() const override;
+    llama_pos get_pos_max() const override;
+    bool get_can_shift() const override;
+
+    // State serialization
+    void state_write(llama_io_write_i & io, llama_seq_id seq_id = -1) const override;
+    void state_read(llama_io_read_i & io, llama_seq_id seq_id = -1) override;
+
+    // Cache state
+    uint32_t head = 0;  // Current head position
+    uint32_t size = 0;  // Total cache size
+    uint32_t used = 0;  // Used cells (with at least one seq_id)
+    uint32_t n = 0;     // Computed before each graph build
+
+    std::vector<kv_cell> cells;  // Cache cells
+    std::vector<ggml_tensor*> k_l;  // Key tensors per layer
+    std::vector<ggml_tensor*> v_l;  // Value tensors per layer
+
+private:
+    // Configuration
+    const llama_model & model;
+    const llama_hparams & hparams;
+    uint32_t window_size;
+    bool v_trans = true;
+    uint32_t padding = 1;
+    ggml_type type_k = GGML_TYPE_F16;
+    ggml_type type_v = GGML_TYPE_F16;
+
+    // Runtime state
+    bool has_shift = false;
+    bool do_defrag = false;
+    bool can_shift = false;
+    std::vector<ggml_context_ptr> ctxs;
+    std::vector<ggml_backend_buffer_ptr> bufs;
+
+    // Defragmentation state
+    struct defrag_state {
+        std::vector<uint32_t> ids;
+    } defrag_info;
+
+    // Pending operations
+    struct slot_range {
+        uint32_t c0 = 0;  // Start cell index
+        uint32_t c1 = 0;  // End cell index
+    };
+    struct pending_ops {
+        std::vector<slot_range> ranges;
+    } pending;
+
+    // Internal helpers
+    uint32_t cell_max() const;
+    size_t total_size() const;
+    size_t size_k_bytes() const;
+    size_t size_v_bytes() const;
+    bool defrag_prepare(int32_t n_max_nodes);
+    void evict_old_tokens();
+    
+    // Graph building
+    ggml_tensor* build_rope_shift(
+        const llama_cparams & cparams,
+        ggml_context * ctx,
+        ggml_tensor * cur,
+        ggml_tensor * shift,
+        ggml_tensor * factors,
+        float freq_base,
+        float freq_scale) const;
+
+    llm_graph_result_ptr build_graph_shift(
+        const llama_cparams & cparams,
+        ggml_context * ctx,
+        ggml_cgraph * gf) const;
+
+    llm_graph_result_ptr build_graph_defrag(
+        const llama_cparams & cparams,
+        ggml_context * ctx,
+        ggml_cgraph * gf) const;
+
+    // State I/O
+    void state_write_meta(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges, llama_seq_id seq_id = -1) const;
+    void state_write_data(llama_io_write_i & io, const std::vector<std::pair<uint32_t, uint32_t>> & cell_ranges) const;
+    bool state_read_meta(llama_io_read_i & io, uint32_t cell_count, llama_seq_id dest_seq_id = -1);
+    bool state_read_data(llama_io_read_i & io, uint32_t cell_count);
+};
+
+// Factory function
+llama_kv_cache* llama_kv_cache_windowed_create(
+    const llama_model & model,
+    ggml_type type_k,
+    ggml_type type_v,
+    bool v_trans,
+    bool offload,
+    bool use_extra_buft,
+    uint32_t kv_size,
+    uint32_t padding,
+    uint32_t window_size);
 
 //
 // llama_kv_cache_recurrent
