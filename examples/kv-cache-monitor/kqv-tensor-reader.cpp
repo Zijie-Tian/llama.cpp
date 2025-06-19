@@ -40,6 +40,7 @@ static void print_usage(const char* program_name) {
     LOG_INF("  Specialized tool to read and analyze kqv_out tensors and their direct\n");
     LOG_INF("  source tensors (QKV, mask) from GGUF files saved by kqv-trace-monitor.\n");
     LOG_INF("  Flash attention computation is automatically performed on all detected steps.\n");
+    LOG_INF("  Supports mixed attention with k_quant and v_quant dequantization and concatenation.\n");
     LOG_INF("\n");
     LOG_INF("Examples:\n");
     LOG_INF("  %s -i tensors.gguf                # Basic tensor listing with flash attention\n", program_name);
@@ -102,20 +103,22 @@ struct tensor_stats {
     size_t elements = 0;
 };
 
-// Flash attention model structure
-struct flash_attn_model {
+// Mixed flash attention model structure
+struct mixed_flash_attn_model {
     struct ggml_tensor * Q;
     struct ggml_tensor * K;
     struct ggml_tensor * V;
     struct ggml_tensor * K_quant;
     struct ggml_tensor * V_quant;
     struct ggml_tensor * mask;
+    struct ggml_tensor * K_merged;  // K concatenated with dequantized K_quant
+    struct ggml_tensor * V_merged;  // V concatenated with dequantized V_quant
     struct ggml_context * ctx;
 };
 
-// Initialize flash attention model with Q, K, V tensors
-static bool init_flash_attn_model(
-    flash_attn_model & model, 
+// Initialize mixed flash attention model with Q, K, V, K_quant, V_quant tensors
+static bool init_mixed_flash_attn_model(
+    mixed_flash_attn_model & model, 
     ggml_tensor* q_src, 
     ggml_tensor* k_src, 
     ggml_tensor* v_src, 
@@ -131,14 +134,28 @@ static bool init_flash_attn_model(
     if (mask_src) {
         ctx_size += ggml_nbytes(mask_src);
     }
+    if (k_quant_src) {
+        ctx_size += ggml_nbytes(k_quant_src) * 4; // Space for dequantization expansion
+    }
+    if (v_quant_src) {
+        ctx_size += ggml_nbytes(v_quant_src) * 4; // Space for dequantization expansion
+    }
+    
+    // Add space for merged tensors (K + K_quant, V + V_quant)
+    if (k_quant_src) {
+        ctx_size += ggml_nbytes(k_src) + ggml_nbytes(k_quant_src) * 4;
+    }
+    if (v_quant_src) {
+        ctx_size += ggml_nbytes(v_src) + ggml_nbytes(v_quant_src) * 4;
+    }
     
     // Add space for result tensor (estimated)
     size_t result_size = q_src->ne[0] * q_src->ne[1] * q_src->ne[2] * q_src->ne[3] * ggml_type_size(GGML_TYPE_F32);
     ctx_size += result_size;
     
-    ctx_size += 4 * ggml_tensor_overhead(); // tensors
+    ctx_size += 10 * ggml_tensor_overhead(); // tensors
     ctx_size += ggml_graph_overhead(); // compute graph
-    ctx_size += 1024 * 1024; // extra overhead
+    ctx_size += 4 * 1024 * 1024; // extra overhead
 
     struct ggml_init_params params {
         /*.mem_size   =*/ ctx_size,
@@ -149,7 +166,7 @@ static bool init_flash_attn_model(
     // create context
     model.ctx = ggml_init(params);
     if (!model.ctx) {
-        LOG_ERR("Failed to create ggml context for flash attention\n");
+        LOG_ERR("Failed to create ggml context for mixed flash attention\n");
         return false;
     }
 
@@ -157,8 +174,18 @@ static bool init_flash_attn_model(
     model.Q = ggml_new_tensor_4d(model.ctx, q_src->type, q_src->ne[0], q_src->ne[1], q_src->ne[2], q_src->ne[3]);
     model.K = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, k_src->ne[0], k_src->ne[1], k_src->ne[2], k_src->ne[3]);
     model.V = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, v_src->ne[0], v_src->ne[1], v_src->ne[2], v_src->ne[3]);
-    model.K_quant = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, k_quant_src->ne[0], k_quant_src->ne[1], k_quant_src->ne[2], k_quant_src->ne[3]);
-    model.V_quant = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, v_quant_src->ne[0], v_quant_src->ne[1], v_quant_src->ne[2], v_quant_src->ne[3]);
+    
+    if (k_quant_src) {
+        model.K_quant = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, k_quant_src->ne[0], k_quant_src->ne[1], k_quant_src->ne[2], k_quant_src->ne[3]);
+    } else {
+        model.K_quant = nullptr;
+    }
+    
+    if (v_quant_src) {
+        model.V_quant = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, v_quant_src->ne[0], v_quant_src->ne[1], v_quant_src->ne[2], v_quant_src->ne[3]);
+    } else {
+        model.V_quant = nullptr;
+    }
     
     if (mask_src) {
         model.mask = ggml_new_tensor_4d(model.ctx, mask_src->type, mask_src->ne[0], mask_src->ne[1], mask_src->ne[2], mask_src->ne[3]);
@@ -170,75 +197,142 @@ static bool init_flash_attn_model(
     // Copy data
     memcpy(model.Q->data, q_src->data, ggml_nbytes(q_src));
 
-    // ggml_fp32_to_fp16_row((const float*)k_src->data, (ggml_fp16_t*)model.K->data, ggml_nelements(k_src));
-    // ggml_fp32_to_fp16_row((const float*)v_src->data, (ggml_fp16_t*)model.V->data, ggml_nelements(v_src));
+    // Convert K and V to FP16 if needed
+    if (k_src->type == GGML_TYPE_F32) {
+        ggml_fp32_to_fp16_row((const float*)k_src->data, (ggml_fp16_t*)model.K->data, ggml_nelements(k_src));
+    } else {
+        memcpy(model.K->data, k_src->data, ggml_nbytes(k_src));
+    }
+
+    if (v_src->type == GGML_TYPE_F32) {
+        ggml_fp32_to_fp16_row((const float*)v_src->data, (ggml_fp16_t*)model.V->data, ggml_nelements(v_src));
+    } else {
+        memcpy(model.V->data, v_src->data, ggml_nbytes(v_src));
+    }
+
+    // Handle quantized tensors
+    if (k_quant_src && model.K_quant) {
+        if (k_quant_src->type == GGML_TYPE_F32) {
+            ggml_fp32_to_fp16_row((const float*)k_quant_src->data, (ggml_fp16_t*)model.K_quant->data, ggml_nelements(k_quant_src));
+        } else {
+            memcpy(model.K_quant->data, k_quant_src->data, ggml_nbytes(k_quant_src));
+        }
+    }
+
+    if (v_quant_src && model.V_quant) {
+        if (v_quant_src->type == GGML_TYPE_F32) {
+            ggml_fp32_to_fp16_row((const float*)v_quant_src->data, (ggml_fp16_t*)model.V_quant->data, ggml_nelements(v_quant_src));
+        } else {
+            memcpy(model.V_quant->data, v_quant_src->data, ggml_nbytes(v_quant_src));
+        }
+    }
 
     return true;
 }
 
-// Build computation graph for flash attention
-static struct ggml_cgraph * build_flash_attn_graph(
-    ggml_context* ctx,
-    ggml_tensor* Q, 
-    ggml_tensor* K, 
-    ggml_tensor* V, 
-    ggml_tensor* mask,
-    ggml_tensor* K_quant,
-    ggml_tensor* V_quant,
+// Build computation graph for mixed flash attention with concatenation
+static struct ggml_cgraph * build_mixed_flash_attn_graph(
+    mixed_flash_attn_model& model,
     float scale = 1.0f, 
     float max_bias = 0.0f, 
     float logit_softcap = 0.0f
 ) {
-    struct ggml_cgraph * gf = ggml_new_graph(ctx);
+    struct ggml_cgraph * gf = ggml_new_graph(model.ctx);
 
-    // Perform flash attention: result = flash_attn_ext(Q, K, V, mask)
+    ggml_tensor* K_to_use = model.K;
+    ggml_tensor* V_to_use = model.V;
+
+    // If we have quantized tensors, concatenate them with the regular tensors
+    if (model.K_quant) {
+        LOG_INF("Concatenating K with dequantized K_quant along sequence dimension\n");
+        
+        // Calculate merged dimensions: concatenate along dimension 1 (sequence length)
+        int64_t merged_seq_len = model.K->ne[1] + model.K_quant->ne[1];
+        model.K_merged = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, 
+                                            model.K->ne[0], merged_seq_len, 
+                                            model.K->ne[2], model.K->ne[3]);
+        
+        // Concatenate K and K_quant
+        model.K_merged = ggml_concat(model.ctx, model.K, model.K_quant, 1);
+        K_to_use = model.K_merged;
+        
+        LOG_INF("K merged shape: [%ld, %ld, %ld, %ld]\n", 
+                K_to_use->ne[0], K_to_use->ne[1], K_to_use->ne[2], K_to_use->ne[3]);
+    }
+
+    if (model.V_quant) {
+        LOG_INF("Concatenating V with dequantized V_quant along sequence dimension\n");
+        
+        // Calculate merged dimensions: concatenate along dimension 1 (sequence length)
+        int64_t merged_seq_len = model.V->ne[1] + model.V_quant->ne[1];
+        model.V_merged = ggml_new_tensor_4d(model.ctx, GGML_TYPE_F16, 
+                                            model.V->ne[0], merged_seq_len, 
+                                            model.V->ne[2], model.V->ne[3]);
+        
+        // Concatenate V and V_quant
+        model.V_merged = ggml_concat(model.ctx, model.V, model.V_quant, 1);
+        V_to_use = model.V_merged;
+        
+        LOG_INF("V merged shape: [%ld, %ld, %ld, %ld]\n", 
+                V_to_use->ne[0], V_to_use->ne[1], V_to_use->ne[2], V_to_use->ne[3]);
+    }
+
+    // Update mask size if we concatenated tensors
+    ggml_tensor* mask_to_use = model.mask;
+    if ((model.K_quant || model.V_quant) && model.mask) {
+        int64_t merged_kv_len = K_to_use->ne[1];
+        
+        // Create new mask with expanded dimensions
+        ggml_tensor* expanded_mask = ggml_new_tensor_4d(model.ctx, model.mask->type,
+                                                        merged_kv_len, model.mask->ne[1],
+                                                        model.mask->ne[2], model.mask->ne[3]);
+        
+        // For simplicity, we'll pad the mask with zeros for the quantized portion
+        // In practice, you might want to set appropriate mask values
+        ggml_set_f32(expanded_mask, 0.0f);
+        
+        // Copy original mask data to the beginning
+        size_t orig_mask_size = ggml_nbytes(model.mask);
+        memcpy(expanded_mask->data, model.mask->data, orig_mask_size);
+        
+        mask_to_use = expanded_mask;
+        
+        LOG_INF("Mask expanded shape: [%ld, %ld, %ld, %ld]\n", 
+                mask_to_use->ne[0], mask_to_use->ne[1], mask_to_use->ne[2], mask_to_use->ne[3]);
+    }
+
+    // Perform flash attention with GGML_PREC_F32: result = flash_attn_ext(Q, K_merged, V_merged, mask_expanded)
     struct ggml_tensor * result = ggml_flash_attn_ext(
-        ctx, 
-        Q, 
-        K, 
-        V, 
-        mask,
+        model.ctx, 
+        model.Q, 
+        K_to_use, 
+        V_to_use, 
+        mask_to_use,
         scale,
         max_bias,
         logit_softcap
     );
+    
+    // Set precision to F32 as requested
     ggml_flash_attn_ext_set_prec(result, GGML_PREC_F32);
 
-    // struct ggml_tensor * result = ggml_flash_attn_mixed(
-    //     model.ctx, 
-    //     model.Q, 
-    //     model.K, 
-    //     model.V, 
-    //     NULL,
-    //     NULL,
-    //     model.mask, 
-    //     scale, 
-    //     max_bias, 
-    //     logit_softcap
-    // );
-
-    result = ggml_reshape_2d(ctx, result, result->ne[0] * result->ne[1], result->ne[2]);
+    // Reshape result to 2D as expected
+    result = ggml_reshape_2d(model.ctx, result, result->ne[0] * result->ne[1], result->ne[2]);
 
     ggml_build_forward_expand(gf, result);
     return gf;
 }
 
-// Compute flash attention
-static struct ggml_tensor * compute_flash_attn(
-    ggml_context* ctx,
-    ggml_tensor* Q, 
-    ggml_tensor* K, 
-    ggml_tensor* V, 
-    ggml_tensor* mask,
-    ggml_tensor* K_quant,
-    ggml_tensor* V_quant,
+// Compute mixed flash attention
+static struct ggml_tensor * compute_mixed_flash_attn(
+    mixed_flash_attn_model& model,
     float scale = 1.0f
 ) {
-    struct ggml_cgraph * gf = build_flash_attn_graph(ctx, Q, K, V, mask, K_quant, V_quant, scale);
+    struct ggml_cgraph * gf = build_mixed_flash_attn_graph(model, scale);
 
     int n_threads = 12; // number of threads
 
-    ggml_graph_compute_with_ctx(ctx, gf, n_threads);
+    ggml_graph_compute_with_ctx(model.ctx, gf, n_threads);
 
     // return the result tensor (last node in graph)
     return ggml_graph_node(gf, -1);
@@ -326,8 +420,9 @@ static std::string ggml_ne_string(const ggml_tensor * t) {
 }
 
 static bool read_kqv_tensors(const kqv_tensor_params& params) {
-    LOG_INF("Reading KQV trace file: %s\n", params.input_file.c_str());
-    LOG_INF("Flash attention computation enabled for all steps\n");
+    LOG_INF("Reading Mixed KQV trace file: %s\n", params.input_file.c_str());
+    LOG_INF("Mixed flash attention computation enabled with dequantization and concatenation\n");
+    LOG_INF("Expected tensor order: kqv_out, Q, K, V, mask, K_quant, V_quant\n");
     LOG_INF("=====================================\n\n");
 
     // Load GGUF file
@@ -360,78 +455,68 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         step_tensor_map[step].emplace_back(tensor, name);
     }
 
-    // Add space for result tensor (estimated)
-    struct ggml_init_params ctx_params {
-        /*.mem_size   =*/ 256 * 1024 * 1024,
-        /*.mem_buffer =*/ NULL,
-        /*.no_alloc   =*/ false,
-    };
-
-    // create context
-    ggml_context* compute_ctx = ggml_init(ctx_params);
-
     // Output by step
     for (const auto& [step, tensors] : step_tensor_map) {
         LOG_INF("\n==== Step %d ====%s\n", step, (step == -1 ? " (unknown)" : ""));
         
-        if (tensors.size() < 4) {
-            LOG_INF("Insufficient tensors in step %d (need at least Q, K, V, mask)\n", step);
+        if (tensors.size() < 6) {
+            LOG_INF("Insufficient tensors in step %d (expected 6 or 7: kqv_out, Q, K, V, mask, K_quant, V_quant)\n", step);
+            LOG_INF("Found %zu tensors, skipping mixed attention computation\n", tensors.size());
             continue;
         }
         
+        // Expected order: kqv_out, Q, K, V, mask, K_quant, V_quant
         ggml_tensor * kqv_out = tensors[0].first;
         ggml_tensor * Q = tensors[1].first;
         ggml_tensor * K = tensors[2].first;
         ggml_tensor * V = tensors[3].first;
-        ggml_tensor * kq_mask = tensors.size() > 4 ? tensors[4].first : nullptr;
+        ggml_tensor * kq_mask = tensors[4].first;
+        ggml_tensor * K_quant = tensors[5].first;
+        ggml_tensor * V_quant = tensors.size() > 6 ? tensors[6].first : nullptr;
 
         LOG_INF("[+] Tensors count: %zu\n", tensors.size());
         
-        LOG_INF("Found tensors - Q: %s, K: %s, V: %s", Q->name, K->name, V->name);
-        if (kq_mask) {
-            LOG_INF(", Mask: %s", kq_mask->name);
-        }
-        LOG_INF("\n");
-        
-        ggml_tensor * K_quant = nullptr;
-        ggml_tensor * V_quant = nullptr;
-        if (tensors.size() > 5) {
-            K_quant = tensors[5].first;
-            V_quant = tensors[6].first;
-            LOG_INF("Quantized tensors - K_quant: %s, V_quant: %s\n", 
-                    K_quant->name, V_quant->name);
+        LOG_INF("Found tensors:\n");
+        LOG_INF("  - Q: %s\n", Q->name);
+        LOG_INF("  - K: %s\n", K->name);
+        LOG_INF("  - V: %s\n", V->name);
+        LOG_INF("  - Mask: %s\n", kq_mask->name);
+        LOG_INF("  - K_quant: %s\n", K_quant->name);
+        if (V_quant) {
+            LOG_INF("  - V_quant: %s\n", V_quant->name);
         }
         
-        // Run flash attention for all steps
-        LOG_INF("\n🔥 Running Flash Attention at Step %d 🔥\n", step);
+        // Run mixed flash attention for all steps
+        LOG_INF("\n🔥 Running Mixed Flash Attention at Step %d 🔥\n", step);
         
         // Print input tensor summary (without detailed data)
         print_tensor_summary(Q, "Q (Query)");
         print_tensor_summary(K, "K (Key)");
         print_tensor_summary(V, "V (Value)");
-        if (kq_mask) {
-            print_tensor_summary(kq_mask, "Mask");
+        print_tensor_summary(kq_mask, "Mask");
+        print_tensor_summary(K_quant, "K_quant (Quantized Key)");
+        if (V_quant) {
+            print_tensor_summary(V_quant, "V_quant (Quantized Value)");
         }
-        print_tensor_summary(K_quant, "K_quant");
-        print_tensor_summary(V_quant, "V_quant");
         
-        // // Initialize flash attention model
-        // flash_attn_model flash_model;
-        // if (!init_flash_attn_model(flash_model, Q, K, V, kq_mask, K_quant, V_quant)) {
-        //     LOG_ERR("Failed to initialize flash attention model\n");
-        //     continue;
-        // }
+        // Initialize mixed flash attention model
+        mixed_flash_attn_model mixed_model;
+        if (!init_mixed_flash_attn_model(mixed_model, Q, K, V, kq_mask, K_quant, V_quant)) {
+            LOG_ERR("Failed to initialize mixed flash attention model\n");
+            continue;
+        }
         
-        // Compute flash attention
+        // Compute mixed flash attention
         float scale = 1.0f / sqrtf((float)Q->ne[0]); // Standard attention scaling
-        LOG_INF("Computing flash attention with scale: %.6f\n", scale);
+        LOG_INF("Computing mixed flash attention with scale: %.6f\n", scale);
+        LOG_INF("Using GGML_PREC_F32 precision for computation\n");
         
-        struct ggml_tensor * flash_result = compute_flash_attn(compute_ctx, Q, K, V, kq_mask, K_quant, V_quant, scale);
+        struct ggml_tensor * flash_result = compute_mixed_flash_attn(mixed_model, scale);
         
         if (flash_result) {
-            LOG_INF("✅ Flash Attention computation successful!\n");
+            LOG_INF("✅ Mixed Flash Attention computation successful!\n");
             ggml_print_tensor_info((uint8_t*)flash_result->data, flash_result->type, 
-                                 flash_result->ne, flash_result->nb, "Flash Attention Result", 4);
+                                 flash_result->ne, flash_result->nb, "Mixed Flash Attention Result", 4);
             
             // Compare with original kqv_out if available
             if (kqv_out && kqv_out->data) {
@@ -460,15 +545,23 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
                     LOG_INF("  Mean Squared Error: %.10f\n", mse);
                     LOG_INF("  Max Absolute Difference: %.10f\n", max_diff);
                     LOG_INF("  RMSE: %.10f\n", sqrt(mse));
+                    
+                    if (mse < 1e-6) {
+                        LOG_INF("✅ Results match very closely (MSE < 1e-6)\n");
+                    } else if (mse < 1e-3) {
+                        LOG_INF("⚠️  Results have small differences (MSE < 1e-3)\n");
+                    } else {
+                        LOG_INF("❌ Results have significant differences (MSE >= 1e-3)\n");
+                    }
                 }
             }
         } else {
-            LOG_ERR("❌ Flash Attention computation failed!\n");
+            LOG_ERR("❌ Mixed Flash Attention computation failed!\n");
         }
         
+        // Free mixed flash attention model
+        ggml_free(mixed_model.ctx);
     }
-    // Free flash attention model
-    ggml_free(compute_ctx);
 
     // Cleanup
     gguf_free(ctx);

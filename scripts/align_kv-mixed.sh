@@ -18,7 +18,7 @@ THREADS=1
 echo "=== KQV Tensor Reader Test ==="
 
 # Step 1: Generate tensor data using kqv-trace-monitor
-CMD="./build-arm64/bin/kqv-trace-monitor \
+CMD="./build-x86_64/bin/kqv-trace-monitor \
     -m \"$MODEL\" \
     -p \"$PROMPT\" \
     --layer $TRACE_LAYER \
@@ -35,7 +35,7 @@ echo "Executing: $CMD"
 eval $CMD > /dev/null 2>&1 && echo "✓ KQV tensor GGUF generated"
 
 # Step 2: Read tensor data using kqv-tensor-reader
-CMD2="./build-arm64/bin/kqv-tensor-reader -i $OUTPUT_FILE"
+CMD2="./build-x86_64/bin/kqv-tensor-reader -i $OUTPUT_FILE"
 echo "Executing: $CMD2"
 eval $CMD2
 
