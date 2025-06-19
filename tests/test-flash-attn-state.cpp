@@ -88,11 +88,16 @@ static float tensor_max_diff(ggml_tensor* a, ggml_tensor* b) {
 
 static void reset_state_tensor(ggml_tensor* state) {
     float* state_data = (float*)state->data;
-    size_t n_pairs = ggml_nelements(state) / 2;
-    
-    for (size_t i = 0; i < n_pairs; i++) {
-        state_data[i * 2 + 0] = -INFINITY;  // M (max KQ value)
-        state_data[i * 2 + 1] = 0.0f;       // S (sum)
+    const int row = state->ne[0]; // 2 + head_dim
+    const int head_dim = row - 2;
+    const int n_pairs = state->ne[1];
+
+    for (int i = 0; i < n_pairs; i++) {
+        state_data[i * row + 0] = -INFINITY;  // M
+        state_data[i * row + 1] = 0.0f;       // S
+        for (int d = 0; d < head_dim; ++d) {
+            state_data[i * row + 2 + d] = 0.0f; // VKQ
+        }
     }
 }
 
@@ -145,8 +150,8 @@ int main() {
     const int padded_seq_len = GGML_PAD(seq_len, GGML_KQ_MASK_PAD);
     ggml_tensor * mask = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_kv_len, padded_seq_len);
 
-    // Create state tensor: [2, n_heads * seq_len] for [M, S] pairs
-    ggml_tensor * state = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2, n_heads * seq_len);
+    // Create state tensor: [2 + head_dim, n_heads * seq_len] for [M, S, VKQ]
+    ggml_tensor * state = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, 2 + head_dim, n_heads * seq_len);
 
     print_tensor_info("Q", q);
     print_tensor_info("K", k);
@@ -230,8 +235,9 @@ int main() {
         // Print state before this segment
         printf("    State before segment %d: ", seg + 1);
         float* state_data = (float*)state->data;
+        int row = state->ne[0];
         for (int i = 0; i < std::min(4, n_heads * seq_len); i++) {
-            printf("[M=%.3f,S=%.3f] ", state_data[i * 2 + 0], state_data[i * 2 + 1]);
+            printf("[M=%.3f,S=%.3f] ", state_data[i * row + 0], state_data[i * row + 1]);
         }
         printf("...\n");
 
@@ -321,7 +327,7 @@ int main() {
         // Print state after this segment
         printf("    State after segment %d: ", seg + 1);
         for (int i = 0; i < std::min(4, n_heads * seq_len); i++) {
-            printf("[M=%.3f,S=%.3f] ", state_data[i * 2 + 0], state_data[i * 2 + 1]);
+            printf("[M=%.3f,S=%.3f] ", state_data[i * row + 0], state_data[i * row + 1]);
         }
         printf("...\n");
 
@@ -367,12 +373,13 @@ int main() {
     print_f32_sample("Final state", state, 16);
 
     float* state_data = (float*)state->data;
+    int row = state->ne[0];
     float min_m = INFINITY, max_m = -INFINITY;
     float min_s = INFINITY, max_s = -INFINITY;
     
     for (int i = 0; i < n_heads * seq_len; i++) {
-        float m_val = state_data[i * 2 + 0];
-        float s_val = state_data[i * 2 + 1];
+        float m_val = state_data[i * row + 0];
+        float s_val = state_data[i * row + 1];
         
         if (m_val != -INFINITY) {
             min_m = std::min(min_m, m_val);

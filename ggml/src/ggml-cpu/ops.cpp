@@ -7174,18 +7174,18 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     GGML_TENSOR_LOCALS(int64_t, ne,  dst, ne)
     GGML_TENSOR_LOCALS(size_t,  nb,  dst, nb)
 
-    // Validate state tensor format: [2, n_heads * q_len]
-    GGML_ASSERT(state != NULL);
-    GGML_ASSERT(state->ne[0] == 2);  // [M, S] pairs
-    GGML_ASSERT(state->ne[1] == neq2 * neq1);  // n_heads * q_len
-    GGML_ASSERT(state->type == GGML_TYPE_F32);
-
     const int ith = params->ith;
     const int nth = params->nth;
 
     const int64_t DK = nek0;     //> head_dim
     const int64_t DV = nev0;     //> head_dim
     const int64_t N  = neq1;     //> q_len
+
+    // Validate state tensor format: [2 + DV, n_heads * q_len]
+    GGML_ASSERT(state != NULL);
+    GGML_ASSERT(state->ne[0] == DV + 2);  // [M, S, VKQ...]
+    GGML_ASSERT(state->ne[1] == neq2 * neq1);  // n_heads * q_len
+    GGML_ASSERT(state->type == GGML_TYPE_F32);
 
     GGML_ASSERT(ne0 == DV);      //> dst -> ne[0] == head_dim
     GGML_ASSERT(ne2 == N);       //> dst -> ne[2] == q_len
@@ -7267,17 +7267,12 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
         // Calculate state tensor offset for this head/position
         const int64_t state_idx = iq2 * neq1 + iq1;  // head * q_len + position
-        float * state_data = (float *)state->data;
-        
-        // Read initial S and M values from state tensor 
-        // State format: [M, S] for each head/position
-        float S = state_data[state_idx * 2 + 1];     // sum (index 1)
-        float M = state_data[state_idx * 2 + 0];     // maximum KQ value (index 0)
+        float * state_data = (float *) state->data;
+        float * state_row  = state_data + state_idx * (DV + 2);
 
-        // If this is the first call (indicated by M == -INFINITY), initialize properly
-        if (M == -INFINITY) {
-            S = 0.0f;
-        }
+        // Read initial values
+        float M = state_row[0];
+        float S = state_row[1];
 
         float       * VKQ32 = (float       *) params->wdata + ith*(1*DK + 2*DV + CACHE_LINE_SIZE_F32); // FP32 VKQ accumulator
         float       * V32   =                 (VKQ32 + 1*DV); // (temporary) FP32 V buffer
@@ -7285,9 +7280,20 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
 
         if (v->type == GGML_TYPE_F16) {
-            memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
+            for (int64_t d = 0; d < DV; ++d) {
+                float val = (M == -INFINITY) ? 0.0f : state_row[2 + d];
+                VKQ16[d] = ggml_fp32_to_fp16(val);
+                VKQ32[d] = val; // keep FP32 version for later
+            }
         } else {
-            memset(VKQ32, 0, DV*sizeof(float));
+            for (int64_t d = 0; d < DV; ++d) {
+                VKQ32[d] = (M == -INFINITY) ? 0.0f : state_row[2 + d];
+            }
+        }
+
+        if (M == -INFINITY) {
+            S = 0.0f;
+            M = -INFINITY;
         }
 
         const ggml_fp16_t * mp = mask ? (ggml_fp16_t *)((char *) mask->data + iq1*mask->nb[1]) : NULL;
@@ -7375,14 +7381,17 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
             S = S*ms + vs; // scale and increment sum with partial sum
         }
 
-        // Write updated S and M values back to state tensor
-        state_data[state_idx * 2 + 0] = M; // maximum KQ value (index 0)
-        state_data[state_idx * 2 + 1] = S; // sum (index 1)
-
         if (v->type == GGML_TYPE_F16) {
             for (int64_t d = 0; d < DV; ++d) {
                 VKQ32[d] = GGML_FP16_TO_FP32(VKQ16[d]);
             }
+        }
+
+        // Write updated S, M and VKQ values back to state tensor (before normalization)
+        state_row[0] = M;
+        state_row[1] = S;
+        for (int64_t d = 0; d < DV; ++d) {
+            state_row[2 + d] = VKQ32[d];
         }
 
         // V /= S

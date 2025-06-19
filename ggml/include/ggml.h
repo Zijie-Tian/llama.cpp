@@ -2222,8 +2222,8 @@ extern "C" {
     GGML_API void                          ggml_threadpool_params_init   (struct ggml_threadpool_params * p, int n_threads);
     GGML_API bool                          ggml_threadpool_params_match  (const struct ggml_threadpool_params * p0, const struct ggml_threadpool_params * p1);
 
-    // Enhanced flash attention with state tensor for S/M values
-    // s_m_state: [2, n_heads * q_len] tensor containing [M, S] pairs for each head/position
+    // Enhanced flash attention with state tensor for S/M values and accumulated numerator
+    // s_m_state: [2 + head_dim, n_heads * q_len] tensor containing [M, S, VKQ...] for each head/position
     GGML_API struct ggml_tensor * ggml_flash_attn_ext_with_state(
             struct ggml_context * ctx,
             struct ggml_tensor  * q,

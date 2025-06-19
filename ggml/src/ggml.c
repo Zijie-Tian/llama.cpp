@@ -4616,9 +4616,9 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
         GGML_ASSERT(mask);
     }
 
-    // Validate state tensor format: [2, n_heads * q_len]
+    // Validate state tensor format: [2 + head_dim, n_heads * q_len]
     GGML_ASSERT(s_m_state != NULL);
-    GGML_ASSERT(s_m_state->ne[0] == 2);  // [M, S] pairs
+    GGML_ASSERT(s_m_state->ne[0] == v->ne[0] + 2);  // [M, S, VKQ...] per head/position
     GGML_ASSERT(s_m_state->ne[1] == q->ne[2] * q->ne[1]);  // n_heads * q_len
     GGML_ASSERT(s_m_state->type == GGML_TYPE_F32);
 
