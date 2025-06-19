@@ -7284,14 +7284,10 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator
         ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
 
-        // Only reset accumulator on first call (when M == -INFINITY)
-        // Otherwise, preserve previous accumulated values for continuation
-        if (M == -INFINITY) {
-            if (v->type == GGML_TYPE_F16) {
-                memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
-            } else {
-                memset(VKQ32, 0, DV*sizeof(float));
-            }
+        if (v->type == GGML_TYPE_F16) {
+            memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
+        } else {
+            memset(VKQ32, 0, DV*sizeof(float));
         }
 
         const ggml_fp16_t * mp = mask ? (ggml_fp16_t *)((char *) mask->data + iq1*mask->nb[1]) : NULL;
