@@ -656,7 +656,6 @@ static void ggml_compute_forward_dup_bf16(
         GGML_ABORT("fatal error"); // TODO: implement
     }
 }
-
 static void ggml_compute_forward_dup_f32(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -1426,7 +1425,6 @@ static void ggml_compute_forward_add1_f16_f32(
         }
     }
 }
-
 static void ggml_compute_forward_add1_f16_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -2191,7 +2189,6 @@ void ggml_compute_forward_count_equal(
             }
     }
 }
-
 // ggml_compute_forward_repeat
 
 static void ggml_compute_forward_repeat_f32(
@@ -2980,7 +2977,6 @@ static void ggml_compute_forward_silu_f16(
 #endif
     }
 }
-
 static void ggml_compute_forward_silu(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -3441,7 +3437,7 @@ static void ggml_compute_forward_rms_norm_back_f32(
                     // grad[#02] = repeat(scale(grad[#07],#04), #02)
                     // grad[#02] = repeat(scale(mul(grad[#08], div(0.5, #08)),#04), #02)
                     // grad[#02] = repeat(scale(mul(neg(mul(grad[#09], div(#09,#08))), div(0.5, #08)),#04), #02)
-                    // grad[#02] = repeat(scale(mul(neg(mul(sum(mul(grad[#10],#00)), div(#09,#08))), div(0.5, #08)),#04), #02)
+                    // grad[#02] = repeat(scale(mul(neg(mul(sum(mul(grad[#10],#00)) * div(#09,#08))), div(0.5, #08)),#04), #02)
                     // grad[#02] = repeat(-(sum(mul(grad[#10],#00)) * div(#09,#08) * div(0.5, #08) * (1/N)), #02)
                     // grad[#02] = repeat(-(sum(mul(grad[#10],#00)) * div(div(#01,#08),#08) * div(0.5, #08) * (1/N)), #02)
                     // grad[#02] = repeat(-(sum(mul(grad[#10],#00)) * div(1,#08*#08) * div(0.5, #08) * (1/N)), #02)
@@ -4540,7 +4536,6 @@ static void ggml_compute_forward_get_rows_back_f32(
                 (float *) ((char *) src0->data + i*src0->nb[1]));
     }
 }
-
 void ggml_compute_forward_get_rows_back(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -4907,9 +4902,7 @@ static void ggml_compute_forward_soft_max_ext_back_f32(
         // dxk = sum_i(-yk*yi * dyi) + yk*yk*dyk + yk*dyk - yk*yk*dyk
         // dxk = sum_i(-yk*yi * dyi) + yk*dyk
         // dxk = -yk * sum_i(yi * dyi) + yk*dyk
-        // dxk = -yk * dot(y, dy) + yk*dyk
         // dxk = yk * (- dot(y, dy) + dyk)
-        // dxk = yk * (dyk - dot(y, dy))
         //
         // post-order:
         // dot_y_dy := dot(y, dy)
@@ -5188,7 +5181,6 @@ static void ggml_mrope_cache_init(
         theta_e *= theta_scale;
     }
 }
-
 static void ggml_compute_forward_rope_f32(
         const ggml_compute_params * params,
         ggml_tensor * dst,
@@ -5976,7 +5968,6 @@ void ggml_compute_forward_im2col(
             }
     }
 }
-
 // ggml_compute_forward_im2col_back_f32
 
 void ggml_compute_forward_im2col_back_f32(
@@ -6771,7 +6762,6 @@ void ggml_compute_forward_pad(
             }
     }
 }
-
 // ggml_compute_forward_pad_reflect_1d
 
 void ggml_compute_forward_pad_reflect_1d(
@@ -7548,7 +7538,6 @@ void ggml_compute_forward_flash_attn_ext(
             }
     }
 }
-
 // ggml_compute_forward_flash_attn_back
 
 static void ggml_compute_forward_flash_attn_back_f32(
@@ -8293,7 +8282,6 @@ void ggml_compute_forward_get_rel_pos(
             }
     }
 }
-
 // ggml_compute_forward_add_rel_pos
 
 static void ggml_compute_forward_add_rel_pos_f32(
@@ -9092,7 +9080,6 @@ static void ggml_compute_forward_cross_entropy_loss_f32(
         dp[0] *= -1.0f / (float) nr;
     }
 }
-
 void ggml_compute_forward_cross_entropy_loss(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
