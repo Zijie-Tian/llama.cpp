@@ -7271,8 +7271,11 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         
         // Read initial S and M values from state tensor 
         // State format: [M, S] for each head/position
-        float S = state_data[state_idx * 2 + 1];     // sum (index 1)
-        float M = state_data[state_idx * 2 + 0];     // maximum KQ value (index 0)
+        float initial_S = state_data[state_idx * 2 + 1];     // sum (index 1)
+        float initial_M = state_data[state_idx * 2 + 0];     // maximum KQ value (index 0)
+        
+        float S = initial_S;
+        float M = initial_M;
 
         // If this is the first call (indicated by M == -INFINITY), initialize properly
         if (M == -INFINITY) {
@@ -7379,30 +7382,73 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
             S = S*ms + vs; // scale and increment sum with partial sum
         }
 
-        // Write updated S and M values back to state tensor
-        state_data[state_idx * 2 + 0] = M; // maximum KQ value (index 0)
-        state_data[state_idx * 2 + 1] = S; // sum (index 1)
-
+        // Convert FP16 to FP32 if needed FIRST
         if (v->type == GGML_TYPE_F16) {
             for (int64_t d = 0; d < DV; ++d) {
                 VKQ32[d] = GGML_FP16_TO_FP32(VKQ16[d]);
             }
         }
 
-        // V /= S
-        const float S_inv = 1.0f / S;
-        ggml_vec_scale_f32(DV, VKQ32, S_inv);
-
         // dst indices
         const int i1 = iq1;
         const int i2 = iq2;
         const int i3 = iq3;
+        
+        // Calculate dst offset
+        const size_t dst_offset = (i3*ne2*ne1 + i2 + i1*ne1)*nb1;
+        float * dst_ptr = (float *)((char *)dst->data + dst_offset);
+        
+        // Check if this is a continuation call (not the first segment)
+        // Use the initial state values read at the beginning
+        const bool is_continuation = (initial_M != -INFINITY && initial_S > 0.0f);
+        
+        if (is_continuation) {
+            // This is a continuation: merge with previous accumulated result
+            
+            // Current VKQ32 contains result of current segment processing (unnormalized)
+            // Previous result in dst was normalized, need to merge properly
+            
+            const float prev_M = initial_M; // M before current segment
+            const float prev_S = initial_S; // S before current segment  
+            const float curr_M = M;         // M after current segment
+            const float curr_S = S;         // S after current segment
+            
+            if (curr_M > prev_M) {
+                // Current segment had higher max, need to scale previous result
+                const float scale_factor = expf(prev_M - curr_M);
+                for (int64_t d = 0; d < DV; ++d) {
+                    // Unnormalize previous result and apply scaling
+                    const float prev_unnormalized = dst_ptr[d] * prev_S * scale_factor;
+                    // Add current segment's unnormalized result
+                    VKQ32[d] = VKQ32[d] + prev_unnormalized;
+                }
+            } else if (prev_M > curr_M) {
+                // Previous M was higher, current VKQ32 needs scaling
+                const float scale_factor = expf(curr_M - prev_M);
+                for (int64_t d = 0; d < DV; ++d) {
+                    // Scale current result and add unnormalized previous result  
+                    VKQ32[d] = VKQ32[d] * scale_factor + dst_ptr[d] * prev_S;
+                }
+                // Update M to use previous M since it was higher
+                M = prev_M;
+            } else {
+                // M values equal, just add unnormalized results
+                for (int64_t d = 0; d < DV; ++d) {
+                    VKQ32[d] = VKQ32[d] + dst_ptr[d] * prev_S;
+                }
+            }
+        }
 
-        // original
-        // memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
+        // Write updated S and M values back to state tensor
+        state_data[state_idx * 2 + 0] = M; // maximum KQ value (index 0)
+        state_data[state_idx * 2 + 1] = S; // sum (index 1)
 
-        // permute(0, 2, 1, 3)
-        memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+        // Final normalization with total S
+        const float S_inv = 1.0f / S;
+        ggml_vec_scale_f32(DV, VKQ32, S_inv);
+
+        // Write final normalized result to dst
+        memcpy(dst_ptr, VKQ32, nb1);
     }
 }
 void ggml_compute_forward_flash_attn_ext_mixed(
