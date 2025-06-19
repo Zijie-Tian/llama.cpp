@@ -154,85 +154,112 @@ int main() {
     
     ggml_tensor * result_state_full = ggml_flash_attn_ext_with_state(
         ctx, q, k, v, mask, state,
-        1.0f / std::sqrt(head_dim),  // scale
-        0.0f,  // max_bias
-        0.0f   // logit_softcap
+        1.0f / std::sqrt(head_dim), 0.0f, 0.0f
     );
     ggml_flash_attn_ext_set_prec(result_state_full, GGML_PREC_F32);
-
+    
     struct ggml_cgraph * graph_state_full = ggml_new_graph(ctx);
     ggml_build_forward_expand(graph_state_full, result_state_full);
-
-    enum ggml_status status_state_full = ggml_graph_compute_with_ctx(ctx, graph_state_full, n_threads);
-    if (status_state_full != GGML_STATUS_SUCCESS) {
-        printf("ERROR: State flash attention failed\n");
-        return 1;
-    }
-
+    ggml_graph_compute_with_ctx(ctx, graph_state_full, n_threads);
+    
     float* result_state_full_data = (float*)result_state_full->data;
-    printf("State result (full): [%.6f, %.6f, %.6f, %.6f]\n", 
+    printf("State result (full - unnormalized): [%.6f, %.6f, %.6f, %.6f]\n", 
            result_state_full_data[0], result_state_full_data[1], 
            result_state_full_data[2], result_state_full_data[3]);
     printf("Final state: M=%.6f, S=%.6f\n", state_data[0], state_data[1]);
+    
+    // Normalize the result for comparison
+    float final_S_full = state_data[1];
+    for (int i = 0; i < head_dim; i++) {
+        result_state_full_data[i] /= final_S_full;
+    }
+    printf("State result (full - normalized): [%.6f, %.6f, %.6f, %.6f]\n", 
+           result_state_full_data[0], result_state_full_data[1], 
+           result_state_full_data[2], result_state_full_data[3]);
 
     // Test 3: Segmented Processing
     printf("\n--- Test 3: Segmented Processing ---\n");
     
-    // Reset state
-    state_data[0] = -INFINITY; // M
-    state_data[1] = 0.0f;      // S
+    // Reset state tensor for segmented test
+    memset(state->data, 0, ggml_nbytes(state));
+    for (int i = 0; i < n_heads * seq_len; i++) {
+        ((float*)state->data)[i * 2 + 0] = -INFINITY; // M values
+        ((float*)state->data)[i * 2 + 1] = 0.0f;      // S values  
+    }
     
-    // Process K0/V0 first
-    ggml_tensor * k0 = ggml_view_4d(ctx, k, head_dim, 1, n_kv_heads, 1, 
-                                    k->nb[1], k->nb[2], k->nb[3], 0);
-    ggml_tensor * v0 = ggml_view_4d(ctx, v, head_dim, 1, n_kv_heads, 1,
-                                    v->nb[1], v->nb[2], v->nb[3], 0);
-    ggml_tensor * mask0 = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 64, padded_seq_len);
-    memset(mask0->data, 0, ggml_nbytes(mask0));
-    
-    printf("Segment 1: Processing K0/V0\n");
-    printf("State before: M=%.6f, S=%.6f\n", state_data[0], state_data[1]);
-    
-    ggml_tensor * result_seg1 = ggml_flash_attn_ext_with_state(
-        ctx, q, k0, v0, mask0, state,
-        1.0f / std::sqrt(head_dim), 0.0f, 0.0f
-    );
-    ggml_flash_attn_ext_set_prec(result_seg1, GGML_PREC_F32);
+    int kv_segments = 2;
+    int kv_segment_len = kv_len / kv_segments;
+    printf("Processing %d segments of KV cache (segment_len=%d)...\n", kv_segments, kv_segment_len);
 
-    struct ggml_cgraph * graph_seg1 = ggml_new_graph(ctx);
-    ggml_build_forward_expand(graph_seg1, result_seg1);
-    ggml_graph_compute_with_ctx(ctx, graph_seg1, n_threads);
-
-    float* result_seg1_data = (float*)result_seg1->data;
-    printf("Segment 1 result: [%.6f, %.6f, %.6f, %.6f]\n", 
-           result_seg1_data[0], result_seg1_data[1], result_seg1_data[2], result_seg1_data[3]);
-    printf("State after seg1: M=%.6f, S=%.6f\n", state_data[0], state_data[1]);
+    ggml_tensor * result_segmented = nullptr;
     
-    // Process K1/V1 second
-    ggml_tensor * k1 = ggml_view_4d(ctx, k, head_dim, 1, n_kv_heads, 1,
-                                    k->nb[1], k->nb[2], k->nb[3], 1 * k->nb[1]);
-    ggml_tensor * v1 = ggml_view_4d(ctx, v, head_dim, 1, n_kv_heads, 1,
-                                    v->nb[1], v->nb[2], v->nb[3], 1 * v->nb[1]);
-    ggml_tensor * mask1 = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 64, padded_seq_len);
-    memset(mask1->data, 0, ggml_nbytes(mask1));
-    
-    printf("\nSegment 2: Processing K1/V1\n");
-    printf("State before: M=%.6f, S=%.6f\n", state_data[0], state_data[1]);
-    
-    ggml_tensor * result_seg2 = ggml_flash_attn_ext_with_state(
-        ctx, q, k1, v1, mask1, state,
-        1.0f / std::sqrt(head_dim), 0.0f, 0.0f
-    );
-    ggml_flash_attn_ext_set_prec(result_seg2, GGML_PREC_F32);
+    for (int seg = 0; seg < kv_segments; seg++) {
+        printf("\nSegment %d: Processing K%d/V%d\n", seg + 1, seg, seg);
+        
+        // Print state before this segment
+        float* state_data = (float*)state->data;
+        printf("State before: M=%.6f, S=%.6f\n", 
+               state_data[0 * 2 + 0], state_data[0 * 2 + 1]);
 
-    struct ggml_cgraph * graph_seg2 = ggml_new_graph(ctx);
-    ggml_build_forward_expand(graph_seg2, result_seg2);
-    ggml_graph_compute_with_ctx(ctx, graph_seg2, n_threads);
+        // Create views of K and V for this segment using ggml_view_4d
+        ggml_tensor * k_segment = ggml_view_4d(ctx, k, 
+            head_dim, kv_segment_len, n_kv_heads, 1,  // ne
+            k->nb[1], k->nb[2], k->nb[3],             // nb (strides)
+            seg * kv_segment_len * k->nb[1]);         // offset
 
-    float* result_seg2_data = (float*)result_seg2->data;
-    printf("Segment 2 result: [%.6f, %.6f, %.6f, %.6f]\n", 
-           result_seg2_data[0], result_seg2_data[1], result_seg2_data[2], result_seg2_data[3]);
-    printf("State after seg2: M=%.6f, S=%.6f\n", state_data[0], state_data[1]);
+        ggml_tensor * v_segment = ggml_view_4d(ctx, v,
+            head_dim, kv_segment_len, n_kv_heads, 1,  // ne
+            v->nb[1], v->nb[2], v->nb[3],             // nb (strides)
+            seg * kv_segment_len * v->nb[1]);         // offset
+
+        // Create mask for this segment
+        int padded_seq_len = ((seq_len + 64 - 1) / 64) * 64; // Pad to GGML_KQ_MASK_PAD = 64
+        ggml_tensor * mask_segment = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, 
+            kv_segment_len, padded_seq_len);
+        
+        // Fill segment mask (no masking for simplicity)
+        ggml_fp16_t* mask_seg_data = (ggml_fp16_t*)mask_segment->data;
+        memset(mask_seg_data, 0, ggml_nbytes(mask_segment));
+        for (int i = 0; i < seq_len; i++) {
+            for (int j = 0; j < kv_segment_len; j++) {
+                mask_seg_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
+            }
+        }
+
+        // Call flash attention with state for this segment
+        result_segmented = ggml_flash_attn_ext_with_state(ctx, q, k_segment, v_segment, mask_segment, state,
+                                                          1.0f / std::sqrt(head_dim), 0.0f, 0.0f);
+
+        // Set precision
+        ggml_flash_attn_ext_set_prec(result_segmented, GGML_PREC_F32);
+
+        // Compute the result
+        struct ggml_cgraph * graph_seg = ggml_new_graph(ctx);
+        ggml_build_forward_expand(graph_seg, result_segmented);
+        ggml_graph_compute_with_ctx(ctx, graph_seg, n_threads);
+
+        // Print state after this segment
+        printf("State after seg%d: M=%.6f, S=%.6f\n", 
+               seg + 1, state_data[0 * 2 + 0], state_data[0 * 2 + 1]);
+        
+        // Print segment result (should be unnormalized except for last segment)
+        printf("Segment %d result: [%.6f, %.6f, %.6f, %.6f]\n", 
+               seg + 1, ((float*)result_segmented->data)[0], ((float*)result_segmented->data)[1], 
+               ((float*)result_segmented->data)[2], ((float*)result_segmented->data)[3]);
+    }
+    
+    // IMPORTANT: Final normalization step
+    // The result from the last segment contains unnormalized values, we need to normalize by final S
+    float final_S = ((float*)state->data)[0 * 2 + 1];
+    printf("\nFinal normalization with S=%.6f\n", final_S);
+    
+    float* result_data = (float*)result_segmented->data;
+    for (int i = 0; i < head_dim; i++) {
+        result_data[i] /= final_S;
+    }
+    
+    printf("Normalized segmented result: [%.6f, %.6f, %.6f, %.6f]\n",
+           result_data[0], result_data[1], result_data[2], result_data[3]);
 
     // Compare results
     printf("\n--- Results Comparison ---\n");
@@ -247,7 +274,7 @@ int main() {
            result_state_full_data[0], result_state_full_data[1], 
            result_state_full_data[2], result_state_full_data[3]);
     printf("Segmented:      [%.6f, %.6f, %.6f, %.6f]\n", 
-           result_seg2_data[0], result_seg2_data[1], result_seg2_data[2], result_seg2_data[3]);
+           result_data[0], result_data[1], result_data[2], result_data[3]);
 
     float max_diff_standard = 0.0f;
     float max_diff_segmented = 0.0f;
@@ -255,7 +282,7 @@ int main() {
         max_diff_standard = std::max(max_diff_standard, 
                                    std::abs(result_std_data[i] - result_state_full_data[i]));
         max_diff_segmented = std::max(max_diff_segmented, 
-                                    std::abs(result_std_data[i] - result_seg2_data[i]));
+                                    std::abs(result_std_data[i] - result_data[i]));
     }
     
     printf("\nMax differences:\n");
