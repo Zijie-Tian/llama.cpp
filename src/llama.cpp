@@ -3895,6 +3895,22 @@ static bool llama_kv_cache_find_slot(
 
     cache.used += n_tokens;
 
+    // //> Bench the memory fragment.
+    // {
+    //     size_t free_count = 0;
+    //     printf("\033[H\033[2J");
+    //     for (uint32_t i = 0; i < cache.size; i++) {
+    //         if ((i % 80 == 0) && i != 0) putchar('\n');
+    //         if (cache.cells[i].pos == -1) {
+    //             free_count++;
+    //             putchar('.');
+    //         } else {
+    //             putchar('#');
+    //         }
+    //     }
+    //     printf("\n{free:%zu}\n", free_count);
+    // }
+
     return true;
 }
 

@@ -2621,7 +2621,7 @@ static enum ggml_status ggml_backend_cuda_graph_compute(ggml_backend_t backend, 
 
     if (use_cuda_graph) {
         if (cuda_ctx->cuda_graph->instance == nullptr) {
-            required = true;
+            cuda_graph_update_required = true;
         }
 
         // Check if the graph size has changed
