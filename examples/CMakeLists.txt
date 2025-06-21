@@ -19,6 +19,7 @@ else()
     add_subdirectory(eval-callback)
     add_subdirectory(kv-cache-monitor)
     add_subdirectory(mixed-kv-cache-validator)
+    add_subdirectory(single-layer-mixed-cache)
 
     add_subdirectory(gguf-hash)
     add_subdirectory(gguf)
