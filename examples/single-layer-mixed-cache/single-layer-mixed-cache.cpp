@@ -13,7 +13,7 @@
 // Utility: create a dummy model with one transformer layer and random parameters
 static std::shared_ptr<llama_model> make_single_layer_model() {
     llama_model_params params = {};
-    std::shared_ptr<llama_model> model(new llama_model(params));
+    std::shared_ptr<llama_model> model = std::make_shared<llama_model>(params);
 
     model->hparams = llama_hparams();
     model->arch = LLM_ARCH_LLAMA;
