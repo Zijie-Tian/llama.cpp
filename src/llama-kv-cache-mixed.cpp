@@ -1003,7 +1003,7 @@ bool llama_kv_cache_mixed::find_slot(const llama_ubatch & ubatch) {
     n = std::min(size, std::max(n_pad, GGML_PAD(cell_max(), n_pad)));                       //> Virtual head of kv cache.
     n_quantized = std::min(size, std::max(n_pad, GGML_PAD(cell_max_quantized(), n_pad)));   //> Virtual head of quantized kv cache.
     
-    LLAMA_LOG_INFO("\n[mixed-kv] successfully allocated slot: head=%u, used=%u, n=%u, n_quantized=%u, cell_max=%u, cell_max_quantized=%u\n", head, used, n, n_quantized, cell_max(), cell_max_quantized());
+    // LLAMA_LOG_INFO("\n[mixed-kv] successfully allocated slot: head=%u, used=%u, n=%u, n_quantized=%u, cell_max=%u, cell_max_quantized=%u\n", head, used, n, n_quantized, cell_max(), cell_max_quantized());
 
     return true;
 }
@@ -1507,6 +1507,11 @@ ggml_tensor * llama_kv_cache_mixed::k_quant(ggml_context * ctx, int32_t il) cons
 
     //> mixed_k_head = head - config.fp16_window_size;
     layer.mixed_k_head += ((head - layer.mixed_k_head) - config.fp16_window_size);  //> Update the mixed_k_head.
+
+    if (il == 0) {
+        // LLAMA_LOG_INFO("k_need_quantize: %p, k: %p, elements_to_quantize: %zu, src_offset_bytes: %zu\n", k_need_quantize, k, elements_to_quantize, src_offset_bytes);
+        // LLAMA_LOG_INFO("k_quantized: %p, layer.k_quant: %p, elements_to_quantize: %zu, dst_offset_bytes: %zu\n", k_quantized, layer.k_quant, elements_to_quantize, dst_offset_bytes);
+    }
 
     ggml_tensor * k_need_quantize = ggml_view_1d(ctx, k,
             elements_to_quantize,

@@ -14,10 +14,21 @@ target_link_libraries(llama-kv-quant-monitor PRIVATE common llama ${CMAKE_THREAD
 target_compile_features(llama-kv-quant-monitor PRIVATE cxx_std_17)
 
 # KQV Tensor Reader (specialized for reading KQV tensors and their sources)
-add_executable(${TARGET_KQV_READER} kqv-tensor-reader.cpp)
-install(TARGETS ${TARGET_KQV_READER} RUNTIME DESTINATION bin)
-target_link_libraries(${TARGET_KQV_READER} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
-target_compile_features(${TARGET_KQV_READER} PRIVATE cxx_std_11)
+# Only build if PyTorch is available
+if(LLAMA_TORCH_AVAILABLE)
+    add_executable(${TARGET_KQV_READER} kqv-tensor-reader.cpp)
+    install(TARGETS ${TARGET_KQV_READER} RUNTIME DESTINATION bin)
+    target_link_libraries(${TARGET_KQV_READER} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
+    target_compile_features(${TARGET_KQV_READER} PRIVATE cxx_std_11)
+    target_compile_definitions(${TARGET_KQV_READER} PRIVATE LLAMA_TORCH_AVAILABLE)
+    
+    if(TARGET torch)
+        target_link_libraries(${TARGET_KQV_READER} PRIVATE torch)
+    else()
+        target_include_directories(${TARGET_KQV_READER} PRIVATE ${TORCH_INCLUDE_DIRS})
+        target_link_libraries(${TARGET_KQV_READER} PRIVATE ${TORCH_LIBRARIES})
+    endif()
+endif()
 
 # Tensor Difference Analyzer for comparing current tensors with saved reference tensors
 add_executable(llama-tensor-diff-analyzer tensor-diff-analyzer.cpp)
@@ -30,4 +41,3 @@ add_executable(llama-flash-attn-mixed-verify flash-attn-mixed-verify.cpp)
 install(TARGETS llama-flash-attn-mixed-verify RUNTIME)
 target_link_libraries(llama-flash-attn-mixed-verify PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(llama-flash-attn-mixed-verify PRIVATE cxx_std_17)
-

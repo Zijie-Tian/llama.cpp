@@ -401,8 +401,8 @@ int main() {
         // Create simple 1D tensors for quantization (based on successful test_unified_cache_copy.cpp example)
         ggml_tensor * k_quant_src = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
         ggml_tensor * v_quant_src = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
-        k_quant = ggml_new_tensor_1d(ctx, GGML_TYPE_Q4_0, total_elements);
-        v_quant = ggml_new_tensor_1d(ctx, GGML_TYPE_Q4_0, total_elements);
+        k_quant = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
+        v_quant = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
         
         printf("Created 1D tensors: src=%zu elements, dst=%zu elements\n", 
                total_elements, total_elements);

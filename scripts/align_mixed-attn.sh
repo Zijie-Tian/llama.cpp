@@ -46,6 +46,7 @@ CMD="$BUILD_DIR/bin/llama-kqv-trace-monitor \
     -ctv f16 \
     -fa \
     -t 12 \
+    --mixed-kv-cache \
     --seed 1024"
 echo "Executing: $CMD"
 eval $CMD > /dev/null 2>&1 && echo "Reference trace created"

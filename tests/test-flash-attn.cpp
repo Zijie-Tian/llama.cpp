@@ -167,7 +167,8 @@ int main(int argc, char ** argv) {
             /*mask   =*/ NULL,
             /*scale  =*/ scale,
             /*max_bias=*/ 0.0f,
-            /*v_trans=*/ false);
+            /*v_trans=*/ false
+    );
 
     struct ggml_cgraph * graph_ref = ggml_new_graph(ctx);
     ggml_build_forward_expand(graph_ref, ref_out);
