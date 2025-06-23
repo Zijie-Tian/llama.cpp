@@ -154,19 +154,19 @@ if (LLAMA_TORCH)
     
     # Get PyTorch paths dynamically
     execute_process(
-        COMMAND python -c "import torch; print(torch.utils.cmake_prefix_path, end='')"
+        COMMAND python3 -c "import torch; print(torch.utils.cmake_prefix_path, end='')"
         OUTPUT_VARIABLE TORCH_CMAKE_PREFIX_PATH
         RESULT_VARIABLE TORCH_PYTHON_EXIT_CODE
     )
 
     execute_process(
-        COMMAND python -c "import torch; import os; print(os.path.join(torch.__path__[0], 'include'), end='')"
+        COMMAND python3 -c "import torch; import os; print(os.path.join(torch.__path__[0], 'include'), end='')"
         OUTPUT_VARIABLE TORCH_INCLUDE_DIR
         RESULT_VARIABLE TORCH_INCLUDE_EXIT_CODE
     )
 
     execute_process(
-        COMMAND python -c "import torch; import os; print(os.path.join(torch.__path__[0], 'lib'), end='')"
+        COMMAND python3 -c "import torch; import os; print(os.path.join(torch.__path__[0], 'lib'), end='')"
         OUTPUT_VARIABLE TORCH_LIB_DIR
         RESULT_VARIABLE TORCH_LIB_EXIT_CODE
     )
@@ -197,7 +197,7 @@ if (LLAMA_TORCH)
             )
             # Check if CUDA is available
             execute_process(
-                COMMAND python -c "import torch; print('1' if torch.cuda.is_available() else '0', end='')"
+                COMMAND python3 -c "import torch; print('1' if torch.cuda.is_available() else '0', end='')"
                 OUTPUT_VARIABLE TORCH_CUDA_AVAILABLE
             )
             if(TORCH_CUDA_AVAILABLE STREQUAL "1")
