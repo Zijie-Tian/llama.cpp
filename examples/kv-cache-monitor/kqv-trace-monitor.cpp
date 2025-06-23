@@ -46,6 +46,9 @@ struct kqv_trace_data {
     std::string save_file; // GGUF file to save tensors to
     std::vector<tensor_save_info> saved_tensors; // tensors to save
     bool save_enabled = false; // whether saving is enabled
+    bool print_mask = false; // whether to print attention mask
+    bool prefill_only = false; // whether to print only prefill phase
+    bool is_prefill_phase = true; // track current phase
 };
 
 static int extract_layer_number(const char* tensor_name) {
@@ -308,21 +311,21 @@ static bool write_tensors_to_gguf(const kqv_trace_data* cb_data) {
 static void print_kqv_mask(const float* mask_data, int64_t n_kv, int64_t n_tokens) {
     LOG("\n=== KQV Attention Mask ===\n");
     LOG("KV tokens →\n");
-    
+
     // Print column numbers
     LOG("     ");
     for (int i = 0; i < n_kv; i++) {
         LOG("%d", i % 10);
     }
     LOG("\n");
-    
+
     // Print separator
     LOG("     ");
     for (int i = 0; i < n_kv; i++) {
         LOG("-");
     }
     LOG("\n");
-    
+
     // Print each row of the mask
     for (int j = 0; j < n_tokens; j++) {
         LOG("%3d |", j); // Row number
@@ -343,6 +346,11 @@ static void print_kqv_mask(const float* mask_data, int64_t n_kv, int64_t n_token
 static bool ggml_debug_kqv_trace(struct ggml_tensor * t, bool ask, void * user_data) {
     auto * cb_data = (kqv_trace_data *) user_data;
 
+    // Skip if we're in decode phase and only prefill is requested
+    if (cb_data->prefill_only && !cb_data->is_prefill_phase) {
+        return true;
+    }
+
     const struct ggml_tensor * src0 = t->src[0];
     const struct ggml_tensor * src1 = t->src[1];
 
@@ -350,7 +358,7 @@ static bool ggml_debug_kqv_trace(struct ggml_tensor * t, bool ask, void * user_d
     if (!should_monitor_tensor(t->name, cb_data->target_layer)) {
         return true;
     }
-    
+
     // Check if we've already traced a tensor with the same name
     std::string tensor_name = t->name ? t->name : "unnamed";
     if (cb_data->traced_tensors.find(tensor_name) != cb_data->traced_tensors.end()) {
@@ -375,20 +383,20 @@ static bool ggml_debug_kqv_trace(struct ggml_tensor * t, bool ask, void * user_d
          src0 ? src0->name : "NULL", src0 ? ggml_ne_string(src0).c_str() : "",
          src1 ? src1_str : "",
          ggml_ne_string(t).c_str());
-    
+
     // Lambda function to recursively print source tensors
     std::function<void(const ggml_tensor*, int)> print_src_recursive = [&](const ggml_tensor* tensor, int depth) {
         if (!tensor) return;
-        
+
         std::string indent(depth * 2, ' ');
-        LOG("[KQV-TRACE] %s└─ %s (op=%s, type=%s, shape=[%ld,%ld,%ld,%ld])\n", 
-            indent.c_str(), 
+        LOG("[KQV-TRACE] %s└─ %s (op=%s, type=%s, shape=[%ld,%ld,%ld,%ld])\n",
+            indent.c_str(),
             tensor->name ? tensor->name : "unnamed",
             ggml_op_desc(tensor),
             ggml_type_name(tensor->type),
             tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3]);
 
-        if (is_kq_mask_tensor(tensor->name) && depth == 3) {
+        if (cb_data->print_mask && is_kq_mask_tensor(tensor->name) && depth == 3) {
             // LOG("[KQV-TRACE] \t\t MASK: %s\n", tensor->name);
             print_kqv_mask((float*)tensor->data, tensor->ne[0], tensor->ne[1]);
         }
@@ -459,16 +467,20 @@ static bool run(llama_context * ctx, const common_params & params) {
     // Get the callback data pointer
     kqv_trace_data* cb_data = (kqv_trace_data*)params.cb_eval_user_data;
 
-    // Process initial prompt
+    // Process initial prompt (prefill phase)
+    cb_data->is_prefill_phase = true;
     if (llama_decode(ctx, llama_batch_get_one(tokens.data(), tokens.size()))) {
         LOG_ERR("%s : failed to eval initial prompt\n", __func__);
         return false;
     }
-    
+
     // Reset traced tensors after initial prompt processing
     if (cb_data) {
         cb_data->traced_tensors.clear();
     }
+
+    // Switch to decode phase
+    cb_data->is_prefill_phase = false;
 
     // Generate tokens one by one
     for (int i = 0; i < params.n_predict; ++i) {
@@ -493,7 +505,7 @@ static bool run(llama_context * ctx, const common_params & params) {
             LOG_ERR("%s : failed to eval token %d\n", __func__, i + 1);
             return false;
         }
-        
+
         // Reset traced tensors after each token decode
         if (cb_data) {
             cb_data->traced_tensors.clear();
@@ -514,6 +526,8 @@ int main(int argc, char ** argv) {
     // Add custom parameter parsing
     int target_layer = -1; // Default: monitor all layers
     std::string save_file; // GGUF file to save tensors to
+    bool print_mask = false; // Default: don't print mask
+    bool prefill_only = false; // Default: print both prefill and decode
 
     // Create new argument list, excluding our custom parameters
     std::vector<char*> new_argv;
@@ -526,36 +540,47 @@ int main(int argc, char ** argv) {
         } else if (strcmp(argv[i], "--save-gguf") == 0 && i + 1 < argc) {
             save_file = argv[i + 1];
             i++; // Skip next parameter (filename)
+        } else if (strcmp(argv[i], "--print-mask") == 0) {
+            print_mask = true;
+        } else if (strcmp(argv[i], "--prefill-only") == 0) {
+            prefill_only = true;
         } else {
-            new_argv.push_back(argv[i]);
+            new_argv.push_back(argv[i]);    //> keep the original parameters
         }
     }
 
     cb_data.target_layer = target_layer;
     cb_data.save_file = save_file;
     cb_data.save_enabled = !save_file.empty();
+    cb_data.print_mask = print_mask;
+    cb_data.prefill_only = prefill_only;
 
+    // Set parameters based on the command line arguments
+    params.model.path               = "/datasets/gguf/Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf";
+    params.prompt                   = "Hello, how are you?";
+    params.n_gpu_layers             = 0;
+    params.cache_type_k             = GGML_TYPE_F16;
+    params.cache_type_v             = GGML_TYPE_F16;
+    params.flash_attn               = true;
+    params.n_predict                = 4;
+    params.use_mixed_kv_cache       = false;
+
+    params.cpuparams.n_threads = 12;
+
+    // Parse remaining parameters using common_params_parse
     if (!common_params_parse(new_argv.size(), new_argv.data(), params, LLAMA_EXAMPLE_COMMON)) {
-        LOG_ERR("Usage: %s [options] [--layer <layer_number>] [--save-gguf <filename>]\n", argv[0]);
+        LOG_ERR("Usage: %s [options] [--layer <layer_number>] [--save-gguf <filename>] [--print-mask] [--prefill-only]\n", argv[0]);
         LOG_ERR("  --layer <n>           Monitor only layer n (0-based). Use -1 or omit to monitor all layers.\n");
         LOG_ERR("  --save-gguf <file>    Save traced tensors to GGUF file.\n");
+        LOG_ERR("  --print-mask          Print KQV attention mask visualization.\n");
+        LOG_ERR("  --prefill-only        Print only prefill phase, skip decode phase.\n");
         LOG_ERR("Examples:\n");
         LOG_ERR("  %s -m model.gguf -p \"Hello\" --layer 0    # Monitor only layer 0\n", argv[0]);
         LOG_ERR("  %s -m model.gguf -p \"Hello\"              # Monitor all layers\n", argv[0]);
         LOG_ERR("  %s -m model.gguf -p \"Hello\" --save-gguf tensors.gguf  # Save tensors to file\n", argv[0]);
+        LOG_ERR("  %s -m model.gguf -p \"Hello\" --print-mask # Print attention mask\n", argv[0]);
+        LOG_ERR("  %s -m model.gguf -p \"Hello\" --prefill-only # Print only prefill phase\n", argv[0]);
         return 1;
-    }
-
-    if (target_layer >= 0) {
-        LOG_INF("Monitoring kqv_out tensors for layer %d only\n", target_layer);
-    } else {
-        LOG_INF("Monitoring kqv_out tensors for all layers\n");
-    }
-
-    if (cb_data.save_enabled) {
-        LOG_INF("Tensor saving enabled, output file: %s\n", save_file.c_str());
-    } else {
-        LOG_INF("Tensor saving disabled\n");
     }
 
     common_init();

@@ -1638,7 +1638,7 @@ ggml_tensor * llm_graph_context::build_attn(
     {
         // if (k_cur->data != nullptr && v_cur->data != nullptr) {
         //     ggml_set_f32(k_cur, 1.0f);
-        //     ggml_set_f32(v_cur, 2.0f);  
+        //     ggml_set_f32(v_cur, 2.0f);
         // }
 
         // store to KV cache
@@ -1669,8 +1669,8 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     ggml_tensor * cur = ggml_flash_attn_mixed(
-        ctx0, q, k, v, 
-        k_quant, v_quant, kq_mask, 
+        ctx0, q, k, v,
+        k_quant, v_quant, kq_mask,
         kq_scale, hparams.f_max_alibi_bias,
         hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f
     );

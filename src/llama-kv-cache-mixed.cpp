@@ -60,7 +60,7 @@ static double get_duration_ms(const std::chrono::high_resolution_clock::time_poi
 uint32_t llama_kv_cache_mixed::get_padding(const llama_cparams & cparams) {
     GGML_UNUSED(cparams);
 
-    return 32u;
+    // return 32u;
 
     return cparams.flash_attn ? 256u : 32u;
 }
@@ -414,7 +414,7 @@ void llama_kv_cache_mixed::seq_keep(llama_seq_id seq_id) {
 
     /*
      * Cell sequence keep operation - Keep only specified sequence, clear all others:
-     * 
+     *
      * Iterate through all cells, completely clear cells not belonging to target sequence,
      * For cells belonging to target sequence, clean multi-sequence state to keep only target sequence
      * This is typically used to switch current active sequence and clean up unwanted branches
@@ -553,7 +553,7 @@ void llama_kv_cache_mixed::seq_div(llama_seq_id seq_id, llama_pos p0, llama_pos 
 
     /*
      * Position division operation for cells sequence - Scale down positions proportionally:
-     * 
+     *
      * Iterate through all cells, find cells belonging to target sequence and within specified position range
      * Divide their positions by divisor d and update accumulated delta offset
      * This is used to implement position scaling (like attention window scaling, position compression etc.)
@@ -847,15 +847,15 @@ bool llama_kv_cache_mixed::update(llama_context & lctx) {
         // 对每一层进行量化
         for (size_t i = 0; i < layers.size(); ++i) {
             auto & layer = layers[i];
-            
+
             // 构建 K 量化操作
             auto * k_quant_op = k_quant(ctx, layer.il);
             if (k_quant_op) {
                 ggml_build_forward_expand(gf, k_quant_op);
                 LLAMA_LOG_DEBUG("[mixed-kv] added K quantization for layer %d\n", layer.il);
             }
-            
-            // 构建 V 量化操作  
+
+            // 构建 V 量化操作
             auto * v_quant_op = v_quant(ctx, layer.il);
             if (v_quant_op) {
                 ggml_build_forward_expand(gf, v_quant_op);
@@ -868,7 +868,7 @@ bool llama_kv_cache_mixed::update(llama_context & lctx) {
         lctx.graph_compute(gf, false);
 
         need_reserve = true;
-        
+
         do_quant = false;
     }
 
@@ -1002,7 +1002,7 @@ bool llama_kv_cache_mixed::find_slot(const llama_ubatch & ubatch) {
     // NOTE: cell_max() return the last empty cell index.
     n = std::min(size, std::max(n_pad, GGML_PAD(cell_max(), n_pad)));                       //> Virtual head of kv cache.
     n_quantized = std::min(size, std::max(n_pad, GGML_PAD(cell_max_quantized(), n_pad)));   //> Virtual head of quantized kv cache.
-    
+
     // LLAMA_LOG_INFO("\n[mixed-kv] successfully allocated slot: head=%u, used=%u, n=%u, n_quantized=%u, cell_max=%u, cell_max_quantized=%u\n", head, used, n, n_quantized, cell_max(), cell_max_quantized());
 
     return true;
@@ -1720,7 +1720,7 @@ static void flash_decoding_q_f32_kv_f32(
 ) {
     memset(dst, 0, head_dim * sizeof(float));
 
-    for (int64_t kv_iter = 0; kv_iter < kv_len; ++kv_iter) {    
+    for (int64_t kv_iter = 0; kv_iter < kv_len; ++kv_iter) {
         float qk_ret = 0.0f;
         for (int64_t hd_iter = 0; hd_iter < head_dim; ++ hd_iter) {
             qk_ret += q_ptr[hd_iter] * k_ptr[kv_iter * head_dim + hd_iter];
@@ -1737,12 +1737,12 @@ void ggml_compute_forward_flash_attn_ext_f32(
         void* wdata,
         size_t wsize,
         void * userdatat) {
-    
+
     ggml_tensor * q     = dst->src[0];
     ggml_tensor * k     = dst->src[1];
     ggml_tensor * v     = dst->src[2];
     ggml_tensor * mask  = dst->src[3];
-    
+
     memset(wdata, 0, wsize);
 
     // LLAMA_LOG_DEBUG("->>>>>>>>>>>>>>> ith: %d, nth: %d.\n", ith, nth);
@@ -1769,7 +1769,7 @@ void ggml_compute_forward_flash_attn_ext_f32(
     const int64_t N  = neq1;     //> q_len
 
     GGML_ASSERT(ne0 == DV);      //> dst -> ne[0] == head_dim
-    GGML_ASSERT(ne1 == neq2);    //> dst -> ne[1] == n_heads  
+    GGML_ASSERT(ne1 == neq2);    //> dst -> ne[1] == n_heads
     GGML_ASSERT(ne2 == N);       //> dst -> ne[2] == q_len
 
     // input tensor rows must be contiguous
@@ -1821,7 +1821,7 @@ void ggml_compute_forward_flash_attn_ext_f32(
     // memcpy(&scale,         (float *) dst->op_params + 0, sizeof(float));
     // memcpy(&max_bias,      (float *) dst->op_params + 1, sizeof(float));
     // memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
-    
+
     // If scale is 0 or 1 (default), use computed scale
     if (scale == 0.0f || scale == 1.0f) {
         scale = 1.0f / sqrtf((float)DK);
@@ -1980,7 +1980,7 @@ void ggml_compute_forward_flash_attn_ext_f32(
         // permute(0, 2, 1, 3)
         memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
     }
-    
+
     // 清理宏定义
     #undef ith
     #undef nth
