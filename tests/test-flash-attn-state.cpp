@@ -107,7 +107,7 @@ void test_torch_integration() {
 #endif // LLAMA_TORCH_AVAILABLE
 
 // Use fixed seed for reproducible results
-static std::mt19937 g_rng(std::random_device{}());
+static std::mt19937 g_rng(42);
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
     float* data = (float*)dst->data;
@@ -497,14 +497,14 @@ int main() {
             }
         }
 
-        // Create boolean mask for PyTorch (tensor shape: [1, n_heads, seq_len, kv_len])
-        // PyTorch attention mask: true = can attend, false = cannot attend
-        auto mask_torch = torch::ones({1, n_heads, seq_len, kv_len}, torch::TensorOptions().dtype(torch::kBool));
-        bool* mask_torch_data = mask_torch.data_ptr<bool>();
+        // Create attention mask for PyTorch (tensor shape: [1, n_heads, seq_len, kv_len])
+        // PyTorch attention mask: 0.0f = can attend, -INFINITY = cannot attend
+        auto mask_torch = torch::zeros({1, n_heads, seq_len, kv_len}, torch_options);
+        float* mask_torch_data = mask_torch.data_ptr<float>();
 
-        // Convert ggml mask to PyTorch boolean mask format
+        // Convert ggml mask to PyTorch attention mask format
         // ggml mask: 0.0f = can attend, -INFINITY = cannot attend
-        // PyTorch mask: true = can attend, false = cannot attend
+        // PyTorch mask: 0.0f = can attend, -INFINITY = cannot attend (same format!)
         for (int h = 0; h < n_heads; h++) {
             for (int s = 0; s < seq_len; s++) {
                 for (int d = 0; d < kv_len; d++) {
@@ -515,13 +515,8 @@ int main() {
                     // PyTorch index (format: [1, n_heads, seq_len, kv_len])
                     int torch_idx = h * seq_len * kv_len + s * kv_len + d;
                     
-                    // Convert: ggml 0.0f -> PyTorch true (can attend)
-                    //          ggml -INFINITY -> PyTorch false (cannot attend)
-                    if (ggml_mask_val == 0.0f) {
-                        mask_torch_data[torch_idx] = true;   // Can attend
-                    } else {
-                        mask_torch_data[torch_idx] = false;  // Cannot attend
-                    }
+                    // Same format: directly copy mask values
+                    mask_torch_data[torch_idx] = ggml_mask_val;
                 }
             }
         }
