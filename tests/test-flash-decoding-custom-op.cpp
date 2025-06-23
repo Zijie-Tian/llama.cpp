@@ -375,9 +375,9 @@ int main() {
     // Adjust fp16_window to fit within kv_len for this test
     size_t fp16_window  = std::min((size_t)kv_len, (size_t)32);
     size_t quant_len    = kv_len - fp16_window > 0 ? kv_len - fp16_window : 0;
-    size_t fp16_nb1     = head_dim * ggml_type_size(k->type);
-    size_t fp16_nb2     = fp16_window * fp16_nb1;
-    size_t fp16_nb3     = fp16_nb2 * n_kv_heads;
+    size_t fp16_nb1     = k->nb[1];
+    size_t fp16_nb2     = k->nb[2];
+    size_t fp16_nb3     = k->nb[3];
 
     size_t quant_nb1    = head_dim * ggml_type_size(k->type);
     size_t quant_nb2    = quant_len * quant_nb1;
@@ -398,80 +398,68 @@ int main() {
     // Create Q4_0 quantized tensors for k_quant and v_quant if we have quantized tokens
     if (quant_len > 0) {
         printf("Creating simple Q4_0 quantized tensors for %zu tokens\n", quant_len);
-        
-        // Calculate total elements for the quantized portion
-        size_t total_elements = head_dim * quant_len * n_kv_heads;
-        
-        // Create simple 1D tensors for quantization (based on successful test_unified_cache_copy.cpp example)
-        ggml_tensor * k_quant_src = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
-        ggml_tensor * v_quant_src = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
-        k_quant = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
-        v_quant = ggml_new_tensor_1d(ctx, GGML_TYPE_F16, total_elements);
-        
-        printf("Created 1D tensors: src=%zu elements, dst=%zu elements\n", 
-               total_elements, total_elements);
-        printf("K_src: %zu bytes, K_quant: %zu bytes\n", 
+
+        ggml_tensor * k_quant_src = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,
+                                                       head_dim, quant_len,
+                                                       n_kv_heads, 1);
+        ggml_tensor * v_quant_src = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,
+                                                       head_dim, quant_len,
+                                                       n_kv_heads, 1);
+
+        k_quant = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,
+                                     head_dim, quant_len,
+                                     n_kv_heads, 1);
+        v_quant = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,
+                                     head_dim, quant_len,
+                                     n_kv_heads, 1);
+
+        printf("K_quant_src bytes: %zu, K_quant bytes: %zu\n",
                ggml_nbytes(k_quant_src), ggml_nbytes(k_quant));
-        
-        // Fill source tensors with data from the quantized portion (tokens fp16_window to fp16_window+quant_len)
-        ggml_fp16_t* k_src_data = (ggml_fp16_t*)k_quant_src->data;
-        ggml_fp16_t* v_src_data = (ggml_fp16_t*)v_quant_src->data;
-        ggml_fp16_t* k_orig_data = (ggml_fp16_t*)k->data;
-        ggml_fp16_t* v_orig_data = (ggml_fp16_t*)v->data;
-        
-        // Copy data from the quantized portion to the 1D tensors
-        size_t idx = 0;
+
+        ggml_fp16_t * k_src_data = (ggml_fp16_t *)k_quant_src->data;
+        ggml_fp16_t * v_src_data = (ggml_fp16_t *)v_quant_src->data;
+        ggml_fp16_t * k_orig_data = (ggml_fp16_t *)k->data;
+        ggml_fp16_t * v_orig_data = (ggml_fp16_t *)v->data;
+
         for (size_t h = 0; h < n_kv_heads; h++) {
             for (size_t t = 0; t < quant_len; t++) {
                 for (size_t d = 0; d < head_dim; d++) {
-                    // Source position: token (fp16_window + t) in original tensor
-                    size_t orig_idx = d + (fp16_window + t) * head_dim + h * head_dim * GGML_PAD(kv_len, n_pad);
-                    
-                    k_src_data[idx] = k_orig_data[orig_idx];
-                    v_src_data[idx] = v_orig_data[orig_idx];
-                    idx++;
+                    size_t orig_idx = d + (fp16_window + t) * head_dim +
+                                     h * head_dim * GGML_PAD(kv_len, n_pad);
+                    size_t dst_idx = d + t * head_dim +
+                                    h * head_dim * quant_len;
+                    k_src_data[dst_idx] = k_orig_data[orig_idx];
+                    v_src_data[dst_idx] = v_orig_data[orig_idx];
                 }
             }
         }
-        
+
         printf("Data copy completed successfully\n");
-        
-        // Use ggml_cpy to quantize the data from F16 to Q4_0 (based on successful example)
-        printf("Creating ggml_cpy operations...\n");
+
         ggml_tensor * k_quantize_op = ggml_cpy(ctx, k_quant_src, k_quant);
         ggml_tensor * v_quantize_op = ggml_cpy(ctx, v_quant_src, v_quant);
-        
-        printf("ggml_cpy operations created successfully\n");
-        
-        // Build quantization graph and execute it
-        printf("Building computation graph...\n");
+
         struct ggml_cgraph * graph_quantize = ggml_new_graph(ctx);
         ggml_build_forward_expand(graph_quantize, k_quantize_op);
         ggml_build_forward_expand(graph_quantize, v_quantize_op);
-        
+
         printf("Computing quantization (F16 -> Q4_0)...\n");
         enum ggml_status status_quantize = ggml_graph_compute_with_ctx(ctx, graph_quantize, n_threads);
-        
+
         if (status_quantize != GGML_STATUS_SUCCESS) {
             printf("ERROR: Quantization failed with status: %d\n", status_quantize);
             ggml_free(ctx);
             return 1;
         }
-        
+
         printf("Quantization completed successfully\n");
-        
-        // Now we need to create 4D views of our 1D quantized tensors for the flash attention
-        // Reshape the 1D quantized tensors back to 4D for flash attention compatibility
-        printf("Creating 4D views for flash attention...\n");
-        
-        // For flash attention, we need 4D tensors with the correct shape
-        // We can't use ggml_view_4d on quantized tensors directly due to size constraints
-        // Instead, we'll work with the 1D tensors and let the flash attention handle the reshape
-        
-        printf("K_quant final shape: 1D tensor with %ld elements, type: %s\n", 
-               k_quant->ne[0], ggml_type_name(k_quant->type));
-        printf("V_quant final shape: 1D tensor with %ld elements, type: %s\n", 
-               v_quant->ne[0], ggml_type_name(v_quant->type));
+
+        printf("K_quant final shape: [%zu, %zu, %zu, %zu] type: %s\n",
+               k_quant->ne[0], k_quant->ne[1], k_quant->ne[2], k_quant->ne[3],
+               ggml_type_name(k_quant->type));
+        printf("V_quant final shape: [%zu, %zu, %zu, %zu] type: %s\n",
+               v_quant->ne[0], v_quant->ne[1], v_quant->ne[2], v_quant->ne[3],
+               ggml_type_name(v_quant->type));
         
     } else {
         printf("No quantized tokens to create (quant_len = 0)\n");
@@ -700,7 +688,7 @@ int main() {
         for (int h = 0; h < n_kv_heads; h++) {
             for (int s = 0; s < kv_len; s++) {
                 for (int d = 0; d < head_dim; d++) {
-                    int ggml_idx = d + s * head_dim + h * head_dim * kv_len;
+                    int ggml_idx = d + s * head_dim + h * head_dim * GGML_PAD(kv_len, n_pad);
                     int torch_idx = h * kv_len * head_dim + s * head_dim + d;
                     // Convert F16 to F32
                     k_torch_data[torch_idx] = ggml_fp16_to_fp32(((ggml_fp16_t*)k->data)[ggml_idx]);
