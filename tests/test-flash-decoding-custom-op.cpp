@@ -179,7 +179,7 @@ static void fill_causal_mask(ggml_tensor* mask, int64_t pos, int64_t n_seq, int6
 
     for (int64_t i = 0; i < n_seq; i++) {
         for (int64_t j = 0; j < n_kv; j++) {
-            if (j <= pos) {
+            if (j <= i) {
                 mask_data[i * n_kv + j] = 0.0f;
             } else {
                 mask_data[i * n_kv + j] = -INFINITY;
@@ -208,7 +208,8 @@ static void print_mask(const ggml_tensor* mask, int64_t n_kv, int64_t n_tokens) 
     printf("KV tokens →\n");
 
     const int preview_size = 8; // Number of columns to show at start/end
-    const bool truncate = n_kv > 3 * preview_size;
+    // const bool truncate = n_kv > 3 * preview_size;
+    const bool truncate = false;
     const int display_width = truncate ? 2 * preview_size + 3 : n_kv;
 
     // Print column numbers
@@ -230,13 +231,16 @@ static void print_mask(const ggml_tensor* mask, int64_t n_kv, int64_t n_tokens) 
         if (truncate && i == preview_size) {
             printf("...");
         } else {
-            printf("-");
+            printf("=");
         }
     }
     printf("\n");
     
     const int row_preview = 5; // Number of rows to show at start/end
-    const bool truncate_rows = n_tokens > 2 * row_preview + 1;
+    // const bool truncate_rows = n_tokens > 2 * row_preview + 1;
+    const bool truncate_rows = false;
+
+    // printf("mask type : %s", ggml_type_name(mask->type));
     
     if (mask->type == GGML_TYPE_F32) {
         float* mask_data = (float*)mask->data;
@@ -301,10 +305,10 @@ int main() {
     printf("Testing Flash-Decoding Custom Operation vs Standard Flash Attention\n");
 
     // Test parameters - reduce KV length to minimize F16 accumulation errors
-    const int head_dim   = 16;
+    const int head_dim   = 4;
     const int n_heads    = 4;
     const int n_kv_heads = 1;
-    const int seq_len    = 6;     // Q length
+    const int seq_len    = 8;     // Q length
     const int kv_len     = 48;    // K/V length - reduced for better F16 precision
     const int n_threads  = 12;
     const int cur_pos    = 32;
@@ -770,7 +774,8 @@ int main() {
             /*is_causal=*/false,
             /*scale=*/scale_factor
         );
-        
+        torch_result = torch_result.permute({0, 2, 1, 3}).contiguous();
+
         printf("PyTorch result shape: [%ld, %ld, %ld, %ld]\n", 
                torch_result.size(0), torch_result.size(1), torch_result.size(2), torch_result.size(3));
         
