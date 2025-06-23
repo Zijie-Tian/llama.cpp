@@ -24,6 +24,8 @@ WORKDIR /home/ubuntu
 
 # Install PyTorch CPU version only
 RUN pip install torch --extra-index-url https://download.pytorch.org/whl/cpu
+RUN pip install numpy
+RUN pip install modelscope
 
 # Set default command
 CMD ["/bin/bash"]
