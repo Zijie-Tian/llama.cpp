@@ -307,8 +307,8 @@ int main() {
     // Test parameters - reduce KV length to minimize F16 accumulation errors
     const int head_dim   = 4;
     const int n_heads    = 4;
-    const int n_kv_heads = 1;
-    const int seq_len    = 8;     // Q length
+    const int n_kv_heads = 2;
+    const int seq_len    = 2;     // Q length
     const int kv_len     = 48;    // K/V length - reduced for better F16 precision
     const int n_threads  = 12;
     const int cur_pos    = 32;
@@ -348,15 +348,15 @@ int main() {
     fill_random_f32(q, seq_len * n_heads, head_dim);
 
     if (k->type == GGML_TYPE_F32) {
-        fill_random_f32(k, GGML_PAD(kv_len, n_pad) * n_kv_heads, head_dim);
+        fill_random_f32(k, kv_len * n_kv_heads, head_dim);
     } else {    
-        fill_random_f16(k, GGML_PAD(kv_len, n_pad) * n_kv_heads);  // K is F16
+        fill_random_f16(k, kv_len * n_kv_heads);  // K is F16
     }
 
     if (v->type == GGML_TYPE_F32) {
-        fill_random_f32(v, GGML_PAD(kv_len, n_pad) * n_kv_heads, head_dim);
+        fill_random_f32(v, kv_len * n_kv_heads, head_dim);
     } else {
-        fill_random_f16(v, GGML_PAD(kv_len, n_pad) * n_kv_heads);
+        fill_random_f16(v, kv_len * n_kv_heads);
     }
 
     // Fill mask - use identity mask (all positions visible)
@@ -774,7 +774,7 @@ int main() {
             /*is_causal=*/false,
             /*scale=*/scale_factor
         );
-        torch_result = torch_result.permute({0, 2, 1, 3}).contiguous();
+        torch_result = torch_result.permute({0, 2, 1, 3}).contiguous();     //> [1, seq_len, n_heads, head_dim]
 
         printf("PyTorch result shape: [%ld, %ld, %ld, %ld]\n", 
                torch_result.size(0), torch_result.size(1), torch_result.size(2), torch_result.size(3));
