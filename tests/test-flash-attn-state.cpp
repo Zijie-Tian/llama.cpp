@@ -63,17 +63,6 @@ static torch::Tensor ggml_to_torch(ggml_tensor * tensor) {
     }
     return torch::from_blob(data.data(), sizes, torch::kFloat32).clone();
 }
-
-// Simple flash attention using PyTorch for verification
-static torch::Tensor torch_flash_attention(torch::Tensor Q, torch::Tensor K, torch::Tensor V, torch::Tensor mask,
-                                           float scale) {
-    auto scores = torch::matmul(Q, K.transpose(-2, -1)) * scale;
-    if (mask.defined()) {
-        scores = scores + mask;
-    }
-    auto attn = torch::softmax(scores, -1);
-    return torch::matmul(attn, V);
-}
 #endif  // LLAMA_TORCH_AVAILABLE
 
 static void print_tensor_info(const char * name, ggml_tensor * tensor) {
@@ -140,8 +129,8 @@ int main() {
 
     // Test parameters
     const int head_dim       = 32;
-    const int n_heads        = 8;
-    const int n_kv_heads     = 4;
+    const int n_heads        = 32;
+    const int n_kv_heads     = 8;
     const int seq_len        = 2;
     const int kv_len         = 4;  // Will be split into segments
     const int n_threads      = 4;
