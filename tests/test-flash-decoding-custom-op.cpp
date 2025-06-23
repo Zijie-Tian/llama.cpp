@@ -454,10 +454,10 @@ int main() {
 
         printf("Quantization completed successfully\n");
 
-        printf("K_quant final shape: [%ld, %ld, %ld, %ld] type: %s\n",
+        printf("K_quant final shape: [%zu, %zu, %zu, %zu] type: %s\n",
                k_quant->ne[0], k_quant->ne[1], k_quant->ne[2], k_quant->ne[3],
                ggml_type_name(k_quant->type));
-        printf("V_quant final shape: [%ld, %ld, %ld, %ld] type: %s\n",
+        printf("V_quant final shape: [%zu, %zu, %zu, %zu] type: %s\n",
                v_quant->ne[0], v_quant->ne[1], v_quant->ne[2], v_quant->ne[3],
                ggml_type_name(v_quant->type));
         
