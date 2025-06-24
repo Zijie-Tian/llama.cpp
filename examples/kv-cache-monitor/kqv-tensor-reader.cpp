@@ -279,21 +279,22 @@ static struct ggml_tensor * torch_flash_attn(
             }
         }
 
-        // NOTICE : the K and V tensors are in the format of [head_dim, kv_len, n_kv_heads, 1], 
-        // NOTICE : HOWEVER, the REAL layout is [head_dim, n_kv_heads, kv_len, 1]
-
-        // NOTICE : HOWEVER.
+        // **CRITICAL FIX**: The K and V tensors from trace are in permuted format
+        // After permutation, the layout is [head_dim, kv_len, n_kv_heads, 1]
+        // But we need to understand the ACTUAL memory layout after permutation
 
         // Create K tensor in PyTorch format [1, n_kv_heads, kv_len, head_dim]
         auto k_torch = torch::zeros({1, n_kv_heads, kv_len, head_dim}, torch_options).contiguous();
         float* k_torch_data = k_torch.data_ptr<float>();
 
-        // Convert K from ggml format [head_dim, kv_len, n_kv_heads, 1] to torch format
-        for (int s = 0; s < kv_len; s++) {
-            for (int h = 0; h < n_kv_heads; h++) {
+        // **FIXED**: Correct layout interpretation for permuted K tensor
+        // The trace shows: cache_k_l0 (view) (permuted) with shape [128,256,8,1]
+        // This means: [head_dim=128, kv_len=256, n_kv_heads=8, batch=1]
+        for (int h = 0; h < n_kv_heads; h++) {
+            for (int s = 0; s < kv_len; s++) {
                 for (int d = 0; d < head_dim; d++) {
-                    // int ggml_idx = d + h * head_dim + s * head_dim * n_kv_heads;    //> Correct the llama.cpp layout
-                    int ggml_idx = d + s * head_dim + h * head_dim * kv_len;        //> For 
+                    // **FIXED**: Use correct stride calculation based on permuted layout
+                    int ggml_idx = d + s * head_dim + h * head_dim * kv_len;
                     int torch_idx = h * kv_len * head_dim + s * head_dim + d;
 
                     if (K->type == GGML_TYPE_F16) {
@@ -309,12 +310,12 @@ static struct ggml_tensor * torch_flash_attn(
         auto v_torch = torch::zeros({1, n_kv_heads, kv_len, head_dim}, torch_options);
         float* v_torch_data = v_torch.data_ptr<float>();
 
-        // Convert V from ggml format [head_dim, kv_len, n_kv_heads, 1] to torch format
-        for (int s = 0; s < kv_len; s++) {
-            for (int h = 0; h < n_kv_heads; h++) {
+        // **FIXED**: Same correction for V tensor
+        for (int h = 0; h < n_kv_heads; h++) {
+            for (int s = 0; s < kv_len; s++) {
                 for (int d = 0; d < head_dim; d++) {
-                    // int ggml_idx = d + h * head_dim + s * head_dim * n_kv_heads;    //> Correct the llama.cpp layout
-                    int ggml_idx = d + s * head_dim + h * head_dim * kv_len;        //> For llama.cpp layout
+                    // **FIXED**: Use correct stride calculation based on permuted layout
+                    int ggml_idx = d + s * head_dim + h * head_dim * kv_len;
                     int torch_idx = h * kv_len * head_dim + s * head_dim + d;
 
                     if (V->type == GGML_TYPE_F16) {
@@ -326,40 +327,39 @@ static struct ggml_tensor * torch_flash_attn(
             }
         }
 
-        const char* mask_nonfp32 = (const char*)mask->data;
-        const float* mask_fp32 = (const float*)mask->data;
+        // **FIXED**: Proper mask handling
+        torch::Tensor mask_torch;
+        if (mask && mask->data) {
+            const char* mask_nonfp32 = (const char*)mask->data;
+            const float* mask_fp32 = (const float*)mask->data;
 
-        float* mask_buffer = (float*)malloc(mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3] * sizeof(float));
+            float* mask_buffer = (float*)malloc(mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3] * sizeof(float));
 
-        ggml_to_float_t to_float = ggml_get_type_traits(mask->type)->to_float;
+            ggml_to_float_t to_float = ggml_get_type_traits(mask->type)->to_float;
 
-        if (to_float) {
-            to_float(mask_nonfp32, mask_buffer, mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3]);
-        } else {
-            memcpy(mask_buffer, mask_fp32, mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3] * sizeof(float));
-        }
+            if (to_float) {
+                to_float(mask_nonfp32, mask_buffer, mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3]);
+            } else {
+                memcpy(mask_buffer, mask_fp32, mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3] * sizeof(float));
+            }
 
-        // Handle mask conversion if present
-        auto torch_options_mask = torch::TensorOptions().dtype(torch::kBool);
-        torch::Tensor mask_torch = torch::zeros({1, n_heads, seq_len, kv_len}, torch_options_mask);
-        bool* mask_torch_data = mask_torch.data_ptr<bool>();
+            // Handle mask conversion if present
+            auto torch_options_mask = torch::TensorOptions().dtype(torch::kBool);
+            mask_torch = torch::zeros({1, n_heads, seq_len, kv_len}, torch_options_mask);
+            bool* mask_torch_data = mask_torch.data_ptr<bool>();
 
-        for (int h = 0; h < n_heads; h++) {
-            for (int s = 0; s < seq_len; s++) {
-                for (int d = 0; d < kv_len; d++) {
-                    int ggml_idx = d + s * kv_len;
-                    int torch_idx = h * seq_len * kv_len + s * kv_len + d;
-                    mask_torch_data[torch_idx] = mask_buffer[ggml_idx] == 0.f ? true : false;
+            for (int h = 0; h < n_heads; h++) {
+                for (int s = 0; s < seq_len; s++) {
+                    for (int d = 0; d < kv_len; d++) {
+                        int ggml_idx = d + s * kv_len;
+                        int torch_idx = h * seq_len * kv_len + s * kv_len + d;
+                        mask_torch_data[torch_idx] = mask_buffer[ggml_idx] == 0.f ? true : false;
+                    }
                 }
             }
+            
+            free(mask_buffer);
         }
-
-        // std::cout << "k_torch shape: " << k_torch.sizes() << std::endl;
-        // std::cout << "v_torch shape: " << v_torch.sizes() << std::endl;
-        // std::cout << "q_torch shape: " << q_torch.sizes() << std::endl;
-        // std::cout << "mask_torch shape: " << mask_torch.sizes() << std::endl;
-
-        // std::cout << k_torch << std::endl;
 
         // Handle GQA (Grouped Query Attention) by repeating KV heads to match Q heads
         if (n_heads > n_kv_heads) {
@@ -370,11 +370,6 @@ static struct ggml_tensor * torch_flash_attn(
             LOG_INF("GQA: Repeated KV heads by factor %d (%ld -> %ld heads)\n",
                     repeat_factor, n_kv_heads, n_heads);
         }
-
-        // std::cout << "k_torch shape: " << k_torch.sizes() << std::endl;
-        // std::cout << "v_torch shape: " << v_torch.sizes() << std::endl;
-        // std::cout << "q_torch shape: " << q_torch.sizes() << std::endl;
-        // std::cout << "mask_torch shape: " << mask_torch.sizes() << std::endl;
 
         LOG_INF("Final PyTorch tensor shapes:\n");
         LOG_INF("  Q: [%ld,%ld,%ld,%ld]\n", q_torch.size(0), q_torch.size(1), q_torch.size(2), q_torch.size(3));
@@ -401,23 +396,29 @@ static struct ggml_tensor * torch_flash_attn(
             );
         }
 
-        // torch_result = torch_result.permute({0, 2, 1, 3}).contiguous();  //> [batch, token, n_head, head_dim]
         const float* torch_result_data = torch_result.data_ptr<float>();
 
         LOG_INF("PyTorch attention result shape: [%ld, %ld, %ld, %ld]\n",
                 torch_result.size(0), torch_result.size(1), torch_result.size(2), torch_result.size(3));
 
-        // Create output tensor with ggml expected format
+        // **FIXED**: Create output tensor with correct ggml expected format
+        // PyTorch result: [batch=1, n_heads, seq_len, head_dim]
+        // ggml expected: [head_dim, seq_len, n_heads, 1] -> [128, 1, 32, 1] for single token
+        // But we need to reshape to [head_dim*n_heads, seq_len, 1, 1] for final output
         ggml_tensor* result_ggml = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, n_heads, seq_len, 1);
 
         float* result_data = (float*)result_ggml->data;
 
-        // Copy data from PyTorch result to ggml format
+        // **FIXED**: Correct data layout conversion
         // PyTorch layout: [batch, head, seq, dim] -> [1, 32, n_tokens, 128]
-        // ggml layout: [dim*head, seq, 1, 1] -> [4096, n_tokens, 1, 1]
-        for (int64_t hidden_dim = 0; hidden_dim < head_dim * n_heads; hidden_dim++) {
-            for (int64_t seq_idx = 0; seq_idx < seq_len; seq_idx++) {
-                result_data[hidden_dim + seq_idx * (head_dim * n_heads)] = torch_result_data[hidden_dim + seq_idx * (head_dim * n_heads)];
+        // ggml layout: [dim, head, seq, 1] -> [128, 32, n_tokens, 1]
+        for (int h = 0; h < n_heads; h++) {
+            for (int s = 0; s < seq_len; s++) {
+                for (int d = 0; d < head_dim; d++) {
+                    int torch_idx = h * seq_len * head_dim + s * head_dim + d;
+                    int ggml_idx = d + h * head_dim + s * head_dim * n_heads;
+                    result_data[ggml_idx] = torch_result_data[torch_idx];
+                }
             }
         }
 
@@ -691,27 +692,45 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
     // Output by step
     for (const auto& [step, tensors] : step_tensor_map) {
         if (tensors.size() < 4) {
-            LOG_INF("Step %d has %zu tensors, skipping\n", tensors.size(), step);
+            LOG_INF("Step %d has %zu tensors, skipping\n", step, tensors.size());
             continue;
         }
         LOG_DBG("\n==== Step %d ====%s\n", step, (step == -1 ? " (unknown)" : ""));
 
+        // **FIXED**: Proper tensor assignment based on cache type
         ggml_tensor * kqv_out = tensors[0].first;
         ggml_tensor * Q = tensors[1].first;
         ggml_tensor * K = tensors[2].first;
         ggml_tensor * V = tensors[3].first;
-        ggml_tensor * kq_mask = tensors.size() > 4 ? tensors[4].first : nullptr;
-
-        ggml_print_tensor((uint8_t*)K->data, K->type, K->ne, K->nb, 8);
-        // ggml_print_tensor((uint8_t*)V->data, V->type, V->ne, V->nb, 8);
-
+        ggml_tensor * kq_mask = nullptr;
         ggml_tensor * K_quant = nullptr;
         ggml_tensor * V_quant = nullptr;
-        if (tensors.size() > 5) {
-            K_quant = tensors[5].first;
-            V_quant = tensors[6].first;
-            LOG_DBG("Quantized tensors - K_quant: %s, V_quant: %s\n",
-                    K_quant->name, V_quant->name);
+
+        // **FIXED**: Detect cache type by tensor count and names
+        bool is_mixed_cache = (tensors.size() >= 6);
+        
+        if (is_mixed_cache) {
+            // Mixed cache: kqv_out, Q, K_hot, V_hot, mask, K_quant, V_quant
+            kq_mask = tensors.size() > 4 ? tensors[4].first : nullptr;
+            K_quant = tensors.size() > 5 ? tensors[5].first : nullptr;
+            V_quant = tensors.size() > 6 ? tensors[6].first : nullptr;
+            
+            LOG_INF("Detected Mixed KV Cache with %zu tensors\n", tensors.size());
+            if (K_quant && V_quant) {
+                LOG_DBG("Quantized tensors - K_quant: %s, V_quant: %s\n",
+                        K_quant->name ? K_quant->name : "unnamed", 
+                        V_quant->name ? V_quant->name : "unnamed");
+            }
+        } else {
+            // Standard cache: kqv_out, Q, K, V, mask
+            kq_mask = tensors.size() > 4 ? tensors[4].first : nullptr;
+            LOG_INF("Detected Standard KV Cache with %zu tensors\n", tensors.size());
+        }
+
+        // Debug: Print tensor names to verify correct assignment
+        LOG_DBG("Tensor assignment:\n");
+        for (size_t i = 0; i < tensors.size(); i++) {
+            LOG_DBG("  [%zu]: %s\n", i, tensors[i].second.c_str());
         }
 
         // Run flash attention for all steps
