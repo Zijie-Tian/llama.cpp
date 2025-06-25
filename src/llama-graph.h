@@ -313,11 +313,17 @@ public:
 
     ggml_tensor * get_kq_mask() const { return self_kq_mask_cnv; }
     ggml_tensor * get_kq_mask_quant() const { return self_kq_mask_quant_cnv; }
+    ggml_tensor * get_state() const { return attn_state; }
+    ggml_tensor * get_result() const { return attn_result; }
 
     ggml_tensor * self_kq_mask     = nullptr; // F32 [n_kv, n_batch]
     ggml_tensor * self_kq_mask_cnv = nullptr; //     [n_kv, n_batch]
     ggml_tensor * self_kq_mask_quant = nullptr; // F32 [n_kv, n_batch]
     ggml_tensor * self_kq_mask_quant_cnv = nullptr; //     [n_kv, n_batch]
+    
+    // State and result tensors for stateful flash attention
+    ggml_tensor * attn_state  = nullptr; // F32 [2, n_heads * seq_len] for [M, S] pairs
+    ggml_tensor * attn_result = nullptr; // F32 [head_dim, seq_len, n_heads, n_batch] output tensor
 
     const llama_hparams & hparams;
     const llama_cparams & cparams;
@@ -654,6 +660,8 @@ struct llm_graph_context {
          ggml_tensor * kq_mask_fp16,
          ggml_tensor * kq_mask_quant,
          ggml_tensor * v_mla,
+         ggml_tensor * state,
+         ggml_tensor * result,
              float     kq_scale) const;
 
     llm_graph_input_attn_cross * build_attn_inp_cross() const;
