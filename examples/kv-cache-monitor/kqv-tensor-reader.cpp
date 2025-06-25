@@ -564,12 +564,24 @@ static void print_kqv_mask(ggml_tensor* mask) {
             to_float(mask_nonfp32 + i * nb_mask1, row_buffer, ne_mask0);
 
             for (int j = 0; j < ne_mask0; ++j) {
-                LOG_INF("%c", (row_buffer[j] == 0.f) ? 'x' : '-');
+                if (row_buffer[j] == 0.f) {
+                    LOG_INF("x");
+                } else if (row_buffer[j] == -INFINITY) {
+                    LOG_INF("-");
+                } else {
+                    LOG_INF("?");
+                }
             }
             LOG_INF("\n");
         } else {
             for (int j = 0; j < ne_mask0; ++j) {
-                LOG_INF("%c", (mask_fp32[j] == 0.f) ? 'x' : '-');
+                if (mask_fp32[j] == 0.f) {
+                    LOG_INF("x");
+                } else if (mask_fp32[j] == -INFINITY) {
+                    LOG_INF("-");
+                } else {
+                    LOG_INF("?");
+                }
             }
             LOG_INF("\n");
         }
@@ -760,45 +772,6 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         ggml_tensor* kqv_out_reshaped = ggml_reshape_tensor(compute_ctx, kqv_out, Q->ne[0], kqv_out->ne[1], Q->ne[2],  kqv_out->ne[3]);
         LOG_INF("KQV attn output with shape [%d, %d, %d, %d] : \n", kqv_out_reshaped->ne[0], kqv_out_reshaped->ne[1], kqv_out_reshaped->ne[2], kqv_out_reshaped->ne[3]);
         ggml_print_tensor((uint8_t*)kqv_out_reshaped->data, kqv_out_reshaped->type, kqv_out_reshaped->ne, kqv_out_reshaped->nb, 8);
-
-        // ggml_print_tensor((uint8_t*)kqv_out->data, kqv_out->type, kqv_out->ne, kqv_out->nb, 8);
-
-
-        // if (flash_result) {
-        //     LOG_INF("Flash Attention computation successful!\n");
-        //     ggml_print_tensor_info((uint8_t*)flash_result->data, flash_result->type,
-        //                          flash_result->ne, flash_result->nb, "Flash Attention Result", 4);
-
-        //     // Compare with original kqv_out if available
-        //     if (kqv_out && kqv_out->data) {
-        //         LOG_INF("Comparing with original kqv_out:\n");
-        //         ggml_print_tensor_info((uint8_t*)kqv_out->data, kqv_out->type,
-        //                              kqv_out->ne, kqv_out->nb, "Original KQV_OUT", 4);
-
-        //         // Calculate difference if same size
-        //         if (ggml_nelements(flash_result) == ggml_nelements(kqv_out) &&
-        //             flash_result->type == GGML_TYPE_F32 && kqv_out->type == GGML_TYPE_F32) {
-
-        //             float* flash_data = (float*)flash_result->data;
-        //             float* orig_data  = (float*)kqv_out->data;
-        //             size_t n_elements = ggml_nelements(flash_result);
-
-        //             double mse = 0.0;
-        //             double max_diff = 0.0;
-        //             for (size_t i = 0; i < n_elements; i++) {
-        //                 double diff = fabs(flash_data[i] - orig_data[i]);
-        //                 mse += diff * diff;
-        //                 max_diff = std::max(max_diff, diff);
-        //             }
-        //             mse /= n_elements;
-
-        //             LOG_INF("Difference Analysis: MSE: %.10f, Max Diff: %.10f, RMSE: %.10f\n", mse, max_diff, sqrt(mse));
-        //         }
-        //     }
-        // } else {
-        //     LOG_ERR("Flash Attention computation failed!\n");
-        // }
-
     }
     // Free flash attention model
     ggml_free(compute_ctx);

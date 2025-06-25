@@ -132,7 +132,7 @@ int main() {
     const int n_heads        = 32;
     const int n_kv_heads     = 8;
     const int seq_len        = 2;
-    const int kv_len         = 4;  // Will be split into segments
+    const int kv_len         = 64 * 1024;  // Will be split into segments
     const int n_threads      = 4;
     const int kv_segments    = 2;  // Split KV into 2 segments
     const int kv_segment_len = kv_len / kv_segments;
@@ -147,7 +147,7 @@ int main() {
     struct ggml_init_params params   = {
         /*.mem_size   =*/ctx_size,
         /*.mem_buffer =*/NULL,
-        /*.no_alloc   =*/false,
+        /*.no_alloc   =*/false, //> This will allocate memory for this context.
     };
 
     struct ggml_context * ctx = ggml_init(params);
@@ -162,9 +162,9 @@ int main() {
     printf("\n--- Creating Fixed Test Data ---\n");
 
     // Create tensors for flash attention
-    // Format: [head_dim, seq_len, n_heads, 1] for Q
-    // Format: [head_dim, kv_len, n_kv_heads, 1] for K, V
-    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads, 1);
+    // Format: [head_dim, seq_len, n_heads,    1] for Q
+    // Format: [head_dim, kv_len,  n_kv_heads, 1] for K, V
+    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads,   1);
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
     ggml_tensor * v = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
 
@@ -327,14 +327,14 @@ int main() {
             return 1;
         }
 
-        // CRITICAL FIX: Redirect the operation's output to our accumulation tensor
-        // This ensures that each segment reads from and writes to the same tensor
+        // HACK: Redirect the operation's output to our accumulation tensor
         result_seg->data  = result_segmented->data;
         result_seg->nb[0] = result_segmented->nb[0];
         result_seg->nb[1] = result_segmented->nb[1];
         result_seg->nb[2] = result_segmented->nb[2];
         result_seg->nb[3] = result_segmented->nb[3];
 
+        //> Do real compute.
         struct ggml_cgraph * graph_seg = ggml_new_graph(ctx);
         ggml_build_forward_expand(graph_seg, result_seg);
 

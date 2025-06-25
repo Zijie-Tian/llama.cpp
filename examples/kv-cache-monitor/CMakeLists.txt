@@ -1,11 +1,18 @@
 # KQV Trace Monitor
 set(TARGET_KV_CACHE_MONITOR kqv-trace-monitor)
 set(TARGET_KQV_READER kqv-tensor-reader)
+set(TARGET_MASK_TRACE_MONITOR mask-trace-monitor)
 
 add_executable(${TARGET_KV_CACHE_MONITOR} kqv-trace-monitor.cpp)
 install(TARGETS ${TARGET_KV_CACHE_MONITOR} RUNTIME DESTINATION bin)
 target_link_libraries(${TARGET_KV_CACHE_MONITOR} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(${TARGET_KV_CACHE_MONITOR} PRIVATE cxx_std_11)
+
+# Mask Trace Monitor
+add_executable(${TARGET_MASK_TRACE_MONITOR} mask-trace-monitor.cpp)
+install(TARGETS ${TARGET_MASK_TRACE_MONITOR} RUNTIME DESTINATION bin)
+target_link_libraries(${TARGET_MASK_TRACE_MONITOR} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
+target_compile_features(${TARGET_MASK_TRACE_MONITOR} PRIVATE cxx_std_11)
 
 # KV Quant Monitor
 add_executable(llama-kv-quant-monitor kv-quant-monitor.cpp)

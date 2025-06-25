@@ -1003,7 +1003,7 @@ bool llama_kv_cache_mixed::find_slot(const llama_ubatch & ubatch) {
     n = std::min(size, std::max(n_pad, GGML_PAD(cell_max(), n_pad)));                       //> Virtual head of kv cache.
     n_quantized = std::min(size, std::max(n_pad, GGML_PAD(cell_max_quantized(), n_pad)));   //> Virtual head of quantized kv cache.
     
-    // LLAMA_LOG_INFO("\n[mixed-kv] successfully allocated slot: head=%u, used=%u, n=%u, n_quantized=%u, cell_max=%u, cell_max_quantized=%u\n", head, used, n, n_quantized, cell_max(), cell_max_quantized());
+    LLAMA_LOG_INFO("\n[mixed-kv] successfully allocated slot: head=%u, used=%u, n=%u, n_quantized=%u, cell_max=%u, cell_max_quantized=%u\n", head, used, n, n_quantized, cell_max(), cell_max_quantized());
 
     return true;
 }
@@ -1016,11 +1016,15 @@ uint32_t llama_kv_cache_mixed::get_n() const {
     return n;
 }
 
+uint32_t llama_kv_cache_mixed::get_n_quantized() const {
+    return n_quantized;
+}
+
 uint32_t llama_kv_cache_mixed::get_size() const {
     return size;
 }
 
-void llama_kv_cache_mixed::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
+void llama_kv_cache_mixed::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn, bool is_quantized) const {
     const int64_t n_tokens     = ubatch->n_tokens;
     const int64_t n_seq_tokens = ubatch->n_seq_tokens;
     const int64_t n_seqs       = ubatch->n_seqs;
@@ -1028,7 +1032,13 @@ void llama_kv_cache_mixed::set_input_kq_mask(ggml_tensor * dst, const llama_ubat
     GGML_ASSERT(ggml_backend_buffer_is_host(dst->buffer));
     float * data = (float *) dst->data;
 
-    const int64_t n_kv = n;
+    // Choose the correct KV length based on whether we're setting mask for quantized or FP16 part
+    // - For FP16 mask (is_quantized=false): use n (covers recent tokens)
+    // - For quantized mask (is_quantized=true): use n_quantized (covers older tokens)
+    const int64_t n_kv = is_quantized ? n_quantized : n;
+
+    LLAMA_LOG_DEBUG("[mixed-kv] Setting %s mask: n_kv=%ld (n=%u, n_quantized=%u)\n", 
+                   is_quantized ? "quantized" : "FP16", n_kv, n, n_quantized);
 
     // Use only the previous KV cells of the correct sequence for each token of the ubatch.
     // It's assumed that if a token in the batch has multiple sequences, they are equivalent.
@@ -1057,6 +1067,15 @@ void llama_kv_cache_mixed::set_input_kq_mask(ggml_tensor * dst, const llama_ubat
 
                     bool masked = false;
 
+                    // Rule 0: For mixed cache, check if cell belongs to the part we're masking
+                    // - For FP16 mask: only include non-quantized cells
+                    // - For quantized mask: only include quantized cells
+                    if (is_quantized) {
+                        masked = masked || (!cells[i].is_quantized());  // Skip non-quantized cells for quantized mask
+                    } else {
+                        masked = masked || (cells[i].is_quantized());   // Skip quantized cells for FP16 mask
+                    }
+
                     // Rule 1: If key token not in current query token's sequence, mask.
                     masked = masked || (!cells[i].has_seq_id(seq_id));  //> This cell is not in the current query token's sequence.
 
@@ -1079,8 +1098,7 @@ void llama_kv_cache_mixed::set_input_kq_mask(ggml_tensor * dst, const llama_ubat
             }
         }
 
-        // TODO : Adapt to mixed kv cache.
-        // Rule 4: Mask padding tokens in batch
+        // Rule 4: Mask padding tokens in batch (adapted for mixed KV cache)
         if (data) {
             for (int i = n_tokens; i < GGML_PAD(n_tokens, GGML_KQ_MASK_PAD); ++i) {
                 for (int j = 0; j < n_kv; ++j) {

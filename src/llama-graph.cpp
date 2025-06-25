@@ -380,7 +380,11 @@ void llm_graph_input_attn_kv_unified_iswa::set_input(const llama_ubatch * ubatch
 
 void llm_graph_input_attn_kv_mixed::set_input(const llama_ubatch * ubatch) {
     if (self_kq_mask) {
-        kv_self->set_input_kq_mask(self_kq_mask, ubatch, cparams.causal_attn);
+        kv_self->set_input_kq_mask(self_kq_mask, ubatch, cparams.causal_attn, false);
+    }
+
+    if (self_kq_mask_quant) {
+        kv_self->set_input_kq_mask(self_kq_mask_quant, ubatch, cparams.causal_attn, true);
     }
 }
 
@@ -1216,6 +1220,7 @@ ggml_tensor * llm_graph_context::build_attn(
     ggml_build_forward_expand(gf, v_cur);
 
     const auto & kq_mask = inp->get_kq_mask();
+    cb(kq_mask, "KQ_mask", il);
 
     ggml_tensor * q = q_cur;
     ggml_tensor * k = k_cur;
@@ -1286,7 +1291,7 @@ ggml_tensor * llm_graph_context::build_attn(
     }
 
     const auto & kq_mask = inp->get_kq_mask();
-    cb(kq_mask, "KQ_mask", il);
+    cb(kq_mask, "kq_mask", il);
 
     ggml_tensor * q = q_cur;
     ggml_tensor * k = kv_self->get_k(ctx0, il);
@@ -1605,12 +1610,25 @@ llm_graph_input_attn_kv_mixed * llm_graph_context::build_attn_inp_kv_mixed() con
 
     auto inp = std::make_unique<llm_graph_input_attn_kv_mixed>(hparams, cparams, kv_self);
 
-    const auto n_kv = kv_self->get_n();
+    {
+        const auto n_kv = kv_self->get_n();
+        
+        inp->self_kq_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_kv, GGML_PAD(n_tokens, GGML_KQ_MASK_PAD));
+        ggml_set_input(inp->self_kq_mask);
+        ggml_format_name(inp->self_kq_mask, "kq_mask_fp16");
 
-    inp->self_kq_mask = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_kv, GGML_PAD(n_tokens, GGML_KQ_MASK_PAD));
-    ggml_set_input(inp->self_kq_mask);
+        inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask, GGML_TYPE_F16) : inp->self_kq_mask;
+    }
 
-    inp->self_kq_mask_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask, GGML_TYPE_F16) : inp->self_kq_mask;
+    {
+        const auto n_kv = kv_self->get_n_quantized();  // Use n_quantized instead of n
+        
+        inp->self_kq_mask_quant = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, n_kv, GGML_PAD(n_tokens, GGML_KQ_MASK_PAD));
+        ggml_set_input(inp->self_kq_mask_quant);
+        ggml_format_name(inp->self_kq_mask_quant, "kq_mask_quant");
+
+        inp->self_kq_mask_quant_cnv = cparams.flash_attn ? ggml_cast(ctx0, inp->self_kq_mask_quant, GGML_TYPE_F16) : inp->self_kq_mask_quant;
+    }
 
     return (llm_graph_input_attn_kv_mixed *) res->add_input(std::move(inp));
 }
@@ -1733,103 +1751,165 @@ ggml_tensor * llm_graph_context::build_attn_mha_with_state(
          ggml_tensor * k_quant,
          ggml_tensor * v_quant,
          ggml_tensor * kq_b,
-         ggml_tensor * kq_mask,
+         ggml_tensor * kq_mask_fp16,
+         ggml_tensor * kq_mask_quant,
          ggml_tensor * v_mla,
              float     kq_scale) const {
     
     GGML_UNUSED(gf);
     GGML_UNUSED(kq_b);  // Only used in assertion
     
+    GGML_ASSERT(k_fp16 != nullptr && "Flash attention with state requires FP16 KV cache");
+    GGML_ASSERT(v_fp16 != nullptr && "Flash attention with state requires FP16 KV cache");
     GGML_ASSERT(kq_b == nullptr && "Flash attention with state does not support KQ bias yet");
-    
-    // Apply permutations first (like build_attn_mha)
-    q = ggml_permute(ctx0, q, 0, 2, 1, 3);
-    
-    const auto n_tokens = q->ne[1];  // sequence length for queries
-    const auto n_head   = q->ne[2];  // number of heads
-    
-    // Check if we have any valid segments to process - be more careful with null checks
-    bool has_fp16_segment = (k_fp16 && v_fp16 && k_fp16->ne[1] > 0 && v_fp16->ne[1] > 0);
-    bool has_quant_segment = (k_quant && v_quant && k_quant->ne[1] > 0 && v_quant->ne[1] > 0);
-    
-    // Handle empty cache case - just return zero output for now
-    if (!has_fp16_segment && !has_quant_segment) {
-        ggml_tensor * cur = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 
-                                               q->ne[0], q->ne[1], q->ne[2], q->ne[3]);
-        ggml_set_zero(cur);
-        cb(cur, "attn_empty_result", -1);
-        return ggml_reshape_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
-    }
-    
-    // For now, use single segment approach with standard flash attention (stable version)
-    ggml_tensor * k_to_use = nullptr;
-    ggml_tensor * v_to_use = nullptr;
-    
-    // Permute and prepare the tensors we'll use
-    if (has_fp16_segment) {
-        k_fp16 = ggml_permute(ctx0, k_fp16, 0, 2, 1, 3);
-        v_fp16 = ggml_permute(ctx0, v_fp16, 0, 2, 1, 3);
-        
-        // Cast to F16 if needed
-        if (k_fp16->type == GGML_TYPE_F32) {
-            k_fp16 = ggml_cast(ctx0, k_fp16, GGML_TYPE_F16);
-        }
-        if (v_fp16->type == GGML_TYPE_F32) {
-            v_fp16 = ggml_cast(ctx0, v_fp16, GGML_TYPE_F16);
-        }
-        
-        k_to_use = k_fp16;
-        v_to_use = v_fp16;
-    } else if (has_quant_segment) {
-        k_quant = ggml_permute(ctx0, k_quant, 0, 2, 1, 3);
-        v_quant = ggml_permute(ctx0, v_quant, 0, 2, 1, 3);
-        
-        k_to_use = k_quant;
-        v_to_use = v_quant;
-    }
-    
+
+    // Check if we have any valid segments to process
+    bool has_fp16_segment   = (k_fp16   && v_fp16   && k_fp16->ne[1] > 0    && v_fp16->ne[1] > 0);
+    bool has_quant_segment  = (k_quant  && v_quant  && k_quant->ne[1] > 0   && v_quant->ne[1] > 0);
+
+    GGML_ASSERT(has_fp16_segment && "Flash attention with state requires FP16 segment");
+    GGML_ASSERT(has_quant_segment && "Flash attention with state requires quantized segment");
+
     ggml_tensor * cur = nullptr;
+
+    //> ===================================================================================================
+    //> Following begin the Flash Attention standard. (for Debug)
+    //> ===================================================================================================
+
+//     const bool v_trans = v_fp16->nb[1] > v_fp16->nb[2];
+
+//     // Apply permutations first (like build_attn_mha)
+//     q       = ggml_permute(ctx0, q, 0, 2, 1, 3);
+//     k_fp16  = ggml_permute(ctx0, k_fp16, 0, 2, 1, 3);
+//     v_fp16  = ggml_permute(ctx0, v_fp16, 0, 2, 1, 3);
+
+//     // Get dimensions
+//     const auto seq_len    = q->ne[1];      // sequence length for queries
+//     const auto n_head     = q->ne[2];      // number of Q heads
+//     const auto n_kv_fp16  = k_fp16->ne[1]; // number of keys/values
+//     const auto n_kv_quant = k_quant->ne[1]; // number of keys/values
+
+//     GGML_ASSERT(kq_b == nullptr && "Flash attention does not support KQ bias yet");
+
+//     if (v_trans) {
+//         v_fp16 = ggml_transpose(ctx0, v_fp16);
+//     }
+
+//     // this can happen when KV cache is not used (e.g. an embedding model with non-causal attn)
+//     if (k_fp16->type == GGML_TYPE_F32) {
+//         k_fp16 = ggml_cast(ctx0, k_fp16, GGML_TYPE_F16);
+//     }
+
+//     if (v_fp16->type == GGML_TYPE_F32) {
+//         v_fp16 = ggml_cast(ctx0, v_fp16, GGML_TYPE_F16);
+//     }
+
+//     cur = ggml_flash_attn_ext(ctx0, q, k_fp16, v_fp16, kq_mask_fp16, kq_scale, hparams.f_max_alibi_bias,
+//                                 hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+
+//     ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
+
+//     if (v_mla) {
+// #if 0
+//         // v_mla can be applied as a matrix-vector multiplication with broadcasting across dimension 3 == n_tokens.
+//         // However, the code is optimized for dimensions 0 and 1 being large, so this is ineffient.
+//         cur = ggml_reshape_4d(ctx0, cur, v_mla->ne[0], 1, n_head, n_tokens);
+//         cur = ggml_mul_mat(ctx0, v_mla, cur);
+// #else
+//         // It's preferable to do the calculation as a matrix-matrix multiplication with n_tokens in dimension 1.
+//         // The permutations are noops and only change how the tensor data is interpreted.
+//         cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
+//         cur = ggml_mul_mat(ctx0, v_mla, cur);
+//         cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
+//         cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects contiguous inputs.
+// #endif
+//     }
+
+//     cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
+
+    //> ===================================================================================================
+    //> Following begin the algo.
+    //> ===================================================================================================
     
-    if (cparams.flash_attn && k_to_use && v_to_use) {
-        // Use standard flash attention for single segment
-        cur = ggml_flash_attn_ext(ctx0, q, k_to_use, v_to_use, kq_mask,
-                                  kq_scale, hparams.f_max_alibi_bias,
-                                  hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
-        ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
-        cb(cur, "attn_single_result", -1);
-    } else {
-        // Fallback to standard attention
-        ggml_tensor * kq = ggml_mul_mat(ctx0, k_to_use, q);
-        ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
+    // Process FP16 segment (newer tokens)
+    q       = ggml_permute(ctx0, q, 0, 2, 1, 3);
+    k_fp16  = ggml_permute(ctx0, k_fp16, 0, 2, 1, 3);
+    v_fp16  = ggml_permute(ctx0, v_fp16, 0, 2, 1, 3);
+    // Process quantized segment first (older tokens)
+    k_quant = ggml_permute(ctx0, k_quant, 0, 2, 1, 3);
+    v_quant = ggml_permute(ctx0, v_quant, 0, 2, 1, 3);
 
-        if (hparams.attn_soft_cap) {
-            kq = ggml_scale(ctx0, kq, 1.0f / hparams.f_attn_logit_softcapping);
-            kq = ggml_tanh (ctx0, kq);
-            kq = ggml_scale(ctx0, kq, hparams.f_attn_logit_softcapping);
-        }
+    // Get dimensions
+    const auto seq_len    = q->ne[1];       // sequence length for queries
+    const auto n_head     = q->ne[2];       // number of Q heads
+    const auto n_kv_fp16  = k_fp16->ne[1];  // number of keys/values
+    const auto n_kv_quant = k_quant->ne[1]; // number of keys/values
 
-        kq = ggml_soft_max_ext(ctx0, kq, kq_mask, kq_scale, hparams.f_max_alibi_bias);
-
-        ggml_tensor * kqv = ggml_mul_mat(ctx0, v_to_use, kq);
-
-        cur = ggml_permute(ctx0, kqv, 0, 2, 1, 3);
-        cur = ggml_cont_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
-        cb(cur, "attn_fallback_result", -1);
+    // TODO : Modify these tensors to be non-dynamic alloc.
+    // Create state tensor: [2, n_heads * seq_len] for [M, S] pairs
+    ggml_tensor * state = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 2, n_head * seq_len);
+    ggml_set_input(state);
+    cb(state, "state", -1);
+    
+    // Create output tensor
+    ggml_tensor * result = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 
+                                               q->ne[0], q->ne[1], q->ne[2], q->ne[3]);
+    ggml_set_input(result);
+    cb(result, "result", -1);
+    
+    // Cast to F16 if needed for flash attention
+    if (k_fp16->type == GGML_TYPE_F32) {
+        k_fp16 = ggml_cast(ctx0, k_fp16, GGML_TYPE_F16);
+    }
+    if (v_fp16->type == GGML_TYPE_F32) {
+        v_fp16 = ggml_cast(ctx0, v_fp16, GGML_TYPE_F16);
     }
     
-    // Handle MLA (multi-latent attention) if needed
-    if (v_mla && cur) {
-        cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
-        cur = ggml_mul_mat(ctx0, v_mla, cur);
-        cur = ggml_permute(ctx0, cur, 0, 2, 1, 3);
-        cur = ggml_cont(ctx0, cur); // Needed because ggml_reshape_2d expects contiguous inputs
-    }
+    ggml_tensor * result_fp16 = ggml_flash_attn_ext_with_state(
+        ctx0, q, k_fp16, v_fp16, kq_mask_fp16, state,
+        kq_scale, hparams.f_max_alibi_bias,
+        hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f
+    );
+    ggml_flash_attn_ext_set_prec(result_fp16, GGML_PREC_F32);
     
-    // Reshape to final output format if not already done
-    if (cur && cur->ne[0] * n_head != cur->ne[0] * cur->ne[2]) {
-        cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*n_head, n_tokens);
-    }
+    // HACK : Redirect output to accumulate in our result tensor
+    result_fp16->data = result->data;
+    result_fp16->nb[0] = result->nb[0];
+    result_fp16->nb[1] = result->nb[1];
+    result_fp16->nb[2] = result->nb[2];
+    result_fp16->nb[3] = result->nb[3];
+
+
+    // // Cast to F16 if needed for flash attention
+    // if (k_quant->type == GGML_TYPE_F32) {
+    //     k_quant = ggml_cast(ctx0, k_quant, GGML_TYPE_F16);
+    // }
+    // if (v_quant->type == GGML_TYPE_F32) {
+    //     v_quant = ggml_cast(ctx0, v_quant, GGML_TYPE_F16);
+    // }
     
+    ggml_tensor * result_quant = ggml_flash_attn_ext_with_state(
+        ctx0, q, k_quant, v_quant, kq_mask_quant, state,
+        kq_scale, hparams.f_max_alibi_bias,
+        hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f
+    );
+    ggml_flash_attn_ext_set_prec(result_quant, GGML_PREC_F32);
+    
+    // Redirect output to accumulate in our result tensor
+    result_quant->data = result->data;
+    result_quant->nb[0] = result->nb[0];
+    result_quant->nb[1] = result->nb[1];
+    result_quant->nb[2] = result->nb[2];
+    result_quant->nb[3] = result->nb[3];
+    
+    cb(result_quant, "attn_result_quant", -1);
+    cur = result;
+        
+    // Reshape to final output format
+    cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*n_head, seq_len);
+    
+    ggml_build_forward_expand(gf, cur);
+
     return cur;
 }
 
@@ -1860,8 +1940,11 @@ ggml_tensor * llm_graph_context::build_attn_mixed_with_state(
         ggml_build_forward_expand(gf, kv_self->cpy_v(ctx0, v_cur, il));
     }
 
-    const auto & kq_mask = inp->get_kq_mask();
-    cb(kq_mask, "KQ_mask", il);
+    const auto & kq_mask_fp16 = inp->get_kq_mask();
+    cb(kq_mask_fp16, "kq_mask_fp16", il);
+
+    const auto & kq_mask_quant = inp->get_kq_mask_quant();
+    cb(kq_mask_quant, "kq_mask_quant", il);
 
     // Get FP16 KV cache (recent tokens)
     ggml_tensor * k_fp16 = kv_self->get_k(ctx0, il);
@@ -1874,7 +1957,7 @@ ggml_tensor * llm_graph_context::build_attn_mixed_with_state(
     // Use the segmented flash attention with state
     ggml_tensor * cur = build_attn_mha_with_state(
         gf, q_cur, k_fp16, v_fp16, k_quant, v_quant, 
-        kq_b, kq_mask, v_mla, kq_scale
+        kq_b, kq_mask_fp16, kq_mask_quant, v_mla, kq_scale
     );
     cb(cur, "kqv_out", il);
 
