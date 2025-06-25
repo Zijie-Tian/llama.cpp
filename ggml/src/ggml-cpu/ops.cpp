@@ -7157,7 +7157,9 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         const ggml_tensor * k,
         const ggml_tensor * v,
         const ggml_tensor * mask,
-        const ggml_tensor * state,
+        const ggml_tensor * k_quant,
+        const ggml_tensor * v_quant,
+        const ggml_tensor * mask_quant,
         ggml_tensor * dst) {
 
     GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
@@ -7169,11 +7171,23 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     GGML_TENSOR_LOCALS(int64_t, ne,  dst, ne)
     GGML_TENSOR_LOCALS(size_t,  nb,  dst, nb)
 
-    // Validate state tensor format: [2, n_heads * q_len]
-    GGML_ASSERT(state != NULL);
-    GGML_ASSERT(state->ne[0] == 2);  // [M, S] pairs
-    GGML_ASSERT(state->ne[1] == neq2 * neq1);  // n_heads * q_len
-    GGML_ASSERT(state->type == GGML_TYPE_F32);
+    // Get quantized tensor dimensions if available
+    int64_t nek_quant1 = 0, nev_quant1 = 0;
+    size_t nbk_quant1 = 0, nbv_quant1 = 0, nbk_quant2 = 0, nbv_quant2 = 0, nbk_quant3 = 0, nbv_quant3 = 0;
+    
+    if (k_quant) {
+        nek_quant1 = k_quant->ne[1];
+        nbk_quant1 = k_quant->nb[1];
+        nbk_quant2 = k_quant->nb[2];
+        nbk_quant3 = k_quant->nb[3];
+    }
+    
+    if (v_quant) {
+        nev_quant1 = v_quant->ne[1];
+        nbv_quant1 = v_quant->nb[1];
+        nbv_quant2 = v_quant->nb[2];
+        nbv_quant3 = v_quant->nb[3];
+    }
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -7247,8 +7261,36 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     ggml_vec_dot_t    const kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
     ggml_to_float_t   const v_to_float     = ggml_get_type_traits(v->type)->to_float;
 
+    // Get quantized processing functions if k_quant/v_quant are provided
+    ggml_vec_dot_t kq_vec_dot_quant = NULL;
+    ggml_to_float_t v_quant_to_float = NULL;
+    
+    if (k_quant) {
+        kq_vec_dot_quant = ggml_get_type_traits_cpu(k_quant->type)->vec_dot;
+    }
+    
+    if (v_quant) {
+        v_quant_to_float = ggml_get_type_traits(v_quant->type)->to_float;
+    }
+
     GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
+
+    // Calculate workspace size needed for state buffer
+    // Each query position needs [M, S] pair per head: [2, n_heads * q_len]
+    const size_t state_size = 2 * neq2 * neq1 * sizeof(float);
+    const size_t workspace_offset = ith * (1*DK + 2*DV + CACHE_LINE_SIZE_F32 + (state_size + sizeof(float) - 1) / sizeof(float));
+    
+    // Use workspace as state buffer
+    float * state_data = (float *) params->wdata + workspace_offset + (1*DK + 2*DV + CACHE_LINE_SIZE_F32);
+
+    // Initialize state for this thread on first use
+    if (ith == 0) {
+        for (size_t i = 0; i < neq2 * neq1; i++) {
+            state_data[i * 2 + 0] = -INFINITY;  // M (max KQ value)
+            state_data[i * 2 + 1] = 0.0f;       // S (sum)
+        }
+    }
 
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
@@ -7262,9 +7304,8 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
         // Calculate state tensor offset for this head/position
         const int64_t state_idx = iq2 * neq1 + iq1;  // head * q_len + position
-        float * state_data = (float *)state->data;
         
-        // Read initial S and M values from state tensor 
+        // Read initial S and M values from workspace state buffer
         // State format: [M, S] for each head/position
         float S = state_data[state_idx * 2 + 1];     // sum (index 1)
         float M = state_data[state_idx * 2 + 0];     // maximum KQ value (index 0)
@@ -7272,7 +7313,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         // Check if this is a continuation of previous segments
         bool is_continuation = (M != -INFINITY && S > 0.0f);
 
-        float       * VKQ32 = (float       *) params->wdata + ith*(1*DK + 2*DV + CACHE_LINE_SIZE_F32); // FP32 VKQ accumulator
+        float       * VKQ32 = (float       *) params->wdata + workspace_offset + 0; // FP32 VKQ accumulator
         float       * V32   =                 (VKQ32 + 1*DV); // (temporary) FP32 V buffer
         ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator
         ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
@@ -7314,8 +7355,6 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
             }
         }
 
-        const ggml_fp16_t * mp = mask ? (ggml_fp16_t *)((char *) mask->data + iq1*mask->nb[1]) : NULL;
-
         // k indices
         const int ik3 = iq3 / rk3;
         const int ik2 = iq2 / rk2;
@@ -7327,11 +7366,14 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         const float * pq = (const float *) ((char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3));
         q_to_vec_dot(pq, Q_q, DK);
 
-        // online softmax / attention
+        // Process FP16 KV cache first
+        const ggml_fp16_t * mp_fp16 = mask ? (ggml_fp16_t *)((char *) mask->data + iq1*mask->nb[1]) : NULL;
+        
+        // online softmax / attention for FP16 tokens
         // loop over n_kv and n_head_kv
         // ref: https://arxiv.org/pdf/2112.05682.pdf
         for (int64_t ic = 0; ic < nek1; ++ic) {
-            const float mv = mp ? slope*GGML_FP16_TO_FP32(mp[ic]) : 0.0f;
+            const float mv = mp_fp16 ? slope*GGML_FP16_TO_FP32(mp_fp16[ic]) : 0.0f;
             if (mv == -INFINITY) {
                 continue;
             }
@@ -7399,7 +7441,89 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
             S = S*ms + vs; // scale and increment sum with partial sum
         }
 
-        // Write updated S and M values back to state tensor
+        // Process quantized KV cache if available
+        if (k_quant && v_quant && nek_quant1 > 0) {
+            const ggml_fp16_t * mp_quant = mask_quant ? (ggml_fp16_t *)((char *) mask_quant->data + iq1*mask_quant->nb[1]) : NULL;
+            
+            // online softmax / attention for quantized tokens
+            for (int64_t ic = 0; ic < nek_quant1; ++ic) {
+                const float mv = mp_quant ? slope*GGML_FP16_TO_FP32(mp_quant[ic]) : 0.0f;
+                if (mv == -INFINITY) {
+                    continue;
+                }
+
+                float s; // KQ value
+
+                //> k_quant_data: [head_dim, kv_len_quant, n_kv_head, n_kv_batch]
+                const char * k_quant_data = (const char *) k_quant->data + ( ic*nbk_quant1 + ik2*nbk_quant2 + ik3*nbk_quant3);
+                kq_vec_dot_quant(DK, &s, 0, k_quant_data, 0, Q_q, 0, 1);
+
+                s = s*scale; // scale KQ value
+
+                if (logit_softcap != 0.0f) {
+                    s = logit_softcap*tanhf(s);
+                }
+
+                s += mv; // apply mask
+
+                const float Mold = M;
+
+                float ms = 1.0f; // upon new higher max val, scale VKQ and KQ sum with this value
+                float vs = 1.0f; // post-softmax KQ value, expf(s - M)
+
+                const char * v_quant_data = ((const char *) v_quant->data + (ic*nbv_quant1 + iv2*nbv_quant2 + iv3*nbv_quant3));
+
+                if (v->type == GGML_TYPE_F16) {
+                    if (s > M) {
+                        // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                        M = s;
+                        ms = expf(Mold - M);
+
+                        // V = V*expf(Mold - M)
+                        ggml_vec_scale_f16(DV, VKQ16, ms);
+                    } else {
+                        // no new maximum, ms == 1.0f, vs != 1.0f
+                        vs = expf(s - M);
+                    }
+
+                    // V += v*expf(s - M)
+                    if (v_quant_to_float) {
+                        v_quant_to_float(v_quant_data, V32, DV);
+                        // Convert to FP16 and add
+                        for (int64_t d = 0; d < DV; ++d) {
+                            VKQ16[d] = GGML_FP32_TO_FP16(GGML_FP16_TO_FP32(VKQ16[d]) + V32[d] * vs);
+                        }
+                    } else if (v_quant->type == GGML_TYPE_F16) {
+                        ggml_vec_mad_f16(DV, VKQ16, (const ggml_fp16_t *) v_quant_data, vs);
+                    }
+                } else {
+                    if (s > M) {
+                        // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                        M = s;
+                        ms = expf(Mold - M);
+
+                        // V = V*expf(Mold - M)
+                        ggml_vec_scale_f32(DV, VKQ32, ms);
+                    } else {
+                        // no new maximum, ms == 1.0f, vs != 1.0f
+                        vs = expf(s - M);
+                    }
+
+                    // V += v*expf(s - M)
+                    if (v_quant_to_float) {
+                        v_quant_to_float(v_quant_data, V32, DV);
+                        ggml_vec_mad_f32(DV, VKQ32, V32, vs);
+                    } else if (v_quant->type == GGML_TYPE_F32) {
+                        // V_quant is F32
+                        ggml_vec_mad_f32(DV, VKQ32, (const float *) v_quant_data, vs);
+                    }
+                }
+
+                S = S*ms + vs; // scale and increment sum with partial sum
+            }
+        }
+
+        // Write updated S and M values back to workspace state buffer
         state_data[state_idx * 2 + 0] = M; // maximum KQ value (index 0)
         state_data[state_idx * 2 + 1] = S; // sum (index 1)
 
@@ -7778,12 +7902,12 @@ void ggml_compute_forward_flash_attn_ext(
         case GGML_PREC_F32:
             {
                 // uses F32 accumulators
-                // Check if we have additional sources beyond the required ones for state tensor
-                if (dst->src[6] != nullptr) {
-                    // State tensor is provided as src[6] - use enhanced function with S/M state
-                    ggml_compute_forward_flash_attn_ext_f16_with_state(params, q, k, v, mask, dst->src[6], dst);
+                // Check if we have additional sources for mixed KV cache (k_quant, v_quant, mask_quant)
+                if (dst->src[4] != nullptr || dst->src[5] != nullptr || dst->src[6] != nullptr) {
+                    // Mixed KV cache - use enhanced function with k_quant/v_quant support
+                    ggml_compute_forward_flash_attn_ext_f16_with_state(params, q, k, v, mask, dst->src[4], dst->src[5], dst->src[6], dst);
                 } else {
-                    // Standard function without state tensor
+                    // Standard function without mixed KV cache
                     ggml_compute_forward_flash_attn_ext_f16(params, q, k, v, mask, dst);
                 }
             } break;

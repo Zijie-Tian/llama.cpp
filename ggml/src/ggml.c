@@ -2548,7 +2548,6 @@ struct ggml_tensor * ggml_elu_inplace(
     return ggml_unary_inplace(ctx, a, GGML_UNARY_OP_ELU);
 }
 // ggml_relu
-
 struct ggml_tensor * ggml_relu(
         struct ggml_context * ctx,
         struct ggml_tensor  * a) {
@@ -4468,7 +4467,6 @@ struct ggml_tensor * ggml_timestep_embedding(
     return result;
 }
 // ggml_argsort
-
 struct ggml_tensor * ggml_argsort(
         struct ggml_context  * ctx,
         struct ggml_tensor   * a,
@@ -4596,7 +4594,9 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
         struct ggml_tensor  * k,
         struct ggml_tensor  * v,
         struct ggml_tensor  * mask,
-        struct ggml_tensor  * s_m_state,
+        struct ggml_tensor  * k_quant,
+        struct ggml_tensor  * v_quant,
+        struct ggml_tensor  * mask_quant,
         float                 scale,
         float                 max_bias,
         float                 logit_softcap) {
@@ -4612,15 +4612,30 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
         //GGML_ASSERT(ggml_can_repeat_rows(mask, qk));
     }
 
+    if (mask_quant) {
+        GGML_ASSERT(ggml_is_contiguous(mask_quant));
+        GGML_ASSERT(mask_quant->ne[2] == 1);
+        GGML_ASSERT(mask_quant->ne[3] == 1);
+        GGML_ASSERT(mask_quant->ne[1] >= GGML_PAD(q->ne[1], GGML_KQ_MASK_PAD) &&
+                "the Flash-Attention kernel requires the mask_quant to be padded to GGML_KQ_MASK_PAD and at least n_queries big");
+    }
+
     if (max_bias > 0.0f) {
         GGML_ASSERT(mask);
     }
 
-    // Validate state tensor format: [2, n_heads * q_len]
-    GGML_ASSERT(s_m_state != NULL);
-    GGML_ASSERT(s_m_state->ne[0] == 2);  // [M, S] pairs
-    GGML_ASSERT(s_m_state->ne[1] == q->ne[2] * q->ne[1]);  // n_heads * q_len
-    GGML_ASSERT(s_m_state->type == GGML_TYPE_F32);
+    // Validate k_quant and v_quant if provided
+    if (k_quant) {
+        GGML_ASSERT(k_quant->ne[0] == k->ne[0]); // same head_dim
+        GGML_ASSERT(k_quant->ne[2] == k->ne[2]); // same n_kv_heads
+        GGML_ASSERT(k_quant->ne[3] == k->ne[3]); // same batch
+    }
+    
+    if (v_quant) {
+        GGML_ASSERT(v_quant->ne[0] == v->ne[0]); // same head_dim
+        GGML_ASSERT(v_quant->ne[2] == v->ne[2]); // same n_kv_heads
+        GGML_ASSERT(v_quant->ne[3] == v->ne[3]); // same batch
+    }
 
     // permute(0, 2, 1, 3)
     int64_t ne[4] = { v->ne[0], q->ne[2], q->ne[1], q->ne[3] };
@@ -4634,9 +4649,9 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
     result->src[1] = k;
     result->src[2] = v;
     result->src[3] = mask;
-    result->src[4] = NULL;  // k_quant not used in this variant
-    result->src[5] = NULL;  // v_quant not used in this variant
-    result->src[6] = s_m_state;  // State tensor for S and M values
+    result->src[4] = k_quant;
+    result->src[5] = v_quant;
+    result->src[6] = mask_quant;  // Use src[6] for mask_quant instead of state
 
     return result;
 }
@@ -5118,7 +5133,6 @@ static struct ggml_tensor * ggml_map_custom1_impl(
 
     return result;
 }
-
 struct ggml_tensor * ggml_map_custom1(
         struct ggml_context      * ctx,
         struct ggml_tensor       * a,

@@ -2230,7 +2230,9 @@ extern "C" {
             struct ggml_tensor  * k,
             struct ggml_tensor  * v,
             struct ggml_tensor  * mask,
-            struct ggml_tensor  * s_m_state,  // State tensor for S and M values
+            struct ggml_tensor  * k_quant,
+            struct ggml_tensor  * v_quant,
+            struct ggml_tensor  * mask_quant,
             float                 scale,
             float                 max_bias,
             float                 logit_softcap);
