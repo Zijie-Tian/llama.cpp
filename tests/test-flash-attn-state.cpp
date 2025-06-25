@@ -241,126 +241,48 @@ int main() {
     // Reset state tensor
     reset_state_tensor(state);
 
-    // Create result tensor for accumulation (same shape as standard result)
-    ggml_tensor * result_segmented = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads, 1);
+    printf("Processing segments using unified op...\n");
 
-    // Initialize segmented result to zero
-    memset(result_segmented->data, 0, ggml_nbytes(result_segmented));
+    ggml_tensor * k_fp16_seg = ggml_view_4d(ctx, k, head_dim, kv_segment_len, n_kv_heads, 1,
+                                            k->nb[1], k->nb[2], k->nb[3], 0);
+    ggml_tensor * v_fp16_seg = ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1,
+                                            v->nb[1], v->nb[2], v->nb[3], 0);
+    ggml_tensor * k_quant_seg = ggml_view_4d(ctx, k, head_dim, kv_segment_len, n_kv_heads, 1,
+                                             k->nb[1], k->nb[2], k->nb[3], kv_segment_len * k->nb[1]);
+    ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1,
+                                             v->nb[1], v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
 
-    printf("Processing %d segments of KV cache (segment_len=%d)...\n", kv_segments, kv_segment_len);
-
-    for (int seg = 0; seg < kv_segments; seg++) {
-        printf("\n  Segment %d/%d (kv_pos %d-%d):\n", seg + 1, kv_segments, seg * kv_segment_len,
-               (seg + 1) * kv_segment_len - 1);
-
-        // Print state before this segment
-        printf("    State before segment %d: ", seg + 1);
-        float * state_data = (float *) state->data;
-        for (int i = 0; i < std::min(4, n_heads * seq_len); i++) {
-            printf("[M=%.3f,S=%.3f] ", state_data[i * 2 + 0], state_data[i * 2 + 1]);
+    const int padded_segment_len = GGML_PAD(kv_segment_len, 64);
+    ggml_tensor * mask_fp16_seg  = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_segment_len, padded_seq_len);
+    ggml_tensor * mask_quant_seg = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_segment_len, padded_seq_len);
+    ggml_fp16_t * mask_seg_data1 = (ggml_fp16_t *) mask_fp16_seg->data;
+    ggml_fp16_t * mask_seg_data2 = (ggml_fp16_t *) mask_quant_seg->data;
+    memset(mask_seg_data1, 0, ggml_nbytes(mask_fp16_seg));
+    memset(mask_seg_data2, 0, ggml_nbytes(mask_quant_seg));
+    for (int i = 0; i < seq_len; i++) {
+        for (int j = 0; j < kv_segment_len; j++) {
+            mask_seg_data1[i * padded_segment_len + j] = ggml_fp32_to_fp16(0.0f);
+            mask_seg_data2[i * padded_segment_len + j] = ggml_fp32_to_fp16(0.0f);
         }
-        printf("...\n");
-
-        // Create views of K and V for this segment using ggml_view_4d
-        ggml_tensor * k_segment = ggml_view_4d(ctx, k, head_dim, kv_segment_len, n_kv_heads, 1,  // ne
-                                               k->nb[1], k->nb[2], k->nb[3],                     // nb (strides)
-                                               seg * kv_segment_len * k->nb[1]);                 // offset
-
-        ggml_tensor * v_segment = ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1,  // ne
-                                               v->nb[1], v->nb[2], v->nb[3],                     // nb (strides)
-                                               seg * kv_segment_len * v->nb[1]);                 // offset
-
-        // Create mask for this segment
-        const int     padded_segment_len = GGML_PAD(kv_segment_len, 64);
-        ggml_tensor * mask_segment       = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_segment_len, padded_seq_len);
-
-        // Fill segment mask
-        ggml_fp16_t * mask_seg_data = (ggml_fp16_t *) mask_segment->data;
-        memset(mask_seg_data, 0, ggml_nbytes(mask_segment));
-
-        for (int i = 0; i < seq_len; i++) {
-            for (int j = 0; j < kv_segment_len; j++) {
-                int global_j                              = seg * kv_segment_len + j;
-                // No masking for segment - all positions can see all KV tokens in this segment
-                mask_seg_data[i * padded_segment_len + j] = ggml_fp32_to_fp16(0.0f);
-            }
-        }
-
-        // Debug: Print mask information for first segment
-        if (seg == 0) {
-            printf("    Debug - Global mask (first 4 seq positions, first 20 kv positions):\n");
-            for (int i = 0; i < std::min(4, seq_len); i++) {
-                printf("      seq[%d]: ", i);
-                for (int j = 0; j < std::min(20, kv_len); j++) {
-                    float mask_val = GGML_FP16_TO_FP32(mask_data[i * padded_kv_len + j]);
-                    printf("%.0f ", mask_val == -INFINITY ? -1.0f : mask_val);
-                }
-                printf("...\n");
-            }
-
-            printf("    Debug - Segment mask (first 4 seq positions, all segment positions):\n");
-            for (int i = 0; i < std::min(4, seq_len); i++) {
-                printf("      seq[%d]: ", i);
-                for (int j = 0; j < kv_segment_len; j++) {
-                    float mask_val = GGML_FP16_TO_FP32(mask_seg_data[i * padded_segment_len + j]);
-                    printf("%.0f ", mask_val == -INFINITY ? -1.0f : mask_val);
-                }
-                printf("\n");
-            }
-        }
-
-        print_tensor_info("    K segment", k_segment);
-        print_tensor_info("    V segment", v_segment);
-
-        // Compute flash attention with state for this segment
-        // CRITICAL: Create the operation but redirect its output to our accumulation tensor
-        ggml_tensor * result_seg = ggml_flash_attn_ext_with_state(ctx, q, k_segment, v_segment, mask_segment, state,
-                                                                  1.0f / std::sqrt(head_dim),  // scale
-                                                                  0.0f,                        // max_bias
-                                                                  0.0f                         // logit_softcap
-        );
-        ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_F32);
-
-        if (!result_seg) {
-            printf("ERROR: Failed to create segmented flash attention for segment %d\n", seg);
-            ggml_free(ctx);
-            return 1;
-        }
-
-        // HACK: Redirect the operation's output to our accumulation tensor
-        result_seg->data  = result_segmented->data;
-        result_seg->nb[0] = result_segmented->nb[0];
-        result_seg->nb[1] = result_segmented->nb[1];
-        result_seg->nb[2] = result_segmented->nb[2];
-        result_seg->nb[3] = result_segmented->nb[3];
-
-        //> Do real compute.
-        struct ggml_cgraph * graph_seg = ggml_new_graph(ctx);
-        ggml_build_forward_expand(graph_seg, result_seg);
-
-        enum ggml_status status_seg = ggml_graph_compute_with_ctx(ctx, graph_seg, n_threads);
-
-        if (status_seg != GGML_STATUS_SUCCESS) {
-            printf("ERROR: Segmented flash attention failed for segment %d with status: %d\n", seg, status_seg);
-            ggml_free(ctx);
-            return 1;
-        }
-
-        printf("    Segment %d computed successfully\n", seg + 1);
-        print_f32_sample("    Segment result", result_segmented, 6);
-
-        // Print state after this segment
-        printf("    State after segment %d: ", seg + 1);
-        for (int i = 0; i < std::min(4, n_heads * seq_len); i++) {
-            printf("[M=%.3f,S=%.3f] ", state_data[i * 2 + 0], state_data[i * 2 + 1]);
-        }
-        printf("...\n");
-
-        // No need to copy result since we're already writing to result_segmented
     }
 
-    printf("\nSegmented computation completed\n");
-    print_f32_sample("Final segmented result", result_segmented, 8);
+    ggml_tensor * result_seg = ggml_flash_attn_ext_with_state(
+        ctx, q, k_fp16_seg, v_fp16_seg, mask_fp16_seg,
+        k_quant_seg, v_quant_seg, mask_quant_seg, state,
+        1.0f / std::sqrt(head_dim), 0.0f, 0.0f);
+    ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_F32);
+
+    struct ggml_cgraph * graph_seg = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph_seg, result_seg);
+    enum ggml_status status_seg = ggml_graph_compute_with_ctx(ctx, graph_seg, n_threads);
+    if (status_seg != GGML_STATUS_SUCCESS) {
+        printf("ERROR: Segmented flash attention failed with status: %d\n", status_seg);
+        ggml_free(ctx);
+        return 1;
+    }
+
+    printf("Unified op computed successfully\n");
+    print_f32_sample("Final segmented result", result_seg, 8);
 
     // =====================================================================
     // Test 3: PyTorch Verification using scaled_dot_product_attention
@@ -455,7 +377,7 @@ int main() {
     printf("\n--- Unified Results Comparison ---\n");
 
     float * standard_data  = (float *) result_standard->data;
-    float * segmented_data = (float *) result_segmented->data;
+    float * segmented_data = (float *) result_seg->data;
     size_t  n_elems        = ggml_nelements(result_standard);
     if (torch_success) {
         n_elems = std::min(n_elems, torch_result_data.size());
