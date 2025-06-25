@@ -1640,7 +1640,7 @@ llm_graph_input_attn_kv_mixed * llm_graph_context::build_attn_inp_kv_mixed() con
         
         // Result tensor: [head_dim, n_heads, seq_len, n_batch] - Fixed dimension order to match ggml_flash_attn_ext_with_state
         const auto head_dim = n_embd_head_v;
-        const auto n_batch = ubatch.n_seqs;
+        const auto n_batch = 1;
         inp->attn_result = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, head_dim, n_head, seq_len, n_batch);
         ggml_set_input(inp->attn_result);
         ggml_format_name(inp->attn_result, "attn_result");
@@ -1922,7 +1922,7 @@ ggml_tensor * llm_graph_context::build_attn_mha_with_state(
     // cur has dimensions [head_dim, n_heads, seq_len, n_batch], so we flatten the first two dimensions
     cur = ggml_reshape_2d(ctx0, cur, cur->ne[0] * cur->ne[1], cur->ne[2]);
     
-    ggml_build_forward_expand(gf, cur);
+    ggml_build_forward_expand(gf, result);
 
     return cur;
 }
