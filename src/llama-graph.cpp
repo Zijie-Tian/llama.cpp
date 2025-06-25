@@ -1831,11 +1831,10 @@ ggml_tensor * llm_graph_context::build_attn_mha_with_state(
     //> Following begin the algo.
     //> ===================================================================================================
     
-    // Process FP16 segment (newer tokens)
+    // Permute tensors for flash attention
     q       = ggml_permute(ctx0, q, 0, 2, 1, 3);
     k_fp16  = ggml_permute(ctx0, k_fp16, 0, 2, 1, 3);
     v_fp16  = ggml_permute(ctx0, v_fp16, 0, 2, 1, 3);
-    // Process quantized segment first (older tokens)
     k_quant = ggml_permute(ctx0, k_quant, 0, 2, 1, 3);
     v_quant = ggml_permute(ctx0, v_quant, 0, 2, 1, 3);
 
@@ -1844,18 +1843,6 @@ ggml_tensor * llm_graph_context::build_attn_mha_with_state(
     const auto n_head     = q->ne[2];       // number of Q heads
     const auto n_kv_fp16  = k_fp16->ne[1];  // number of keys/values
     const auto n_kv_quant = k_quant->ne[1]; // number of keys/values
-
-    // TODO : Modify these tensors to be non-dynamic alloc.
-    // Create state tensor: [2, n_heads * seq_len] for [M, S] pairs
-    ggml_tensor * state = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 2, n_head * seq_len);
-    ggml_set_input(state);
-    cb(state, "state", -1);
-    
-    // Create output tensor
-    ggml_tensor * result = ggml_new_tensor_4d(ctx0, GGML_TYPE_F32, 
-                                               q->ne[0], q->ne[1], q->ne[2], q->ne[3]);
-    ggml_set_input(result);
-    cb(result, "result", -1);
     
     // Cast to F16 if needed for flash attention
     if (k_fp16->type == GGML_TYPE_F32) {
@@ -1865,45 +1852,14 @@ ggml_tensor * llm_graph_context::build_attn_mha_with_state(
         v_fp16 = ggml_cast(ctx0, v_fp16, GGML_TYPE_F16);
     }
     
-    ggml_tensor * result_fp16 = ggml_flash_attn_ext_with_state(
-        ctx0, q, k_fp16, v_fp16, kq_mask_fp16, state,
+    // Single call to process both FP16 and quantized KV cache
+    cur = ggml_flash_attn_ext_with_state(
+        ctx0, q, k_fp16, v_fp16, kq_mask_fp16, 
+        k_quant, v_quant, kq_mask_quant,
         kq_scale, hparams.f_max_alibi_bias,
         hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f
     );
-    ggml_flash_attn_ext_set_prec(result_fp16, GGML_PREC_F32);
-    
-    // HACK : Redirect output to accumulate in our result tensor
-    result_fp16->data = result->data;
-    result_fp16->nb[0] = result->nb[0];
-    result_fp16->nb[1] = result->nb[1];
-    result_fp16->nb[2] = result->nb[2];
-    result_fp16->nb[3] = result->nb[3];
-
-
-    // // Cast to F16 if needed for flash attention
-    // if (k_quant->type == GGML_TYPE_F32) {
-    //     k_quant = ggml_cast(ctx0, k_quant, GGML_TYPE_F16);
-    // }
-    // if (v_quant->type == GGML_TYPE_F32) {
-    //     v_quant = ggml_cast(ctx0, v_quant, GGML_TYPE_F16);
-    // }
-    
-    ggml_tensor * result_quant = ggml_flash_attn_ext_with_state(
-        ctx0, q, k_quant, v_quant, kq_mask_quant, state,
-        kq_scale, hparams.f_max_alibi_bias,
-        hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f
-    );
-    ggml_flash_attn_ext_set_prec(result_quant, GGML_PREC_F32);
-    
-    // Redirect output to accumulate in our result tensor
-    result_quant->data = result->data;
-    result_quant->nb[0] = result->nb[0];
-    result_quant->nb[1] = result->nb[1];
-    result_quant->nb[2] = result->nb[2];
-    result_quant->nb[3] = result->nb[3];
-    
-    cb(result_quant, "attn_result_quant", -1);
-    cur = result;
+    ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
         
     // Reshape to final output format
     cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*n_head, seq_len);

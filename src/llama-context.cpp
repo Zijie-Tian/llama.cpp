@@ -2106,6 +2106,7 @@ llama_context_params llama_context_default_params() {
         /*.no_perf                     =*/ true,
         /*.op_offload                  =*/ true,
         /*.swa_full                    =*/ true,
+        /*.use_mixed_kv_cache          =*/ false,
     };
 
     return result;
