@@ -7253,7 +7253,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
-        const int iq3 = ir/(neq2*neq1);
+        const int iq3 = ir / (neq2*neq1);
         const int iq2 = (ir - iq3*neq2*neq1)/neq1;
         const int iq1 = (ir - iq3*neq2*neq1 - iq2*neq1);
 
@@ -7425,6 +7425,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
     }
 }
+
 void ggml_compute_forward_flash_attn_ext_mixed(
         const ggml_compute_params * params,
         const ggml_tensor * q,
