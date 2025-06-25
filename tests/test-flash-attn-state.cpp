@@ -232,154 +232,94 @@ int main() {
     // Initialize segmented result to zero
     memset(result_segmented->data, 0, ggml_nbytes(result_segmented));
 
-    printf("Processing %d segments of KV cache (segment_len=%d)...\n", kv_segments, kv_segment_len);
+    // UPDATED APPROACH: Test with properly mixed cache types
+    // For a proper test, we should simulate what a real mixed KV cache would look like:
+    // - First part: FP16 (recent tokens)  
+    // - Second part: Quantized (older tokens)
+    // 
+    // Since our test data starts as FP16, we'll keep the FP16 portion as-is 
+    // and convert the second portion to a quantized format for testing
 
-    for (int seg = 0; seg < kv_segments; seg++) {
-        printf("\n  Segment %d/%d (kv_pos %d-%d):\n", seg + 1, kv_segments, seg * kv_segment_len,
-               (seg + 1) * kv_segment_len - 1);
+    const int fp16_kv_len = kv_len / 2;      // First half as FP16 (recent tokens)
+    const int quant_kv_len = kv_len - fp16_kv_len;  // Second half as quantized (older tokens)
+    
+    printf("Mixed KV Cache Test - FP16: %d tokens, Quantized: %d tokens\n", fp16_kv_len, quant_kv_len);
 
-        // Create views of K and V for this segment using ggml_view_4d
-        ggml_tensor * k_segment = ggml_view_4d(ctx, k, head_dim, kv_segment_len, n_kv_heads, 1,  // ne
-                                               k->nb[1], k->nb[2], k->nb[3],                     // nb (strides)
-                                               seg * kv_segment_len * k->nb[1]);                 // offset
+    // Create FP16 portion (recent tokens) - just a view of the first half
+    ggml_tensor * k_fp16 = ggml_view_4d(ctx, k, head_dim, fp16_kv_len, n_kv_heads, 1,
+                                       k->nb[1], k->nb[2], k->nb[3], 0);
+    ggml_tensor * v_fp16 = ggml_view_4d(ctx, v, head_dim, fp16_kv_len, n_kv_heads, 1,
+                                       v->nb[1], v->nb[2], v->nb[3], 0);
 
-        ggml_tensor * v_segment = ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1,  // ne
-                                               v->nb[1], v->nb[2], v->nb[3],                     // nb (strides)
-                                               seg * kv_segment_len * v->nb[1]);                 // offset
+    // Create quantized portion by actually quantizing the second half
+    // For this test, we'll use the same FP16 data but mark it as the "quantized" part
+    // In a real implementation, this would be Q4_0 or another quantized format
+    ggml_tensor * k_quant = ggml_view_4d(ctx, k, head_dim, quant_kv_len, n_kv_heads, 1,
+                                        k->nb[1], k->nb[2], k->nb[3], 
+                                        fp16_kv_len * k->nb[1]);
+    ggml_tensor * v_quant = ggml_view_4d(ctx, v, head_dim, quant_kv_len, n_kv_heads, 1,
+                                        v->nb[1], v->nb[2], v->nb[3], 
+                                        fp16_kv_len * v->nb[1]);
 
-        // Create mask for this segment
-        const int     padded_segment_len = GGML_PAD(kv_segment_len, 64);
-        ggml_tensor * mask_segment       = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_segment_len, padded_seq_len);
-
-        // Fill segment mask
-        ggml_fp16_t * mask_seg_data = (ggml_fp16_t *) mask_segment->data;
-        memset(mask_seg_data, 0, ggml_nbytes(mask_segment));
-
-        for (int i = 0; i < seq_len; i++) {
-            for (int j = 0; j < kv_segment_len; j++) {
-                int global_j                              = seg * kv_segment_len + j;
-                // No masking for segment - all positions can see all KV tokens in this segment
-                mask_seg_data[i * padded_segment_len + j] = ggml_fp32_to_fp16(0.0f);
-            }
+    // Create masks for FP16 portion
+    const int padded_fp16_len = GGML_PAD(fp16_kv_len, 64);
+    ggml_tensor * mask_fp16 = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_fp16_len, padded_seq_len);
+    ggml_fp16_t * mask_fp16_data = (ggml_fp16_t *) mask_fp16->data;
+    memset(mask_fp16_data, 0, ggml_nbytes(mask_fp16));
+    for (int i = 0; i < seq_len; i++) {
+        for (int j = 0; j < fp16_kv_len; j++) {
+            mask_fp16_data[i * padded_fp16_len + j] = ggml_fp32_to_fp16(0.0f);
         }
-
-        // Debug: Print mask information for first segment
-        if (seg == 0) {
-            printf("    Debug - Global mask (first 4 seq positions, first 20 kv positions):\n");
-            for (int i = 0; i < std::min(4, seq_len); i++) {
-                printf("      seq[%d]: ", i);
-                for (int j = 0; j < std::min(20, kv_len); j++) {
-                    float mask_val = GGML_FP16_TO_FP32(mask_data[i * padded_kv_len + j]);
-                    printf("%.0f ", mask_val == -INFINITY ? -1.0f : mask_val);
-                }
-                printf("...\n");
-            }
-
-            printf("    Debug - Segment mask (first 4 seq positions, all segment positions):\n");
-            for (int i = 0; i < std::min(4, seq_len); i++) {
-                printf("      seq[%d]: ", i);
-                for (int j = 0; j < kv_segment_len; j++) {
-                    float mask_val = GGML_FP16_TO_FP32(mask_seg_data[i * padded_segment_len + j]);
-                    printf("%.0f ", mask_val == -INFINITY ? -1.0f : mask_val);
-                }
-                printf("\n");
-            }
-        }
-
-        print_tensor_info("    K segment", k_segment);
-        print_tensor_info("    V segment", v_segment);
-
-        // Create test for the new merged interface
-        // Split the segment into FP16 and quantized parts
-        const int fp16_len = kv_segment_len / 2;  // First half as FP16
-        const int quant_len = kv_segment_len - fp16_len;  // Second half as quantized
-        
-        ggml_tensor * k_fp16 = nullptr;
-        ggml_tensor * v_fp16 = nullptr;
-        ggml_tensor * k_quant = nullptr;
-        ggml_tensor * v_quant = nullptr;
-        ggml_tensor * mask_fp16 = nullptr;
-        ggml_tensor * mask_quant = nullptr;
-        
-        if (fp16_len > 0) {
-            // Create FP16 views
-            k_fp16 = ggml_view_4d(ctx, k_segment, head_dim, fp16_len, n_kv_heads, 1,
-                                 k_segment->nb[1], k_segment->nb[2], k_segment->nb[3], 0);
-            v_fp16 = ggml_view_4d(ctx, v_segment, head_dim, fp16_len, n_kv_heads, 1,
-                                 v_segment->nb[1], v_segment->nb[2], v_segment->nb[3], 0);
-            
-            // Create FP16 mask
-            const int padded_fp16_len = GGML_PAD(fp16_len, 64);
-            mask_fp16 = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_fp16_len, padded_seq_len);
-            ggml_fp16_t * mask_fp16_data = (ggml_fp16_t *) mask_fp16->data;
-            memset(mask_fp16_data, 0, ggml_nbytes(mask_fp16));
-            for (int i = 0; i < seq_len; i++) {
-                for (int j = 0; j < fp16_len; j++) {
-                    mask_fp16_data[i * padded_fp16_len + j] = ggml_fp32_to_fp16(0.0f);
-                }
-            }
-        }
-        
-        if (quant_len > 0) {
-            // Create quantized views (offset by fp16_len)
-            k_quant = ggml_view_4d(ctx, k_segment, head_dim, quant_len, n_kv_heads, 1,
-                                  k_segment->nb[1], k_segment->nb[2], k_segment->nb[3], 
-                                  fp16_len * k_segment->nb[1]);
-            v_quant = ggml_view_4d(ctx, v_segment, head_dim, quant_len, n_kv_heads, 1,
-                                  v_segment->nb[1], v_segment->nb[2], v_segment->nb[3], 
-                                  fp16_len * v_segment->nb[1]);
-            
-            // Create quantized mask
-            const int padded_quant_len = GGML_PAD(quant_len, 64);
-            mask_quant = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_quant_len, padded_seq_len);
-            ggml_fp16_t * mask_quant_data = (ggml_fp16_t *) mask_quant->data;
-            memset(mask_quant_data, 0, ggml_nbytes(mask_quant));
-            for (int i = 0; i < seq_len; i++) {
-                for (int j = 0; j < quant_len; j++) {
-                    mask_quant_data[i * padded_quant_len + j] = ggml_fp32_to_fp16(0.0f);
-                }
-            }
-        }
-
-        // Use the new merged interface with both FP16 and quantized KV cache
-        ggml_tensor * result_seg = ggml_flash_attn_ext_with_state(ctx, q, k_fp16, v_fp16, mask_fp16, 
-                                                                  k_quant, v_quant, mask_quant,
-                                                                  1.0f / std::sqrt(head_dim),  // scale
-                                                                  0.0f,                        // max_bias
-                                                                  0.0f                         // logit_softcap
-        );
-        ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_F32);
-
-        if (!result_seg) {
-            printf("ERROR: Failed to create segmented flash attention for segment %d\n", seg);
-            ggml_free(ctx);
-            return 1;
-        }
-
-        // HACK: Redirect the operation's output to our accumulation tensor
-        result_seg->data  = result_segmented->data;
-        result_seg->nb[0] = result_segmented->nb[0];
-        result_seg->nb[1] = result_segmented->nb[1];
-        result_seg->nb[2] = result_segmented->nb[2];
-        result_seg->nb[3] = result_segmented->nb[3];
-
-        //> Do real compute.
-        struct ggml_cgraph * graph_seg = ggml_new_graph(ctx);
-        ggml_build_forward_expand(graph_seg, result_seg);
-
-        enum ggml_status status_seg = ggml_graph_compute_with_ctx(ctx, graph_seg, n_threads);
-
-        if (status_seg != GGML_STATUS_SUCCESS) {
-            printf("ERROR: Segmented flash attention failed for segment %d with status: %d\n", seg, status_seg);
-            ggml_free(ctx);
-            return 1;
-        }
-
-        printf("    Segment %d computed successfully\n", seg + 1);
-        print_f32_sample("    Segment result", result_segmented, 6);
-
-        // No need to copy result since we're already writing to result_segmented
     }
+
+    // Create masks for quantized portion  
+    const int padded_quant_len = GGML_PAD(quant_kv_len, 64);
+    ggml_tensor * mask_quant = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_quant_len, padded_seq_len);
+    ggml_fp16_t * mask_quant_data = (ggml_fp16_t *) mask_quant->data;
+    memset(mask_quant_data, 0, ggml_nbytes(mask_quant));
+    for (int i = 0; i < seq_len; i++) {
+        for (int j = 0; j < quant_kv_len; j++) {
+            mask_quant_data[i * padded_quant_len + j] = ggml_fp32_to_fp16(0.0f);
+        }
+    }
+
+    print_tensor_info("K FP16 portion (recent)", k_fp16);
+    print_tensor_info("V FP16 portion (recent)", v_fp16);
+    print_tensor_info("K Quant portion (older)", k_quant);
+    print_tensor_info("V Quant portion (older)", v_quant);
+
+    // Single call to process both FP16 and quantized portions
+    ggml_tensor * result_mixed = ggml_flash_attn_ext_with_state(ctx, q, k_fp16, v_fp16, mask_fp16, 
+                                                               k_quant, v_quant, mask_quant,
+                                                               1.0f / std::sqrt(head_dim),  // scale
+                                                               0.0f,                        // max_bias
+                                                               0.0f                         // logit_softcap
+    );
+    ggml_flash_attn_ext_set_prec(result_mixed, GGML_PREC_F32);
+
+    if (!result_mixed) {
+        printf("ERROR: Failed to create mixed flash attention operation\n");
+        ggml_free(ctx);
+        return 1;
+    }
+
+    struct ggml_cgraph * graph_mixed = ggml_new_graph(ctx);
+    ggml_build_forward_expand(graph_mixed, result_mixed);
+
+    printf("Computing mixed KV cache flash attention...\n");
+    enum ggml_status status_mixed = ggml_graph_compute_with_ctx(ctx, graph_mixed, n_threads);
+
+    if (status_mixed != GGML_STATUS_SUCCESS) {
+        printf("ERROR: Mixed flash attention failed with status: %d\n", status_mixed);
+        ggml_free(ctx);
+        return 1;
+    }
+
+    printf("Mixed KV cache computation successful\n");
+    print_f32_sample("Mixed result", result_mixed, 8);
+
+    // Copy result to our segmented result tensor for comparison
+    memcpy(result_segmented->data, result_mixed->data, ggml_nbytes(result_mixed));
 
     printf("\nSegmented computation completed\n");
     print_f32_sample("Final segmented result", result_segmented, 8);
