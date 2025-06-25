@@ -4596,6 +4596,9 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
         struct ggml_tensor  * k,
         struct ggml_tensor  * v,
         struct ggml_tensor  * mask,
+        struct ggml_tensor  * k_quant,
+        struct ggml_tensor  * v_quant,
+        struct ggml_tensor  * qk_mask_quant,
         struct ggml_tensor  * s_m_state,
         float                 scale,
         float                 max_bias,
@@ -4634,9 +4637,10 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
     result->src[1] = k;
     result->src[2] = v;
     result->src[3] = mask;
-    result->src[4] = NULL;  // k_quant not used in this variant
-    result->src[5] = NULL;  // v_quant not used in this variant
-    result->src[6] = s_m_state;  // State tensor for S and M values
+    result->src[4] = k_quant;
+    result->src[5] = v_quant;
+    result->src[6] = qk_mask_quant;
+    result->src[7] = s_m_state;  // State tensor for S and M values
 
     return result;
 }

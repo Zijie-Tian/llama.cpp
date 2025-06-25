@@ -2879,7 +2879,7 @@ struct ggml_cplan ggml_graph_plan(
                             const int64_t ne10 = node->src[1]->ne[0]; // DK
                             const int64_t ne20 = node->src[2]->ne[0]; // DV
 
-                            cur = sizeof(float)*(1*ne10 + 2*ne20)*n_tasks; // 1x head size K + 2x head size V (per thread)
+                            cur = sizeof(float)*(1*ne10 + 2*ne20)*n_tasks;
                         } else if (mode == GGML_PREC_MIXED) {
                             const int64_t N_Q_HEADS = node->src[0]->ne[2];  // n_q_heads
                             const int64_t SEQ_LEN   = node->src[0]->ne[1];  // sequence length
@@ -2896,9 +2896,11 @@ struct ggml_cplan ggml_graph_plan(
                             const int64_t ne10 = node->src[1]->ne[0]; // DK
                             const int64_t ne20 = node->src[2]->ne[0]; // DV
 
-                            cur = sizeof(float)*(1*ne10 + 2*ne20)*n_tasks; // 1x head size K + 2x head size V (per thread)
+                            cur = sizeof(float)*(1*ne10 + 2*ne20)*n_tasks;
                         }
-
+                        const int64_t N_HEAD = node->src[0]->ne[2];
+                        const int64_t Q_LEN  = node->src[0]->ne[1];
+                        cur += sizeof(float) * 2 * N_HEAD * Q_LEN;
 
                     } break;
                 case GGML_OP_FLASH_ATTN_BACK:

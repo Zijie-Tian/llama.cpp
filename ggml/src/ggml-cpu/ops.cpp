@@ -40,6 +40,15 @@ static void ggml_compute_forward_dup_same_cont(
     }
 }
 
+static void ggml_flash_attn_ext_f16_segment(
+        const ggml_compute_params * params,
+        const ggml_tensor * q,
+        const ggml_tensor * k,
+        const ggml_tensor * v,
+        const ggml_tensor * mask,
+        float * state_data,
+        ggml_tensor * dst);
+
 static void ggml_compute_forward_dup_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -7147,17 +7156,54 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         // memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
 
         // permute(0, 2, 1, 3)
-        memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
     }
 }
 
 static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         const ggml_compute_params * params,
         const ggml_tensor * q,
+        const ggml_tensor * k_fp16,
+        const ggml_tensor * v_fp16,
+        const ggml_tensor * mask_fp16,
+        const ggml_tensor * k_quant,
+        const ggml_tensor * v_quant,
+        const ggml_tensor * mask_quant,
+        ggml_tensor * dst) {
+
+    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
+
+    const int64_t DK = q->ne[0];
+    const int64_t DV = dst->ne[0];
+
+    const size_t scratch_per_th = (1*DK + 2*DV + CACHE_LINE_SIZE_F32);
+    const size_t scratch_total  = scratch_per_th * params->nth;
+
+    const size_t state_elems = 2 * neq2 * neq1;
+
+    GGML_ASSERT(params->wsize >= (scratch_total + state_elems) * sizeof(float));
+
+    float * state_data = (float *) params->wdata + scratch_total;
+    for (int64_t i = 0; i < neq2 * neq1; ++i) {
+        state_data[2*i+0] = -INFINITY;
+        state_data[2*i+1] = 0.0f;
+    }
+
+    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
+        ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, state_data, dst);
+    }
+    if (k_quant && v_quant && k_quant->ne[1] > 0) {
+        ggml_flash_attn_ext_f16_segment(params, q, k_quant, v_quant, mask_quant, state_data, dst);
+    }
+}
+
+static void ggml_flash_attn_ext_f16_segment(
+        const ggml_compute_params * params,
+        const ggml_tensor * q,
         const ggml_tensor * k,
         const ggml_tensor * v,
         const ggml_tensor * mask,
-        const ggml_tensor * state,
+        float * state_data,
         ggml_tensor * dst) {
 
     GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
@@ -7169,11 +7215,6 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     GGML_TENSOR_LOCALS(int64_t, ne,  dst, ne)
     GGML_TENSOR_LOCALS(size_t,  nb,  dst, nb)
 
-    // Validate state tensor format: [2, n_heads * q_len]
-    GGML_ASSERT(state != NULL);
-    GGML_ASSERT(state->ne[0] == 2);  // [M, S] pairs
-    GGML_ASSERT(state->ne[1] == neq2 * neq1);  // n_heads * q_len
-    GGML_ASSERT(state->type == GGML_TYPE_F32);
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -7262,7 +7303,6 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
         // Calculate state tensor offset for this head/position
         const int64_t state_idx = iq2 * neq1 + iq1;  // head * q_len + position
-        float * state_data = (float *)state->data;
         
         // Read initial S and M values from state tensor 
         // State format: [M, S] for each head/position
@@ -7779,11 +7819,11 @@ void ggml_compute_forward_flash_attn_ext(
             {
                 // uses F32 accumulators
                 // Check if we have additional sources beyond the required ones for state tensor
-                if (dst->src[6] != nullptr) {
-                    // State tensor is provided as src[6] - use enhanced function with S/M state
-                    ggml_compute_forward_flash_attn_ext_f16_with_state(params, q, k, v, mask, dst->src[6], dst);
+                if (dst->src[7] != nullptr) {
+                    // Enhanced function with state managed via workspace
+                    ggml_compute_forward_flash_attn_ext_f16_with_state(params, q, k, v, mask,
+                                                                     dst->src[4], dst->src[5], dst->src[6], dst);
                 } else {
-                    // Standard function without state tensor
                     ggml_compute_forward_flash_attn_ext_f16(params, q, k, v, mask, dst);
                 }
             } break;

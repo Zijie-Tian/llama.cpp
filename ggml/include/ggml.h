@@ -2224,12 +2224,17 @@ extern "C" {
 
     // Enhanced flash attention with state tensor for S/M values
     // s_m_state: [2, n_heads * q_len] tensor containing [M, S] pairs for each head/position
+    // k_quant / v_quant provide optional quantized KV cache segments
+    // qk_mask_quant is the mask corresponding to the quantized KV part
     GGML_API struct ggml_tensor * ggml_flash_attn_ext_with_state(
             struct ggml_context * ctx,
             struct ggml_tensor  * q,
             struct ggml_tensor  * k,
             struct ggml_tensor  * v,
             struct ggml_tensor  * mask,
+            struct ggml_tensor  * k_quant,
+            struct ggml_tensor  * v_quant,
+            struct ggml_tensor  * qk_mask_quant,
             struct ggml_tensor  * s_m_state,  // State tensor for S and M values
             float                 scale,
             float                 max_bias,
