@@ -7,9 +7,11 @@
 
 // PyTorch headers (when available)
 #include <cstdlib>
+#ifdef LLAMA_TORCH_AVAILABLE
 #include <torch/torch.h>
 #include <torch/script.h>
 #include <ATen/ATen.h>
+#endif
 
 #include <cassert>
 #include <cstddef>
@@ -240,6 +242,7 @@ static struct ggml_tensor * torch_flash_attn(
     ggml_tensor* V_quant,
     float scale = 1.0f
 ) {
+#ifdef LLAMA_TORCH_AVAILABLE
     try {
         // Extract dimensions from Q tensor [head_dim, seq_len, n_heads, 1]
         const int64_t head_dim  = Q->ne[0];
@@ -250,16 +253,16 @@ static struct ggml_tensor * torch_flash_attn(
         const int64_t kv_len = K->ne[1];
         const int64_t n_kv_heads = K->ne[2];
 
-        LOG_INF("PyTorch Flash Attention Debug Info:\n");
-        LOG_INF("  Q: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, seq_len=%ld, n_heads=%ld], dtype=%s\n",
-                Q->ne[0], Q->ne[1], Q->ne[2], Q->ne[3], head_dim, seq_len, n_heads, ggml_type_name(Q->type));
-        LOG_INF("  K: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, kv_len=%ld, n_kv_heads=%ld], dtype=%s\n",
-                K->ne[0], K->ne[1], K->ne[2], K->ne[3], head_dim, kv_len, n_kv_heads, ggml_type_name(K->type));
-        LOG_INF("  V: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, kv_len=%ld, n_kv_heads=%ld], dtype=%s\n",
-                V->ne[0], V->ne[1], V->ne[2], V->ne[3], head_dim, kv_len, n_kv_heads, ggml_type_name(V->type));
-        if (mask) {
-            LOG_INF("  Mask: [%ld,%ld,%ld,%ld], dtype=%s\n", mask->ne[0], mask->ne[1], mask->ne[2], mask->ne[3], ggml_type_name(mask->type));
-        }
+        // LOG_INF("PyTorch Flash Attention Debug Info:\n");
+        // LOG_INF("  Q: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, seq_len=%ld, n_heads=%ld], dtype=%s\n",
+        //         Q->ne[0], Q->ne[1], Q->ne[2], Q->ne[3], head_dim, seq_len, n_heads, ggml_type_name(Q->type));
+        // LOG_INF("  K: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, kv_len=%ld, n_kv_heads=%ld], dtype=%s\n",
+        //         K->ne[0], K->ne[1], K->ne[2], K->ne[3], head_dim, kv_len, n_kv_heads, ggml_type_name(K->type));
+        // LOG_INF("  V: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, kv_len=%ld, n_kv_heads=%ld], dtype=%s\n",
+        //         V->ne[0], V->ne[1], V->ne[2], V->ne[3], head_dim, kv_len, n_kv_heads, ggml_type_name(V->type));
+        // if (mask) {
+        //     LOG_INF("  Mask: [%ld,%ld,%ld,%ld], dtype=%s\n", mask->ne[0], mask->ne[1], mask->ne[2], mask->ne[3], ggml_type_name(mask->type));
+        // }
 
         auto torch_options = torch::TensorOptions().dtype(torch::kFloat32);
 
@@ -367,8 +370,8 @@ static struct ggml_tensor * torch_flash_attn(
             k_torch = k_torch.repeat_interleave(repeat_factor, /*dim=*/1);
             v_torch = v_torch.repeat_interleave(repeat_factor, /*dim=*/1);
 
-            LOG_INF("GQA: Repeated KV heads by factor %d (%ld -> %ld heads)\n",
-                    repeat_factor, n_kv_heads, n_heads);
+            // LOG_INF("GQA: Repeated KV heads by factor %d (%ld -> %ld heads)\n",
+            //         repeat_factor, n_kv_heads, n_heads);
         }
 
         // std::cout << "k_torch shape: " << k_torch.sizes() << std::endl;
@@ -376,15 +379,15 @@ static struct ggml_tensor * torch_flash_attn(
         // std::cout << "q_torch shape: " << q_torch.sizes() << std::endl;
         // std::cout << "mask_torch shape: " << mask_torch.sizes() << std::endl;
 
-        LOG_INF("Final PyTorch tensor shapes:\n");
-        LOG_INF("  Q: [%ld,%ld,%ld,%ld]\n", q_torch.size(0), q_torch.size(1), q_torch.size(2), q_torch.size(3));
-        LOG_INF("  K: [%ld,%ld,%ld,%ld]\n", k_torch.size(0), k_torch.size(1), k_torch.size(2), k_torch.size(3));
-        LOG_INF("  V: [%ld,%ld,%ld,%ld]\n", v_torch.size(0), v_torch.size(1), v_torch.size(2), v_torch.size(3));
+        // LOG_INF("Final PyTorch tensor shapes:\n");
+        // LOG_INF("  Q: [%ld,%ld,%ld,%ld]\n", q_torch.size(0), q_torch.size(1), q_torch.size(2), q_torch.size(3));
+        // LOG_INF("  K: [%ld,%ld,%ld,%ld]\n", k_torch.size(0), k_torch.size(1), k_torch.size(2), k_torch.size(3));
+        // LOG_INF("  V: [%ld,%ld,%ld,%ld]\n", v_torch.size(0), v_torch.size(1), v_torch.size(2), v_torch.size(3));
 
         // Compute scaled dot product attention using PyTorch
         torch::Tensor torch_result;
         if (mask && mask->data) {
-            LOG_INF("Computing attention WITH mask, scale=%.6f\n", scale);
+            // LOG_INF("Computing attention WITH mask, scale=%.6f\n", scale);
             torch_result = torch::scaled_dot_product_attention(
                 q_torch, k_torch, v_torch, mask_torch,
                 /*dropout_p=*/0.0,
@@ -392,7 +395,7 @@ static struct ggml_tensor * torch_flash_attn(
                 /*scale=*/scale
             );
         } else {
-            LOG_INF("Computing attention WITHOUT mask, scale=%.6f\n", scale);
+            // LOG_INF("Computing attention WITHOUT mask, scale=%.6f\n", scale);
             torch_result = torch::scaled_dot_product_attention(
                 q_torch, k_torch, v_torch, torch::Tensor(),
                 /*dropout_p=*/0.0,
@@ -404,8 +407,8 @@ static struct ggml_tensor * torch_flash_attn(
         // torch_result = torch_result.permute({0, 2, 1, 3}).contiguous();  //> [batch, token, n_head, head_dim]
         const float* torch_result_data = torch_result.data_ptr<float>();
 
-        LOG_INF("PyTorch attention result shape: [%ld, %ld, %ld, %ld]\n",
-                torch_result.size(0), torch_result.size(1), torch_result.size(2), torch_result.size(3));
+        // LOG_INF("PyTorch attention result shape: [%ld, %ld, %ld, %ld]\n",
+        //         torch_result.size(0), torch_result.size(1), torch_result.size(2), torch_result.size(3));
 
         // Create output tensor with ggml expected format
         ggml_tensor* result_ggml = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, n_heads, seq_len, 1);
@@ -421,11 +424,11 @@ static struct ggml_tensor * torch_flash_attn(
             }
         }
 
-        LOG_INF("Converted result to ggml format: [%ld, %ld, %ld, %ld] (total elements: %ld)\n",
-                result_ggml->ne[0], result_ggml->ne[1], result_ggml->ne[2], result_ggml->ne[3],
-                ggml_nelements(result_ggml));
+        // LOG_INF("Converted result to ggml format: [%ld, %ld, %ld, %ld] (total elements: %ld)\n",
+        //         result_ggml->ne[0], result_ggml->ne[1], result_ggml->ne[2], result_ggml->ne[3],
+        //         ggml_nelements(result_ggml));
 
-        LOG_INF("PyTorch Flash Attention computation successful!\n");
+        // LOG_INF("PyTorch Flash Attention computation successful!\n");
         return result_ggml;
 
     } catch (const std::exception& e) {
@@ -433,9 +436,13 @@ static struct ggml_tensor * torch_flash_attn(
         LOG_ERR("   Falling back to ggml implementation...\n");
         // Fall through to ggml implementation
     }
+#else
+    // PyTorch not available, use ggml implementation directly
+    // LOG_INF("PyTorch not available, using ggml Flash Attention implementation\n");
+#endif
 
     // Fallback to original ggml implementation
-    LOG_INF("Using ggml Flash Attention implementation\n");
+    // LOG_INF("Using ggml Flash Attention implementation\n");
     struct ggml_cgraph * gf = build_flash_attn_graph(ctx, Q, K, V, mask, K_quant, V_quant, scale);
 
     int n_threads = 12;
@@ -644,13 +651,210 @@ static ggml_tensor* ggml_reshape_tensor(ggml_context* ctx, ggml_tensor* tensor, 
 
     ggml_tensor* reshaped_tensor = ggml_reshape_4d(ctx, tensor, d0, d1, d2, d3);
     reshaped_tensor = ggml_cont(ctx, ggml_permute(ctx, reshaped_tensor, 0, 2, 1, 3));
-    LOG_INF("Reshape from [%lld, %lld, %lld, %lld] to [%lld, %lld, %lld, %lld]\n", d0, d1, d2, d3, reshaped_tensor->ne[0], reshaped_tensor->ne[1], reshaped_tensor->ne[2], reshaped_tensor->ne[3]);
+    // LOG_INF("Reshape from [%lld, %lld, %lld, %lld] to [%lld, %lld, %lld, %lld]\n", d0, d1, d2, d3, reshaped_tensor->ne[0], reshaped_tensor->ne[1], reshaped_tensor->ne[2], reshaped_tensor->ne[3]);
 
     struct ggml_cgraph *g = ggml_new_graph(ctx);
     ggml_build_forward_expand(g, reshaped_tensor);          // 仅需把最终 dst 挂进图
     ggml_graph_compute_with_ctx(ctx, g, 8);              // 🚀 真正触发 memcpy
 
     return reshaped_tensor;
+}
+
+static tensor_stats compute_tensor_stats(ggml_tensor* tensor) {
+    tensor_stats stats;
+    
+    if (!tensor || !tensor->data) {
+        return stats;
+    }
+    
+    size_t n_elements = ggml_nelements(tensor);
+    stats.elements = n_elements;
+    
+    if (n_elements == 0) {
+        return stats;
+    }
+    
+    // Convert tensor data to float for computation
+    std::vector<float> data(n_elements);
+    
+    if (tensor->type == GGML_TYPE_F32) {
+        memcpy(data.data(), tensor->data, n_elements * sizeof(float));
+    } else if (tensor->type == GGML_TYPE_F16) {
+        ggml_fp16_t* fp16_data = (ggml_fp16_t*)tensor->data;
+        for (size_t i = 0; i < n_elements; i++) {
+            data[i] = ggml_fp16_to_fp32(fp16_data[i]);
+        }
+    } else {
+        // For other types, try to get conversion function
+        auto tt = ggml_get_type_traits(tensor->type);
+        if (tt->to_float) {
+            tt->to_float(tensor->data, data.data(), n_elements);
+        } else {
+            LOG_ERR("Unsupported tensor type for stats computation: %s\n", ggml_type_name(tensor->type));
+            return stats;
+        }
+    }
+    
+    // Compute statistics
+    double sum = 0.0;
+    stats.min_val = data[0];
+    stats.max_val = data[0];
+    
+    for (size_t i = 0; i < n_elements; i++) {
+        double val = data[i];
+        sum += val;
+        stats.min_val = std::min(stats.min_val, val);
+        stats.max_val = std::max(stats.max_val, val);
+    }
+    
+    stats.mean = sum / n_elements;
+    
+    // Compute standard deviation
+    double var_sum = 0.0;
+    for (size_t i = 0; i < n_elements; i++) {
+        double diff = data[i] - stats.mean;
+        var_sum += diff * diff;
+    }
+    stats.std_dev = std::sqrt(var_sum / n_elements);
+    
+    return stats;
+}
+
+// Calculate NMSE between two tensors
+static double calculate_nmse(ggml_tensor* predicted, ggml_tensor* target) {
+    if (!predicted || !target || !predicted->data || !target->data) {
+        LOG_ERR("Invalid tensors for NMSE calculation\n");
+        return -1.0;
+    }
+    
+    size_t n_elements_pred = ggml_nelements(predicted);
+    size_t n_elements_target = ggml_nelements(target);
+    
+    if (n_elements_pred != n_elements_target) {
+        LOG_ERR("Tensor size mismatch: predicted=%zu, target=%zu\n", n_elements_pred, n_elements_target);
+        return -1.0;
+    }
+    
+    if (n_elements_pred == 0) {
+        LOG_ERR("Empty tensors for NMSE calculation\n");
+        return -1.0;
+    }
+    
+    // Convert tensors to float arrays
+    std::vector<float> pred_data(n_elements_pred);
+    std::vector<float> target_data(n_elements_target);
+    
+    // Convert predicted tensor
+    if (predicted->type == GGML_TYPE_F32) {
+        memcpy(pred_data.data(), predicted->data, n_elements_pred * sizeof(float));
+    } else if (predicted->type == GGML_TYPE_F16) {
+        ggml_fp16_t* fp16_data = (ggml_fp16_t*)predicted->data;
+        for (size_t i = 0; i < n_elements_pred; i++) {
+            pred_data[i] = ggml_fp16_to_fp32(fp16_data[i]);
+        }
+    } else {
+        auto tt = ggml_get_type_traits(predicted->type);
+        if (tt->to_float) {
+            tt->to_float(predicted->data, pred_data.data(), n_elements_pred);
+        } else {
+            LOG_ERR("Unsupported predicted tensor type: %s\n", ggml_type_name(predicted->type));
+            return -1.0;
+        }
+    }
+    
+    // Convert target tensor
+    if (target->type == GGML_TYPE_F32) {
+        memcpy(target_data.data(), target->data, n_elements_target * sizeof(float));
+    } else if (target->type == GGML_TYPE_F16) {
+        ggml_fp16_t* fp16_data = (ggml_fp16_t*)target->data;
+        for (size_t i = 0; i < n_elements_target; i++) {
+            target_data[i] = ggml_fp16_to_fp32(fp16_data[i]);
+        }
+    } else {
+        auto tt = ggml_get_type_traits(target->type);
+        if (tt->to_float) {
+            tt->to_float(target->data, target_data.data(), n_elements_target);
+        } else {
+            LOG_ERR("Unsupported target tensor type: %s\n", ggml_type_name(target->type));
+            return -1.0;
+        }
+    }
+    
+    // Calculate MSE and target variance
+    double mse_sum = 0.0;
+    double target_sum = 0.0;
+    double target_sq_sum = 0.0;
+    
+    for (size_t i = 0; i < n_elements_pred; i++) {
+        double diff = pred_data[i] - target_data[i];
+        mse_sum += diff * diff;
+        target_sum += target_data[i];
+        target_sq_sum += target_data[i] * target_data[i];
+    }
+    
+    double mse = mse_sum / n_elements_pred;
+    double target_mean = target_sum / n_elements_pred;
+    double target_variance = target_sq_sum / n_elements_pred - target_mean * target_mean;
+    
+    // NMSE = MSE / Var(target)
+    // If target variance is too small, use mean squared value instead
+    double normalization = (target_variance > 1e-12) ? target_variance : (target_sq_sum / n_elements_pred);
+    
+    if (normalization < 1e-12) {
+        LOG_INF("Warning: Target tensor has near-zero variance, NMSE may not be meaningful\n");
+        return mse; // Return raw MSE if no meaningful normalization
+    }
+    
+    double nmse = mse / normalization;
+    
+    return nmse;
+}
+
+// Print detailed comparison statistics in table format
+static void print_comparison_stats(ggml_tensor* predicted, ggml_tensor* target, double nmse) {
+    tensor_stats pred_stats = compute_tensor_stats(predicted);
+    tensor_stats target_stats = compute_tensor_stats(target);
+    
+    // Determine assessment level
+    const char* assessment = "";
+    const char* quality_icon = "";
+    if (nmse < 1e-6) {
+        assessment = "Excellent (< 1e-6)";
+        quality_icon = "🟢";
+    } else if (nmse < 1e-4) {
+        assessment = "Very Good (< 1e-4)";
+        quality_icon = "🟢";
+    } else if (nmse < 1e-2) {
+        assessment = "Good (< 1e-2)";
+        quality_icon = "🟡";
+    } else if (nmse < 1e-1) {
+        assessment = "Acceptable (< 1e-1)";
+        quality_icon = "🟡";
+    } else {
+        assessment = "Poor (>= 1e-1)";
+        quality_icon = "🔴";
+    }
+    
+    LOG_INF("\n");
+    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %-18s |\n", 
+            "Tensor Statistics", "Elements", "Mean", "Std Dev", "Min/Max", "NMSE & Assessment");
+    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
+    LOG_INF("| %-23s | %-10zu | %10.6f | %10.6f | %5.3f/%-4.3f | %-18s |\n",
+            "Predicted (Flash Attn)", pred_stats.elements, pred_stats.mean, pred_stats.std_dev, 
+            pred_stats.min_val, pred_stats.max_val, "");
+    LOG_INF("| %-23s | %-10zu | %10.6f | %10.6f | %5.3f/%-4.3f | %-18s |\n",
+            "Target (KQV Output)", target_stats.elements, target_stats.mean, target_stats.std_dev,
+            target_stats.min_val, target_stats.max_val, "");
+    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %s %-15s |\n",
+            "Difference Analysis", "-", "-", "-", "-", quality_icon, "");
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %.6e       |\n",
+            "NMSE", "-", "-", "-", "-", nmse);
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %-18s |\n",
+            "Quality Assessment", "-", "-", "-", "-", assessment);
+    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
+    LOG_INF("\n");
 }
 
 static bool read_kqv_tensors(const kqv_tensor_params& params) {
@@ -701,6 +905,9 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
     ggml_context* compute_ctx = ggml_init(ctx_params);
 
     // Output by step
+    std::vector<double> nmse_results;
+    std::vector<int> valid_steps;
+    
     for (const auto& [step, tensors] : step_tensor_map) {
         if (tensors.size() < 4) {
             LOG_INF("Step %d has %zu tensors, skipping\n", tensors.size(), step);
@@ -714,7 +921,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         ggml_tensor * V = tensors[3].first;
         ggml_tensor * kq_mask = tensors.size() > 4 ? tensors[4].first : nullptr;
 
-        ggml_print_tensor((uint8_t*)K->data, K->type, K->ne, K->nb, 8);
+        // ggml_print_tensor((uint8_t*)K->data, K->type, K->ne, K->nb, 8);
         // ggml_print_tensor((uint8_t*)V->data, V->type, V->ne, V->nb, 8);
 
         ggml_tensor * K_quant = nullptr;
@@ -766,13 +973,82 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
 
         struct ggml_tensor * flash_result = torch_flash_attn(compute_ctx, Q, K, V, kq_mask, K_quant, V_quant, scale);
 
-        LOG_INF("Flash attn output : \n");
-        ggml_print_tensor((uint8_t*)flash_result->data, flash_result->type, flash_result->ne, flash_result->nb, 8);
-
         ggml_tensor* kqv_out_reshaped = ggml_reshape_tensor(compute_ctx, kqv_out, Q->ne[0], kqv_out->ne[1], Q->ne[2],  kqv_out->ne[3]);
-        LOG_INF("KQV attn output with shape [%d, %d, %d, %d] : \n", kqv_out_reshaped->ne[0], kqv_out_reshaped->ne[1], kqv_out_reshaped->ne[2], kqv_out_reshaped->ne[3]);
-        ggml_print_tensor((uint8_t*)kqv_out_reshaped->data, kqv_out_reshaped->type, kqv_out_reshaped->ne, kqv_out_reshaped->nb, 8);
+        
+        // Calculate NMSE instead of printing tensors
+        double nmse = calculate_nmse(flash_result, kqv_out_reshaped);
+        
+        if (nmse >= 0.0) {
+            LOG_INF("Step %d: Flash Attention vs KQV Output Comparison\n", step);
+            print_comparison_stats(flash_result, kqv_out_reshaped, nmse);
+            nmse_results.push_back(nmse);
+            valid_steps.push_back(step);
+        } else {
+            LOG_ERR("Step %d: Failed to calculate NMSE\n", step);
+        }
     }
+    
+    // Print overall summary
+    if (!nmse_results.empty()) {
+        LOG_INF("\n========== OVERALL NMSE SUMMARY ==========\n");
+        LOG_INF("Total valid steps analyzed: %zu\n", nmse_results.size());
+        
+        double sum_nmse = 0.0;
+        double min_nmse = nmse_results[0];
+        double max_nmse = nmse_results[0];
+        
+        for (size_t i = 0; i < nmse_results.size(); i++) {
+            double nmse = nmse_results[i];
+            sum_nmse += nmse;
+            min_nmse = std::min(min_nmse, nmse);
+            max_nmse = std::max(max_nmse, nmse);
+            LOG_INF("Step %d: NMSE = %.6e\n", valid_steps[i], nmse);
+        }
+        
+        double mean_nmse = sum_nmse / nmse_results.size();
+        
+        // Calculate standard deviation
+        double var_sum = 0.0;
+        for (double nmse : nmse_results) {
+            double diff = nmse - mean_nmse;
+            var_sum += diff * diff;
+        }
+        double std_nmse = std::sqrt(var_sum / nmse_results.size());
+        
+        LOG_INF("\nStatistics:\n");
+        LOG_INF("  Mean NMSE: %.6e\n", mean_nmse);
+        LOG_INF("  Std NMSE:  %.6e\n", std_nmse);
+        LOG_INF("  Min NMSE:  %.6e (Step %d)\n", min_nmse, valid_steps[std::min_element(nmse_results.begin(), nmse_results.end()) - nmse_results.begin()]);
+        LOG_INF("  Max NMSE:  %.6e (Step %d)\n", max_nmse, valid_steps[std::max_element(nmse_results.begin(), nmse_results.end()) - nmse_results.begin()]);
+        
+        // Overall assessment
+        LOG_INF("\nOverall Assessment:\n");
+        if (mean_nmse < 1e-6) {
+            LOG_INF("  🟢 Excellent: All results show excellent agreement\n");
+        } else if (mean_nmse < 1e-4) {
+            LOG_INF("  🟢 Very Good: Results show very good agreement\n");
+        } else if (mean_nmse < 1e-2) {
+            LOG_INF("  🟡 Good: Results show good agreement\n");
+        } else if (mean_nmse < 1e-1) {
+            LOG_INF("  🟡 Acceptable: Results show acceptable agreement\n");
+        } else {
+            LOG_INF("  🔴 Poor: Results show significant disagreement\n");
+        }
+        
+        // Check consistency
+        if (std_nmse / mean_nmse < 0.1) {
+            LOG_INF("  📊 Consistency: High (low variance across steps)\n");
+        } else if (std_nmse / mean_nmse < 0.5) {
+            LOG_INF("  📊 Consistency: Moderate\n");
+        } else {
+            LOG_INF("  📊 Consistency: Low (high variance across steps)\n");
+        }
+        
+        LOG_INF("==========================================\n");
+    } else {
+        LOG_ERR("No valid NMSE results obtained\n");
+    }
+    
     // Free flash attention model
     ggml_free(compute_ctx);
 
@@ -792,6 +1068,7 @@ int main(int argc, char** argv) {
     }
 
     // Verify torch integration is working
+#ifdef LLAMA_TORCH_AVAILABLE
     LOG_INF("PyTorch integration enabled!\n");
     LOG_INF("PyTorch version: %d.%d.%d\n",
             TORCH_VERSION_MAJOR,
@@ -806,6 +1083,9 @@ int main(int argc, char** argv) {
     } catch (const std::exception& e) {
         LOG_ERR("PyTorch tensor creation test failed: %s\n", e.what());
     }
+#else
+    LOG_INF("PyTorch integration disabled - using ggml fallback\n");
+#endif
 
     if (!read_kqv_tensors(params)) {
         return 1;

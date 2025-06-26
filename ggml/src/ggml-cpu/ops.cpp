@@ -7195,6 +7195,8 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     if (k_quant && v_quant && k_quant->ne[1] > 0) {
         ggml_flash_attn_ext_f16_segment(params, q, k_quant, v_quant, mask_quant, state_data, dst);
     }
+
+    // memset(dst->data, 0, ggml_nelements(dst) * sizeof(float));
 }
 
 static void ggml_flash_attn_ext_f16_segment(
@@ -7214,7 +7216,6 @@ static void ggml_flash_attn_ext_f16_segment(
     GGML_TENSOR_LOCALS(size_t,  nbv, v,   nb)
     GGML_TENSOR_LOCALS(int64_t, ne,  dst, ne)
     GGML_TENSOR_LOCALS(size_t,  nb,  dst, nb)
-
 
     const int ith = params->ith;
     const int nth = params->nth;
