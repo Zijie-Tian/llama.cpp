@@ -405,9 +405,10 @@ extern "C" {
 
     // precision
     enum ggml_prec {
-        GGML_PREC_DEFAULT =  0, // stored as ggml_tensor.op_params, 0 by default
-        GGML_PREC_F32     = 10,
-        GGML_PREC_MIXED   = 11,
+        GGML_PREC_DEFAULT       =  0, // stored as ggml_tensor.op_params, 0 by default
+        GGML_PREC_F32           = 10,
+        GGML_PREC_WITH_STATE    = 11,
+        GGML_PREC_MIXED         = 12,
     };
 
     // model file types
@@ -2235,7 +2236,6 @@ extern "C" {
             struct ggml_tensor  * k_quant,
             struct ggml_tensor  * v_quant,
             struct ggml_tensor  * qk_mask_quant,
-            struct ggml_tensor  * s_m_state,  // State tensor for S and M values
             float                 scale,
             float                 max_bias,
             float                 logit_softcap);

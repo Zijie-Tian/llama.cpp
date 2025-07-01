@@ -1845,11 +1845,11 @@ ggml_tensor * llm_graph_context::build_attn_mha_with_state(
     const auto n_kv_fp16  = k_fp16->ne[1];  // number of keys/values
     const auto n_kv_quant = k_quant->ne[1]; // number of keys/values
 
-    // TODO : Modify these tensors to be non-dynamic alloc.
-    // Create state tensor: [2, n_heads * seq_len] for [M, S] pairs
-    ggml_tensor * state = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 2, n_head * seq_len);
-    ggml_set_input(state);
-    cb(state, "state", -1);
+    // // TODO : Modify these tensors to be non-dynamic alloc.
+    // // Create state tensor: [2, n_heads * seq_len] for [M, S] pairs
+    // ggml_tensor * state = ggml_new_tensor_2d(ctx0, GGML_TYPE_F32, 2, n_head * seq_len);
+    // ggml_set_input(state);
+    // cb(state, "state", -1);
     
     // Cast to F16 if needed for flash attention
     if (k_fp16->type == GGML_TYPE_F32) {
@@ -1860,15 +1860,15 @@ ggml_tensor * llm_graph_context::build_attn_mha_with_state(
     }
     
     cur = ggml_flash_attn_ext_with_state(
-        ctx0, q, k_fp16, v_fp16, kq_mask_fp16,
-        k_quant, v_quant, kq_mask_quant, state,
+        ctx0, q, 
+        k_fp16, v_fp16, kq_mask_fp16,
+        k_quant, v_quant, kq_mask_quant,
         kq_scale, hparams.f_max_alibi_bias,
         hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f
     );
-    ggml_flash_attn_ext_set_prec(cur, GGML_PREC_F32);
-    cb(cur, "attn_result", -1);
+    ggml_flash_attn_ext_set_prec(cur, GGML_PREC_WITH_STATE);
         
-    // Reshape to final output format
+    //> Reshape to final output format
     cur = ggml_reshape_2d(ctx0, cur, cur->ne[0]*n_head, seq_len);
     
     ggml_build_forward_expand(gf, cur);

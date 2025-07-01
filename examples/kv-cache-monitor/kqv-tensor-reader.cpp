@@ -184,6 +184,143 @@ static bool init_flash_attn_model(
     return true;
 }
 
+static struct ggml_cgraph * build_merge_mask_graph(
+    ggml_context * ctx,
+    ggml_tensor * dst,
+    ggml_tensor * fp16_shard,
+    ggml_tensor * quant_shard
+) {
+    // printf("Building mask merge graph...\n");
+    // printf("  dst: [%ld, %ld, %ld, %ld]\n", dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3]);
+    // printf("  fp16_shard: [%ld, %ld, %ld, %ld]\n", fp16_shard->ne[0], fp16_shard->ne[1], fp16_shard->ne[2], fp16_shard->ne[3]);
+    // printf("  quant_shard: [%ld, %ld, %ld, %ld]\n", quant_shard->ne[0], quant_shard->ne[1], quant_shard->ne[2], quant_shard->ne[3]);
+    
+    GGML_ASSERT(fp16_shard->ne[1] == quant_shard->ne[1]); // q_len should match
+    GGML_ASSERT(fp16_shard->ne[2] == quant_shard->ne[2]); // should both be 1
+    GGML_ASSERT(fp16_shard->ne[3] == quant_shard->ne[3]); // batch should match
+    GGML_ASSERT(dst->ne[0] == fp16_shard->ne[0] + quant_shard->ne[0]); // kv_len should be sum
+    GGML_ASSERT(dst->ne[1] == fp16_shard->ne[1]); // q_len should match
+    
+    struct ggml_cgraph * gf = ggml_new_graph(ctx);
+    
+    const int64_t fp16_kv_len = fp16_shard->ne[0];
+    const int64_t quant_kv_len = quant_shard->ne[0];
+    const int64_t q_len = dst->ne[1];
+    const int64_t batch = dst->ne[3];
+    
+    for (int64_t b = 0; b < batch; b++) {
+        for (int64_t q = 0; q < q_len; q++) {
+            // 拷贝 FP16 部分: dst[0:fp16_kv_len, q, 0, b] = fp16_shard[:, q, 0, b]
+            ggml_tensor * dst_fp16_slice = ggml_view_2d(
+                ctx, dst,
+                fp16_kv_len, 1,  // [fp16_kv_len, 1]
+                dst->nb[0], 
+                b * dst->nb[3] + q * dst->nb[1]  // offset to [0, q, 0, b]
+            );
+            
+            ggml_tensor * fp16_src_slice = ggml_view_2d(
+                ctx, fp16_shard, 
+                fp16_kv_len, 1,  // [fp16_kv_len, 1]
+                fp16_shard->nb[0],
+                b * fp16_shard->nb[3] + q * fp16_shard->nb[1]  // offset to [0, q, 0, b]
+            );
+            
+            // 拷贝 quantized 部分: dst[fp16_kv_len:total_kv_len, q, 0, b] = quant_shard[:, q, 0, b]
+            ggml_tensor * dst_quant_slice = ggml_view_2d(
+                ctx, dst,
+                quant_kv_len, 1,  // [quant_kv_len, 1]
+                dst->nb[0],
+                b * dst->nb[3] + q * dst->nb[1] + fp16_kv_len * dst->nb[0]  // offset to [fp16_kv_len, q, 0, b]
+            );
+            
+            ggml_tensor * quant_src_slice = ggml_view_2d(
+                ctx, quant_shard,
+                quant_kv_len, 1,  // [quant_kv_len, 1]
+                quant_shard->nb[0],
+                b * quant_shard->nb[3] + q * quant_shard->nb[1]  // offset to [0, q, 0, b]
+            );
+            
+            // Copy operations
+            ggml_tensor * copy_fp16 = ggml_cpy(ctx, fp16_src_slice, dst_fp16_slice);
+            ggml_tensor * copy_quant = ggml_cpy(ctx, quant_src_slice, dst_quant_slice);
+            
+            ggml_build_forward_expand(gf, copy_fp16);
+            ggml_build_forward_expand(gf, copy_quant);
+        }
+    }
+    
+    return gf;
+}
+
+// 合并两个KV tensor分片的函数 - 使用1D视图简化操作
+static struct ggml_cgraph * build_merge_kv_graph(
+    ggml_context * ctx,
+    ggml_tensor * dst,
+    ggml_tensor * fp16_shard,
+    ggml_tensor * quant_shard
+) {
+    // printf("Building merge graph...\n");
+    // printf("  dst: [%ld, %ld, %ld, %ld]\n", dst->ne[0], dst->ne[1], dst->ne[2], dst->ne[3]);
+    // printf("  fp16_shard: [%ld, %ld, %ld, %ld]\n", fp16_shard->ne[0], fp16_shard->ne[1], fp16_shard->ne[2], fp16_shard->ne[3]);
+    // printf("  quant_shard: [%ld, %ld, %ld, %ld]\n", quant_shard->ne[0], quant_shard->ne[1], quant_shard->ne[2], quant_shard->ne[3]);
+    
+    GGML_ASSERT(fp16_shard->ne[0] == quant_shard->ne[0]); // head_dim should match
+    GGML_ASSERT(fp16_shard->ne[2] == quant_shard->ne[2]); // n_heads should match  
+    GGML_ASSERT(fp16_shard->ne[3] == quant_shard->ne[3]); // batch should match
+    GGML_ASSERT(dst->ne[1] == fp16_shard->ne[1] + quant_shard->ne[1]); // seq_len should be sum
+
+    struct ggml_cgraph * gf = ggml_new_graph(ctx);
+
+    // Calculate elements per head
+    size_t fp16_elements_per_head = fp16_shard->ne[0] * fp16_shard->ne[1];  // head_dim * fp16_seq_len
+    size_t quant_elements_per_head = quant_shard->ne[0] * quant_shard->ne[1]; // head_dim * quant_seq_len
+    
+    for (int i = 0; i < (int)dst->ne[3]; i++) {        // batch
+        for (int j = 0; j < (int)dst->ne[2]; j++) {    // n_heads
+            
+            // Calculate offsets for this head
+            size_t dst_head_offset = (i * dst->ne[2] + j) * dst->nb[2];
+            size_t fp16_src_offset = (i * fp16_shard->ne[2] + j) * fp16_shard -> nb[2];
+            size_t quant_src_offset = (i * quant_shard->ne[2] + j) * quant_shard -> nb[2];
+
+            // Create 1D views for FP16 part
+            ggml_tensor * dst_fp16_part = ggml_view_1d(
+                ctx, dst,
+                fp16_elements_per_head,
+                dst_head_offset
+            );
+            
+            ggml_tensor * fp16_src_head = ggml_view_1d(
+                ctx, fp16_shard,
+                fp16_elements_per_head,
+                fp16_src_offset
+            );
+
+            // Create 1D views for quantized part 
+            ggml_tensor * dst_quant_part = ggml_view_1d(
+                ctx, dst,
+                quant_elements_per_head,
+                dst_head_offset + fp16_elements_per_head * dst->nb[0]
+            );
+            
+            ggml_tensor * quant_src_head = ggml_view_1d(
+                ctx, quant_shard,
+                quant_elements_per_head,
+                quant_src_offset
+            );
+
+            // 复制操作
+            ggml_tensor * copy_fp16 = ggml_cpy(ctx, fp16_src_head, dst_fp16_part);
+            ggml_tensor * copy_quant = ggml_cpy(ctx, quant_src_head, dst_quant_part);
+
+            ggml_build_forward_expand(gf, copy_fp16);
+            ggml_build_forward_expand(gf, copy_quant);
+        }
+    }
+
+    return gf;
+}
+
 // Build computation graph for flash attention
 static struct ggml_cgraph * build_flash_attn_graph(
     ggml_context* ctx,
@@ -191,8 +328,6 @@ static struct ggml_cgraph * build_flash_attn_graph(
     ggml_tensor* K,
     ggml_tensor* V,
     ggml_tensor* mask,
-    ggml_tensor* K_quant,
-    ggml_tensor* V_quant,
     float scale = 1.0f,
     float max_bias = 0.0f,
     float logit_softcap = 0.0f
@@ -212,27 +347,11 @@ static struct ggml_cgraph * build_flash_attn_graph(
     );
     ggml_flash_attn_ext_set_prec(result, GGML_PREC_F32);
 
-    // struct ggml_tensor * result = ggml_flash_attn_mixed(
-    //     model.ctx,
-    //     model.Q,
-    //     model.K,
-    //     model.V,
-    //     NULL,
-    //     NULL,
-    //     model.mask,
-    //     scale,
-    //     max_bias,
-    //     logit_softcap
-    // );
-
-    result = ggml_reshape_2d(ctx, result, result->ne[0] * result->ne[1], result->ne[2]);
-
     ggml_build_forward_expand(gf, result);
     return gf;
 }
 
-// Compute flash attention using PyTorch
-static struct ggml_tensor * torch_flash_attn(
+static struct ggml_cgraph * build_flash_attn_with_state_graph(
     ggml_context* ctx,
     ggml_tensor* Q,
     ggml_tensor* K,
@@ -240,212 +359,52 @@ static struct ggml_tensor * torch_flash_attn(
     ggml_tensor* mask,
     ggml_tensor* K_quant,
     ggml_tensor* V_quant,
-    float scale = 1.0f
+    ggml_tensor* qk_mask_quant,
+    float scale         = 1.0f,
+    float max_bias      = 0.0f,
+    float logit_softcap = 0.0f
 ) {
-#ifdef LLAMA_TORCH_AVAILABLE
-    try {
-        // Extract dimensions from Q tensor [head_dim, seq_len, n_heads, 1]
-        const int64_t head_dim  = Q->ne[0];
-        const int64_t seq_len   = Q->ne[1];
-        const int64_t n_heads   = Q->ne[2];
+    struct ggml_cgraph * gf = ggml_new_graph(ctx);
 
-        // Extract dimensions from K/V tensor [head_dim, kv_len, n_kv_heads, 1]
-        const int64_t kv_len = K->ne[1];
-        const int64_t n_kv_heads = K->ne[2];
+    // Perform flash attention: result = flash_attn_ext(Q, K, V, mask)
+    struct ggml_tensor * result = ggml_flash_attn_ext_with_state(
+        ctx,
+        Q,
+        K,
+        V,
+        mask,
+        K_quant,
+        V_quant,
+        qk_mask_quant,
+        scale,
+        max_bias,
+        logit_softcap
+    );
+    ggml_flash_attn_ext_set_prec(result, GGML_PREC_WITH_STATE);
 
-        // LOG_INF("PyTorch Flash Attention Debug Info:\n");
-        // LOG_INF("  Q: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, seq_len=%ld, n_heads=%ld], dtype=%s\n",
-        //         Q->ne[0], Q->ne[1], Q->ne[2], Q->ne[3], head_dim, seq_len, n_heads, ggml_type_name(Q->type));
-        // LOG_INF("  K: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, kv_len=%ld, n_kv_heads=%ld], dtype=%s\n",
-        //         K->ne[0], K->ne[1], K->ne[2], K->ne[3], head_dim, kv_len, n_kv_heads, ggml_type_name(K->type));
-        // LOG_INF("  V: [%ld,%ld,%ld,%ld] -> [head_dim=%ld, kv_len=%ld, n_kv_heads=%ld], dtype=%s\n",
-        //         V->ne[0], V->ne[1], V->ne[2], V->ne[3], head_dim, kv_len, n_kv_heads, ggml_type_name(V->type));
-        // if (mask) {
-        //     LOG_INF("  Mask: [%ld,%ld,%ld,%ld], dtype=%s\n", mask->ne[0], mask->ne[1], mask->ne[2], mask->ne[3], ggml_type_name(mask->type));
-        // }
+    ggml_build_forward_expand(gf, result);
 
-        auto torch_options = torch::TensorOptions().dtype(torch::kFloat32);
+    return gf;
+}
 
-        // Create PyTorch tensors in format [batch_size, n_heads, seq_len, head_dim]
-        auto q_torch = torch::zeros({1, n_heads, seq_len, head_dim}, torch_options);
-        float* q_torch_data = q_torch.data_ptr<float>();
+static struct ggml_cgraph * build_subtract_graph(
+    ggml_context* ctx,
+    ggml_tensor* a,
+    ggml_tensor* b
+) {
+    struct ggml_cgraph * gf = ggml_new_graph(ctx);
 
-        // Convert Q from ggml format [head_dim, seq_len, n_heads, 1] to torch format [1, n_heads, seq_len, head_dim]
-        float* q_data = (float*)Q->data;
-        for (int h = 0; h < n_heads; h++) {
-            for (int s = 0; s < seq_len; s++) {
-                for (int d = 0; d < head_dim; d++) {
-                    int ggml_idx = d + s * head_dim + h * head_dim * seq_len;
-                    int torch_idx = h * seq_len * head_dim + s * head_dim + d;
-                    q_torch_data[torch_idx] = q_data[ggml_idx]; //> Q is GGML_TYPE_F32
-                }
-            }
-        }
+    ggml_tensor * result = ggml_sub(ctx, a, b);
+    ggml_build_forward_expand(gf, result);
 
-        // NOTICE : the K and V tensors are in the format of [head_dim, kv_len, n_kv_heads, 1], 
-        // NOTICE : HOWEVER, the REAL layout is [head_dim, n_kv_heads, kv_len, 1]
+    return gf;
+}
 
-        // NOTICE : HOWEVER.
-
-        // Create K tensor in PyTorch format [1, n_kv_heads, kv_len, head_dim]
-        auto k_torch = torch::zeros({1, n_kv_heads, kv_len, head_dim}, torch_options).contiguous();
-        float* k_torch_data = k_torch.data_ptr<float>();
-
-        // Convert K from ggml format [head_dim, kv_len, n_kv_heads, 1] to torch format
-        for (int s = 0; s < kv_len; s++) {
-            for (int h = 0; h < n_kv_heads; h++) {
-                for (int d = 0; d < head_dim; d++) {
-                    // int ggml_idx = d + h * head_dim + s * head_dim * n_kv_heads;    //> Correct the llama.cpp layout
-                    int ggml_idx = d + s * head_dim + h * head_dim * kv_len;        //> For 
-                    int torch_idx = h * kv_len * head_dim + s * head_dim + d;
-
-                    if (K->type == GGML_TYPE_F16) {
-                        k_torch_data[torch_idx] = ggml_fp16_to_fp32(((ggml_fp16_t*)K->data)[ggml_idx]);
-                    } else {
-                        k_torch_data[torch_idx] = ((float*)K->data)[ggml_idx];
-                    }
-                }
-            }
-        }
-
-        // Create V tensor in PyTorch format [1, n_kv_heads, kv_len, head_dim]
-        auto v_torch = torch::zeros({1, n_kv_heads, kv_len, head_dim}, torch_options);
-        float* v_torch_data = v_torch.data_ptr<float>();
-
-        // Convert V from ggml format [head_dim, kv_len, n_kv_heads, 1] to torch format
-        for (int s = 0; s < kv_len; s++) {
-            for (int h = 0; h < n_kv_heads; h++) {
-                for (int d = 0; d < head_dim; d++) {
-                    // int ggml_idx = d + h * head_dim + s * head_dim * n_kv_heads;    //> Correct the llama.cpp layout
-                    int ggml_idx = d + s * head_dim + h * head_dim * kv_len;        //> For llama.cpp layout
-                    int torch_idx = h * kv_len * head_dim + s * head_dim + d;
-
-                    if (V->type == GGML_TYPE_F16) {
-                        v_torch_data[torch_idx] = ggml_fp16_to_fp32(((ggml_fp16_t*)V->data)[ggml_idx]);
-                    } else {
-                        v_torch_data[torch_idx] = ((float*)V->data)[ggml_idx];
-                    }
-                }
-            }
-        }
-
-        const char* mask_nonfp32 = (const char*)mask->data;
-        const float* mask_fp32 = (const float*)mask->data;
-
-        float* mask_buffer = (float*)malloc(mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3] * sizeof(float));
-
-        ggml_to_float_t to_float = ggml_get_type_traits(mask->type)->to_float;
-
-        if (to_float) {
-            to_float(mask_nonfp32, mask_buffer, mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3]);
-        } else {
-            memcpy(mask_buffer, mask_fp32, mask->ne[0] * mask->ne[1] * mask->ne[2] * mask->ne[3] * sizeof(float));
-        }
-
-        // Handle mask conversion if present
-        auto torch_options_mask = torch::TensorOptions().dtype(torch::kBool);
-        torch::Tensor mask_torch = torch::zeros({1, n_heads, seq_len, kv_len}, torch_options_mask);
-        bool* mask_torch_data = mask_torch.data_ptr<bool>();
-
-        for (int h = 0; h < n_heads; h++) {
-            for (int s = 0; s < seq_len; s++) {
-                for (int d = 0; d < kv_len; d++) {
-                    int ggml_idx = d + s * kv_len;
-                    int torch_idx = h * seq_len * kv_len + s * kv_len + d;
-                    mask_torch_data[torch_idx] = mask_buffer[ggml_idx] == 0.f ? true : false;
-                }
-            }
-        }
-
-        // std::cout << "k_torch shape: " << k_torch.sizes() << std::endl;
-        // std::cout << "v_torch shape: " << v_torch.sizes() << std::endl;
-        // std::cout << "q_torch shape: " << q_torch.sizes() << std::endl;
-        // std::cout << "mask_torch shape: " << mask_torch.sizes() << std::endl;
-
-        // std::cout << k_torch << std::endl;
-
-        // Handle GQA (Grouped Query Attention) by repeating KV heads to match Q heads
-        if (n_heads > n_kv_heads) {
-            int repeat_factor = n_heads / n_kv_heads;
-            k_torch = k_torch.repeat_interleave(repeat_factor, /*dim=*/1);
-            v_torch = v_torch.repeat_interleave(repeat_factor, /*dim=*/1);
-
-            // LOG_INF("GQA: Repeated KV heads by factor %d (%ld -> %ld heads)\n",
-            //         repeat_factor, n_kv_heads, n_heads);
-        }
-
-        // std::cout << "k_torch shape: " << k_torch.sizes() << std::endl;
-        // std::cout << "v_torch shape: " << v_torch.sizes() << std::endl;
-        // std::cout << "q_torch shape: " << q_torch.sizes() << std::endl;
-        // std::cout << "mask_torch shape: " << mask_torch.sizes() << std::endl;
-
-        // LOG_INF("Final PyTorch tensor shapes:\n");
-        // LOG_INF("  Q: [%ld,%ld,%ld,%ld]\n", q_torch.size(0), q_torch.size(1), q_torch.size(2), q_torch.size(3));
-        // LOG_INF("  K: [%ld,%ld,%ld,%ld]\n", k_torch.size(0), k_torch.size(1), k_torch.size(2), k_torch.size(3));
-        // LOG_INF("  V: [%ld,%ld,%ld,%ld]\n", v_torch.size(0), v_torch.size(1), v_torch.size(2), v_torch.size(3));
-
-        // Compute scaled dot product attention using PyTorch
-        torch::Tensor torch_result;
-        if (mask && mask->data) {
-            // LOG_INF("Computing attention WITH mask, scale=%.6f\n", scale);
-            torch_result = torch::scaled_dot_product_attention(
-                q_torch, k_torch, v_torch, mask_torch,
-                /*dropout_p=*/0.0,
-                /*is_causal=*/false,
-                /*scale=*/scale
-            );
-        } else {
-            // LOG_INF("Computing attention WITHOUT mask, scale=%.6f\n", scale);
-            torch_result = torch::scaled_dot_product_attention(
-                q_torch, k_torch, v_torch, torch::Tensor(),
-                /*dropout_p=*/0.0,
-                /*is_causal=*/true,     //> True for causal attention
-                /*scale=*/scale
-            );
-        }
-
-        // torch_result = torch_result.permute({0, 2, 1, 3}).contiguous();  //> [batch, token, n_head, head_dim]
-        const float* torch_result_data = torch_result.data_ptr<float>();
-
-        // LOG_INF("PyTorch attention result shape: [%ld, %ld, %ld, %ld]\n",
-        //         torch_result.size(0), torch_result.size(1), torch_result.size(2), torch_result.size(3));
-
-        // Create output tensor with ggml expected format
-        ggml_tensor* result_ggml = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, n_heads, seq_len, 1);
-
-        float* result_data = (float*)result_ggml->data;
-
-        // Copy data from PyTorch result to ggml format
-        // PyTorch layout: [batch, head, seq, dim] -> [1, 32, n_tokens, 128]
-        // ggml layout: [dim*head, seq, 1, 1] -> [4096, n_tokens, 1, 1]
-        for (int64_t hidden_dim = 0; hidden_dim < head_dim * n_heads; hidden_dim++) {
-            for (int64_t seq_idx = 0; seq_idx < seq_len; seq_idx++) {
-                result_data[hidden_dim + seq_idx * (head_dim * n_heads)] = torch_result_data[hidden_dim + seq_idx * (head_dim * n_heads)];
-            }
-        }
-
-        // LOG_INF("Converted result to ggml format: [%ld, %ld, %ld, %ld] (total elements: %ld)\n",
-        //         result_ggml->ne[0], result_ggml->ne[1], result_ggml->ne[2], result_ggml->ne[3],
-        //         ggml_nelements(result_ggml));
-
-        // LOG_INF("PyTorch Flash Attention computation successful!\n");
-        return result_ggml;
-
-    } catch (const std::exception& e) {
-        LOG_ERR("PyTorch Flash Attention failed: %s\n", e.what());
-        LOG_ERR("   Falling back to ggml implementation...\n");
-        // Fall through to ggml implementation
-    }
-#else
-    // PyTorch not available, use ggml implementation directly
-    // LOG_INF("PyTorch not available, using ggml Flash Attention implementation\n");
-#endif
-
-    // Fallback to original ggml implementation
-    // LOG_INF("Using ggml Flash Attention implementation\n");
-    struct ggml_cgraph * gf = build_flash_attn_graph(ctx, Q, K, V, mask, K_quant, V_quant, scale);
-
-    int n_threads = 12;
+static struct ggml_tensor * compute_graph(
+    ggml_context* ctx,
+    struct ggml_cgraph * gf,
+    int n_threads = 12
+) {
     ggml_graph_compute_with_ctx(ctx, gf, n_threads);
 
     return ggml_graph_node(gf, -1);
@@ -516,7 +475,7 @@ static void print_tensor_summary(ggml_tensor* tensor, const std::string& name) {
         LOG_INF("| %-20s | NULL                                | NULL                                | NULL     | NULL       |\n", name.c_str());
         return;
     }
-    LOG_INF("| %-20s | [%4ld,%4ld,%4ld,%4ld]                  | [%8ld,%8ld,%8ld,%8ld]            | %-8s | %10zu |\n",
+    LOG_INF("| %-21s | [%4ld,%4ld,%4ld,%4ld]                 | [%8ld,%8ld,%8ld,%8ld]            | %-8s | %10zu |\n",
             name.c_str(), 
             tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3],
             tensor->nb[0], tensor->nb[1], tensor->nb[2], tensor->nb[3],
@@ -595,6 +554,89 @@ static void print_kqv_mask(ggml_tensor* mask) {
     }
 
     free(row_buffer);
+}
+
+/**
+ * Count valid KV cache entries in the first row of the attention mask.
+ * Valid entries have value 0.0f, invalid entries have -INFINITY.
+ * 
+ * @param mask: attention mask tensor with shape [kv_len, q_len, 1, n_batch]
+ * @param batch_idx: which batch to check (default 0 for first batch)
+ * @return: number of valid KV cache entries in the first row
+ */
+static int count_valid_kv_cache_first_row(ggml_tensor* mask, int batch_idx = 0) {
+    if (!mask || !mask->data) {
+        LOG_ERR("Error: mask tensor is null or has no data\n");
+        return 0;
+    }
+
+    GGML_TENSOR_LOCALS(int64_t, ne_mask, mask, ne)
+    GGML_TENSOR_LOCALS(int64_t, nb_mask, mask, nb)
+
+    // Validate batch index
+    if (batch_idx >= ne_mask3) {
+        LOG_ERR("Error: batch_idx %d exceeds n_batch %ld\n", batch_idx, ne_mask3);
+        return 0;
+    }
+
+    // Validate tensor shape
+    if (ne_mask2 != 1) {
+        LOG_ERR("Error: expected ne[2] to be 1, got %ld\n", ne_mask2);
+        return 0;
+    }
+
+    if (ne_mask1 == 0 || ne_mask0 == 0) {
+        LOG_INF("Warning: empty mask tensor dimensions [%ld, %ld]\n", ne_mask0, ne_mask1);
+        return 0;
+    }
+
+    int valid_count = 0;
+    const int q_row = 0; // First row (q_len = 0)
+
+    // Get mask data pointer for the specified batch
+    const char* mask_nonfp32 = (const char*)mask->data;
+    const float* mask_fp32 = (const float*)mask->data;
+
+    ggml_to_float_t to_float = ggml_get_type_traits(mask->type)->to_float;
+
+    if (to_float) {
+        // For non-F32 types, convert to float first
+        float* row_buffer = (float*)malloc(ne_mask0 * sizeof(float));
+        if (!row_buffer) {
+            LOG_ERR("Error: failed to allocate memory for row buffer\n");
+            return 0;
+        }
+
+        // Calculate offset for the first row of the specified batch
+        // Offset = batch_idx * nb[3] + 0 * nb[2] + q_row * nb[1] + 0 * nb[0]
+        size_t batch_offset = batch_idx * nb_mask3 + q_row * nb_mask1;
+        
+        to_float(mask_nonfp32 + batch_offset, row_buffer, ne_mask0);
+
+        // Count valid entries (value == 0.0f)
+        for (int kv_idx = 0; kv_idx < ne_mask0; ++kv_idx) {
+            if (row_buffer[kv_idx] == 0.0f) {
+                valid_count++;
+            }
+        }
+
+        free(row_buffer);
+    } else {
+        // For F32 type, access directly
+        // Calculate offset for the first row of the specified batch
+        size_t batch_offset = batch_idx * (nb_mask3 / sizeof(float)) + q_row * (nb_mask1 / sizeof(float));
+        
+        for (int kv_idx = 0; kv_idx < ne_mask0; ++kv_idx) {
+            if (mask_fp32[batch_offset + kv_idx] == 0.0f) {
+                valid_count++;
+            }
+        }
+    }
+
+    // LOG_INF("Valid KV cache count in first row (batch %d): %d / %ld\n", 
+    //         batch_idx, valid_count, ne_mask0);
+
+    return valid_count;
 }
 
 static void ggml_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne, const size_t * nb, int64_t n) {
@@ -836,24 +878,24 @@ static void print_comparison_stats(ggml_tensor* predicted, ggml_tensor* target, 
     }
     
     LOG_INF("\n");
-    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
-    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %-18s |\n", 
+    LOG_INF("+-------------------------+------------+------------+------------+--------------+--------------------+\n");
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-12s | %-18s |\n", 
             "Tensor Statistics", "Elements", "Mean", "Std Dev", "Min/Max", "NMSE & Assessment");
-    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
+    LOG_INF("+-------------------------+------------+------------+------------+--------------+--------------------+\n");
     LOG_INF("| %-23s | %-10zu | %10.6f | %10.6f | %5.3f/%-4.3f | %-18s |\n",
             "Predicted (Flash Attn)", pred_stats.elements, pred_stats.mean, pred_stats.std_dev, 
             pred_stats.min_val, pred_stats.max_val, "");
     LOG_INF("| %-23s | %-10zu | %10.6f | %10.6f | %5.3f/%-4.3f | %-18s |\n",
             "Target (KQV Output)", target_stats.elements, target_stats.mean, target_stats.std_dev,
             target_stats.min_val, target_stats.max_val, "");
-    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
-    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %s %-15s |\n",
+    LOG_INF("+-------------------------+------------+------------+------------+--------------+--------------------+\n");
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-12s | %s %-15s |\n",
             "Difference Analysis", "-", "-", "-", "-", quality_icon, "");
-    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %.6e       |\n",
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-12s | %.6e       |\n",
             "NMSE", "-", "-", "-", "-", nmse);
-    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-10s | %-18s |\n",
+    LOG_INF("| %-23s | %-10s | %-10s | %-10s | %-12s | %-18s |\n",
             "Quality Assessment", "-", "-", "-", "-", assessment);
-    LOG_INF("+-------------------------+------------+------------+------------+------------+--------------------+\n");
+    LOG_INF("+-------------------------+------------+------------+------------+--------------+--------------------+\n");
     LOG_INF("\n");
 }
 
@@ -868,6 +910,8 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         /*.no_alloc = */ false,
         /*.ctx      = */ &ggml_ctx,
     };
+
+    const int n_threads = 1;
 
     // NOTICE : This is GGUF_CONTEXT
     struct gguf_context* ctx = gguf_init_from_file(params.input_file.c_str(), gguf_params);
@@ -888,7 +932,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
     std::map<int, std::vector<std::pair<ggml_tensor*, std::string>>> step_tensor_map;
     for (ggml_tensor* tensor = ggml_get_first_tensor(tensor_ctx); tensor; tensor = ggml_get_next_tensor(tensor_ctx, tensor)) {
         std::string name = tensor->name && tensor->name[0] ? tensor->name : "unnamed";
-        // LOG_INF("Tensor name: %s\n", name.c_str());
+        LOG_INF("Tensor name: %s\n", name.c_str());
 
         int step = extract_step_from_name(name);
         step_tensor_map[step].emplace_back(tensor, name);
@@ -896,7 +940,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
 
     // Add space for result tensor (estimated)
     struct ggml_init_params ctx_params {
-        /*.mem_size   =*/ 256 * 1024 * 1024,
+        /*.mem_size   =*/ (size_t)(1 * 1024 * 1024 * 1024),
         /*.mem_buffer =*/ NULL,     //> Just alloc memory use
         /*.no_alloc   =*/ false,
     };
@@ -926,11 +970,13 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
 
         ggml_tensor * K_quant = nullptr;
         ggml_tensor * V_quant = nullptr;
+        ggml_tensor * KQ_mask_quant = nullptr;
         if (tensors.size() > 5) {
             K_quant = tensors[5].first;
             V_quant = tensors[6].first;
-            LOG_DBG("Quantized tensors - K_quant: %s, V_quant: %s\n",
-                    K_quant->name, V_quant->name);
+            KQ_mask_quant = tensors[7].first;
+            LOG_DBG("Quantized tensors - K_quant: %s, V_quant: %s, KQ_mask_quant: %s\n",
+                    K_quant->name, V_quant->name, KQ_mask_quant->name);
         }
 
         // Run flash attention for all steps
@@ -944,43 +990,154 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         print_tensor_summary(Q, "Q (Query)");
         print_tensor_summary(K, "K (Key)");
         print_tensor_summary(V, "V (Value)");
+
+        int valid_count_orig    = 0;
+        int valid_count_quant   = 0;
+        int valid_count_merged  = 0;
+
         if (kq_mask) {
             print_tensor_summary(kq_mask, "Mask");
+            // Count valid KV cache entries in the original mask
+            // valid_count_orig = count_valid_kv_cache_first_row(kq_mask, 0);
         }
         if (K_quant && V_quant) {
             print_tensor_summary(K_quant, "K_quant");
             print_tensor_summary(V_quant, "V_quant");
+            print_tensor_summary(KQ_mask_quant, "KQ_mask_quant");
+            // Count valid KV cache entries in the quantized mask
+            if (KQ_mask_quant) {
+                valid_count_quant = count_valid_kv_cache_first_row(KQ_mask_quant, 0);
+            }
         }
 
         // Print table footer
         LOG_INF("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
 
-        // print_kqv_mask(kq_mask);
+        // NOTICE : Due to `to_float` can only convert to F32, so here is F32.
+        ggml_tensor * K_merged = ggml_new_tensor_4d(
+            compute_ctx, GGML_TYPE_F32, 
+            K->ne[0], K->ne[1] + K_quant->ne[1], K->ne[2], K->ne[3]
+        );
+        ggml_tensor * V_merged = ggml_new_tensor_4d(
+            compute_ctx, GGML_TYPE_F32, 
+            V->ne[0], V->ne[1] + V_quant->ne[1], V->ne[2], V->ne[3]
+        );
+        ggml_tensor * mask_merged = ggml_new_tensor_4d(
+            compute_ctx, GGML_TYPE_F32, 
+            kq_mask->ne[0] + kq_mask->ne[0], kq_mask->ne[1], kq_mask->ne[2], kq_mask->ne[3]
+        );
+
+        struct ggml_cgraph * k_merge_graph = build_merge_kv_graph(compute_ctx, K_merged, K, K_quant);
+        enum ggml_status k_status = ggml_graph_compute_with_ctx(compute_ctx, k_merge_graph, 1);
+        if (k_status != GGML_STATUS_SUCCESS) {
+            printf("ERROR: K merge computation failed with status: %d\n", k_status);
+            ggml_free(compute_ctx);
+            return 1;
+        }
+
+        struct ggml_cgraph * v_merge_graph = build_merge_kv_graph(compute_ctx, V_merged, V, V_quant);
+        enum ggml_status v_status = ggml_graph_compute_with_ctx(compute_ctx, v_merge_graph, 1);
+        if (v_status != GGML_STATUS_SUCCESS) {
+            printf("ERROR: V merge computation failed with status: %d\n", v_status);
+            ggml_free(compute_ctx);
+            return 1;
+        }
+
+        struct ggml_cgraph * mask_merge_graph = build_merge_mask_graph(compute_ctx, mask_merged, kq_mask, KQ_mask_quant);
+        enum ggml_status mask_status = ggml_graph_compute_with_ctx(compute_ctx, mask_merge_graph, 1);
+        if (mask_status != GGML_STATUS_SUCCESS) {
+            printf("ERROR: Mask merge computation failed with status: %d\n", mask_status);
+            ggml_free(compute_ctx);
+            return 1;
+        }
+
+        ggml_tensor * K_merged_fp16 = ggml_cast(compute_ctx, K_merged, GGML_TYPE_F16);
+        ggml_tensor * V_merged_fp16 = ggml_cast(compute_ctx, V_merged, GGML_TYPE_F16);
+        ggml_tensor * mask_merged_fp16 = ggml_cast(compute_ctx, mask_merged, GGML_TYPE_F16);
+
+        print_tensor_summary(K_merged_fp16, "K_merged");
+        print_tensor_summary(V_merged_fp16, "V_merged");
+        print_tensor_summary(mask_merged_fp16, "mask_merged");
+
+        // Count valid KV cache entries in the merged mask
+        if (mask_merged_fp16) {
+            valid_count_merged = count_valid_kv_cache_first_row(mask_merged_fp16, 0);
+        }
+
+        LOG_INF("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
 
         // Compute flash attention
         float scale = 1.0f / sqrtf((float)Q->ne[0]); // 1 / sqrt(head_dim)
 
-        // for (int i = 0; i < K->ne[0]; i++) {
-        //     for (int k = 0; k < K->ne[1]; k++) {
-        //         for (int l = 0; l < K->ne[3]; l++) {
-        //             ggml_set_f32_nd(K, i, k, 0, l, 0.f);
-        //             ggml_set_f32_nd(V, i, k, 0, l, 0.f);
-        //         }
-        //     }
-        // }
+        //> Build Graph and compute flash attention
+        struct ggml_cgraph * flash_result_graph = build_flash_attn_graph(
+            compute_ctx, Q, K_merged_fp16, V_merged_fp16, mask_merged_fp16, scale
+        );
+        ggml_tensor * flash_result = compute_graph(compute_ctx, flash_result_graph, n_threads);
 
-        // ggml_set_f32_nd(const struct ggml_tensor *tensor, int i0, int i1, int i2, int i3, float value)
+        //> Build Graph and compute flash attention with state
+        struct ggml_cgraph * flash_result_with_state_graph = build_flash_attn_with_state_graph(
+            compute_ctx, Q, K, V, kq_mask, K_quant, V_quant, KQ_mask_quant, scale
+        );
+        ggml_tensor * flash_result_with_state = compute_graph(compute_ctx, flash_result_with_state_graph, n_threads);
 
-        struct ggml_tensor * flash_result = torch_flash_attn(compute_ctx, Q, K, V, kq_mask, K_quant, V_quant, scale);
+        ggml_tensor* kqv_out_reshaped = ggml_reshape_tensor(compute_ctx, 
+            kqv_out, Q->ne[0], kqv_out->ne[1], Q->ne[2],  kqv_out->ne[3]
+        );
 
-        ggml_tensor* kqv_out_reshaped = ggml_reshape_tensor(compute_ctx, kqv_out, Q->ne[0], kqv_out->ne[1], Q->ne[2],  kqv_out->ne[3]);
-        
+        print_tensor_summary(kqv_out_reshaped, "kqv_out_reshaped");
+        print_tensor_summary(flash_result, "flash_result");
+        print_tensor_summary(flash_result_with_state, "flash_result_state");
+
+        LOG_INF("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
+
+        ggml_tensor * k_fp16_ref = nullptr;
+        ggml_tensor * k_quant_part = nullptr;
+        if (valid_count_quant != 0) {
+            k_fp16_ref = ggml_view_2d(compute_ctx, K, K->ne[0], valid_count_quant, K->nb[1], 0);
+            k_quant_part = ggml_view_2d(compute_ctx, K_quant, K_quant->ne[0], valid_count_quant, K_quant->nb[1], 0);
+            
+            struct ggml_cgraph * gf = ggml_new_graph(compute_ctx);
+            ggml_build_forward_expand(gf, k_fp16_ref);
+            ggml_build_forward_expand(gf, k_quant_part);
+            ggml_graph_compute_with_ctx(compute_ctx, gf, 8);  
+
+            print_tensor_summary(k_fp16_ref, "k_fp16_ref");
+            print_tensor_summary(k_quant_part, "k_quant_part");
+            LOG_INF("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
+
+            // LOG_INF("K_fp16 : \n");
+            // ggml_print_tensor((uint8_t*)k_fp16_ref->data, k_fp16_ref->type, k_fp16_ref->ne, k_fp16_ref->nb, 8);
+            // LOG_INF("K_quant : \n");
+            // ggml_print_tensor((uint8_t*)k_quant_part->data, k_quant_part->type, k_quant_part->ne, k_quant_part->nb, 8);
+        }
+
+        struct ggml_cgraph * substract_graph = build_subtract_graph(compute_ctx, flash_result, flash_result_with_state);
+        ggml_tensor * substract_result = compute_graph(compute_ctx, substract_graph, n_threads);
+
+        ggml_print_tensor((uint8_t*)substract_result->data, substract_result->type, substract_result->ne, substract_result->nb, 8);
+
+        // print_kqv_mask(kq_mask);
+
+        // print_kqv_mask(KQ_mask_quant);
+
+        // // > Print the tensor.        
+        // LOG_INF("---------------   KQV Output (reshaped)  ---------------\n");
+        // ggml_print_tensor((uint8_t*)kqv_out_reshaped->data, kqv_out_reshaped->type, kqv_out_reshaped->ne, kqv_out_reshaped->nb, 8); 
+        // LOG_INF("--------------- Standard Flash Attention ---------------\n");
+        // ggml_print_tensor((uint8_t*)flash_result->data, flash_result->type, flash_result->ne, flash_result->nb, 8); 
+        // LOG_INF("--------------- Flash Attention with State ---------------\n");
+        // ggml_print_tensor((uint8_t*)flash_result_with_state->data, flash_result_with_state->type, flash_result_with_state->ne, flash_result_with_state->nb, 8); 
+
         // Calculate NMSE instead of printing tensors
         double nmse = calculate_nmse(flash_result, kqv_out_reshaped);
+        double nmse_state_vs_std = calculate_nmse(flash_result_with_state, flash_result);
+        double nmse_with_state = calculate_nmse(flash_result_with_state, kqv_out_reshaped);
         
         if (nmse >= 0.0) {
             LOG_INF("Step %d: Flash Attention vs KQV Output Comparison\n", step);
-            print_comparison_stats(flash_result, kqv_out_reshaped, nmse);
+            print_comparison_stats(flash_result, flash_result_with_state, nmse_state_vs_std);
+            print_comparison_stats(flash_result_with_state, kqv_out_reshaped, nmse_with_state);
             nmse_results.push_back(nmse);
             valid_steps.push_back(step);
         } else {

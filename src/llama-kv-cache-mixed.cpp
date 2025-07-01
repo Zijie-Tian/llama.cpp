@@ -829,45 +829,40 @@ bool llama_kv_cache_mixed::update(llama_context & lctx) {
     do_quant = config.enable_quantization && ( head != 0 && head - cell_max_quantized() >= config.quantization_threshold + config.fp16_window_size );
 
     if (do_quant) {
-        LLAMA_LOG_DEBUG("%s: quantizing KV cache\n", __func__);
+        // LLAMA_LOG_DEBUG("%s: quantizing KV cache\n", __func__);
 
-        // 标记cells为量化状态
-        for (uint32_t i = cell_max_quantized(); i < head - config.fp16_window_size; i++) {
-            if (i < size) {
-                cells[i].set_quantized(true);
-            }
-        }
+        // for (uint32_t i = cell_max_quantized(); i < head - config.fp16_window_size; i++) {
+        //     if (i < size) {
+        //         cells[i].set_quantized(true);
+        //     }
+        // }
 
-        // 构建量化计算图
-        ggml_backend_sched_reset(sched);
+        // ggml_backend_sched_reset(sched);
 
-        auto * gf = lctx.graph_init();
-        auto * ctx = lctx.get_ctx_compute();
+        // auto * gf   = lctx.graph_init();
+        // auto * ctx = lctx.get_ctx_compute();
 
-        // 对每一层进行量化
-        for (size_t i = 0; i < layers.size(); ++i) {
-            auto & layer = layers[i];
+        // for (size_t i = 0; i < layers.size(); ++i) {
+        //     auto & layer = layers[i];
 
-            // 构建 K 量化操作
-            auto * k_quant_op = k_quant(ctx, layer.il);
-            if (k_quant_op) {
-                ggml_build_forward_expand(gf, k_quant_op);
-                LLAMA_LOG_DEBUG("[mixed-kv] added K quantization for layer %d\n", layer.il);
-            }
+        //     auto * k_quant_op = k_quant(ctx, layer.il);
+        //     if (k_quant_op) {
+        //         ggml_build_forward_expand(gf, k_quant_op);
+        //         LLAMA_LOG_DEBUG("[mixed-kv] added K quantization for layer %d\n", layer.il);
+        //     }
 
-            // 构建 V 量化操作
-            auto * v_quant_op = v_quant(ctx, layer.il);
-            if (v_quant_op) {
-                ggml_build_forward_expand(gf, v_quant_op);
-                LLAMA_LOG_DEBUG("[mixed-kv] added V quantization for layer %d\n", layer.il);
-            }
-        }
+        //     auto * v_quant_op = v_quant(ctx, layer.il);
+        //     if (v_quant_op) {
+        //         ggml_build_forward_expand(gf, v_quant_op);
+        //         LLAMA_LOG_DEBUG("[mixed-kv] added V quantization for layer %d\n", layer.il);
+        //     }
+        // }
 
-        ggml_backend_sched_alloc_graph(sched, gf);
+        // ggml_backend_sched_alloc_graph(sched, gf);
 
-        lctx.graph_compute(gf, false);
+        // lctx.graph_compute(gf, false);
 
-        need_reserve = true;
+        // need_reserve = true;
 
         do_quant = false;
     }
@@ -1003,7 +998,7 @@ bool llama_kv_cache_mixed::find_slot(const llama_ubatch & ubatch) {
     n = std::min(size, std::max(n_pad, GGML_PAD(cell_max(), n_pad)));                       //> Virtual head of kv cache.
     n_quantized = std::min(size, std::max(n_pad, GGML_PAD(cell_max_quantized(), n_pad)));   //> Virtual head of quantized kv cache.
     
-    LLAMA_LOG_INFO("\n[mixed-kv] successfully allocated slot: head=%u, used=%u, n=%u, n_quantized=%u, cell_max=%u, cell_max_quantized=%u\n", head, used, n, n_quantized, cell_max(), cell_max_quantized());
+    // LLAMA_LOG_INFO("\n[mixed-kv] successfully allocated slot: head=%u, used=%u, n=%u, n_quantized=%u, cell_max=%u, cell_max_quantized=%u\n", head, used, n, n_quantized, cell_max(), cell_max_quantized());
 
     return true;
 }
@@ -1328,7 +1323,7 @@ ggml_tensor * llama_kv_cache_mixed::get_k_quant(ggml_context * ctx, int32_t il) 
     auto * k_quant = layer.k_quant;
 
     // If no quantized tokens, return nullptr
-    if (layer.quant_k_tokens == 0) {
+    if (n_quantized == 0) {
         // NOTICE: This can only happen when the graph is pre-built.
         return ggml_view_3d(ctx, k_quant,
                 hparams.n_embd_head_k, hparams.n_head_kv(il), n_quantized,

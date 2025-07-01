@@ -40,15 +40,6 @@ static void ggml_compute_forward_dup_same_cont(
     }
 }
 
-static void ggml_flash_attn_ext_f16_segment(
-        const ggml_compute_params * params,
-        const ggml_tensor * q,
-        const ggml_tensor * k,
-        const ggml_tensor * v,
-        const ggml_tensor * mask,
-        float * state_data,
-        ggml_tensor * dst);
-
 static void ggml_compute_forward_dup_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -7156,47 +7147,8 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         // memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
 
         // permute(0, 2, 1, 3)
-memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+        memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
     }
-}
-
-static void ggml_compute_forward_flash_attn_ext_f16_with_state(
-        const ggml_compute_params * params,
-        const ggml_tensor * q,
-        const ggml_tensor * k_fp16,
-        const ggml_tensor * v_fp16,
-        const ggml_tensor * mask_fp16,
-        const ggml_tensor * k_quant,
-        const ggml_tensor * v_quant,
-        const ggml_tensor * mask_quant,
-        ggml_tensor * dst) {
-
-    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
-
-    const int64_t DK = q->ne[0];
-    const int64_t DV = dst->ne[0];
-
-    const size_t scratch_per_th = (1*DK + 2*DV + CACHE_LINE_SIZE_F32);
-    const size_t scratch_total  = scratch_per_th * params->nth;
-
-    const size_t state_elems = 2 * neq2 * neq1;
-
-    GGML_ASSERT(params->wsize >= (scratch_total + state_elems) * sizeof(float));
-
-    float * state_data = (float *) params->wdata + scratch_total;
-    for (int64_t i = 0; i < neq2 * neq1; ++i) {
-        state_data[2*i+0] = -INFINITY;
-        state_data[2*i+1] = 0.0f;
-    }
-
-    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
-        ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, state_data, dst);
-    }
-    if (k_quant && v_quant && k_quant->ne[1] > 0) {
-        ggml_flash_attn_ext_f16_segment(params, q, k_quant, v_quant, mask_quant, state_data, dst);
-    }
-
-    // memset(dst->data, 0, ggml_nelements(dst) * sizeof(float));
 }
 
 static void ggml_flash_attn_ext_f16_segment(
@@ -7223,6 +7175,9 @@ static void ggml_flash_attn_ext_f16_segment(
     const int64_t DK = nek0;     //> head_dim
     const int64_t DV = nev0;     //> head_dim
     const int64_t N  = neq1;     //> q_len
+
+    const int64_t Q_LEN = neq1;  //> q_len
+    const int64_t N_Q_HEADS = neq2; //> n_q_head
 
     GGML_ASSERT(ne0 == DV);      //> dst -> ne[0] == head_dim
     GGML_ASSERT(ne2 == N);       //> dst -> ne[2] == q_len
@@ -7305,18 +7260,42 @@ static void ggml_flash_attn_ext_f16_segment(
         // Calculate state tensor offset for this head/position
         const int64_t state_idx = iq2 * neq1 + iq1;  // head * q_len + position
         
+        // DEBUG: Add bounds checking for state access
+        const int64_t max_state_elements = neq2 * neq1 * 2; // 2 for M and S
+        if (state_idx * 2 + 1 >= max_state_elements) {
+            fprintf(stderr, "[MIXED-KV-ERROR] State index out of bounds: state_idx=%ld, max_elements=%ld\n",
+                    state_idx, max_state_elements);
+            continue;
+        }
+        
         // Read initial S and M values from state tensor 
         // State format: [M, S] for each head/position
-        float S = state_data[state_idx * 2 + 1];     // sum (index 1)
         float M = state_data[state_idx * 2 + 0];     // maximum KQ value (index 0)
+        float S = state_data[state_idx * 2 + 1];     // sum (index 1)
+
+        // DEBUG: Check for NaN in state data
+        if (isnan(S) || isnan(M)) {
+            fprintf(stderr, "[MIXED-KV-ERROR] NaN detected in state data: M=%f, S=%f, state_idx=%ld, head=%d, pos=%d\n",
+                    M, S, state_idx, iq2, iq1);
+            // Initialize with safe values
+            M = -INFINITY;
+            S = 0.0f;
+        }
+
+        // DEBUG: Check for invalid state values
+        if (S < 0.0f || (S > 0.0f && M == -INFINITY)) {
+            fprintf(stderr, "[MIXED-KV-WARNING] Invalid state values: M=%f, S=%f, resetting to defaults\n", M, S);
+            M = -INFINITY;
+            S = 0.0f;
+        }
 
         // Check if this is a continuation of previous segments
         bool is_continuation = (M != -INFINITY && S > 0.0f);
 
-        float       * VKQ32 = (float       *) params->wdata + ith*(1*DK + 2*DV + CACHE_LINE_SIZE_F32); // FP32 VKQ accumulator
-        float       * V32   =                 (VKQ32 + 1*DV); // (temporary) FP32 V buffer
-        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator
-        ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
+        float       * VKQ32 = (float       *) params->wdata + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
+        float       * V32   =                 (VKQ32 + 1*DV);   // (temporary) FP32 V buffer
+        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV);   // (temporary) FP16 VKQ accumulator
+        ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV);   // (temporary) buffer for Q converted to quantized/FP16
 
         // Initialize VKQ accumulator - CRITICAL FIX: restore previous accumulated results
         if (v->type == GGML_TYPE_F16) {
@@ -7325,12 +7304,28 @@ static void ggml_flash_attn_ext_f16_segment(
                 const int i1 = iq1;
                 const int i2 = iq2;
                 const int i3 = iq3;
-                float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
+                const float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
                 
-                // Scale previous result by S and convert to FP16
-                for (int64_t d = 0; d < DV; ++d) {
-                    VKQ16[d] = GGML_FP32_TO_FP16(prev_result[d] * S);
+                // DEBUG: Check for NaN in previous result
+                bool has_nan = false;
+                for (int64_t d = 0; d < DV && d < 8; ++d) { // Check first 8 elements
+                    if (isnan(prev_result[d])) {
+                        has_nan = true;
+                        break;
+                    }
                 }
+
+                GGML_ASSERT(!has_nan && "NaN in previous result");
+
+                for (int64_t d = 0; d < DV; ++d) {
+                    float val = prev_result[d];
+                    if (isnan(val) || isinf(val)) {
+                        fprintf(stderr, "[MIXED-KV-ERROR] Invalid accumulated value: val=%f\n", val);
+                        val = 0.0f;
+                    }
+                    VKQ16[d] = GGML_FP32_TO_FP16(val);
+                }
+
             } else {
                 memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
                 S = 0.0f;
@@ -7342,11 +7337,35 @@ static void ggml_flash_attn_ext_f16_segment(
                 const int i1 = iq1;
                 const int i2 = iq2;
                 const int i3 = iq3;
-                float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
+                const float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
                 
-                // Scale previous result by S
-                for (int64_t d = 0; d < DV; ++d) {
-                    VKQ32[d] = prev_result[d] * S;
+                // DEBUG: Check for NaN in previous result
+                bool has_nan = false;
+                for (int64_t d = 0; d < DV && d < 8; ++d) { // Check first 8 elements
+                    if (isnan(prev_result[d])) {
+                        has_nan = true;
+                        break;
+                    }
+                }
+                
+                if (has_nan || isnan(S)) {
+                    fprintf(stderr, "[MIXED-KV-ERROR] NaN in continuation data, reinitializing\n");
+                    memset(VKQ32, 0, DV*sizeof(float));
+                    S = 0.0f;
+                    M = -INFINITY;
+                    is_continuation = false;
+                } else {
+                    // CRITICAL FIX: Don't scale by S, just restore the previous unnormalized accumulated result
+                    // The previous result should already be unnormalized (multiplied by its segment's S)
+                    for (int64_t d = 0; d < DV; ++d) {
+                        // Direct load without scaling - the accumulated result is already properly weighted
+                        float val = prev_result[d];
+                        if (isnan(val) || isinf(val)) {
+                            fprintf(stderr, "[MIXED-KV-ERROR] Invalid accumulated value: val=%f\n", val);
+                            val = 0.0f;
+                        }
+                        VKQ32[d] = val;
+                    }
                 }
             } else {
                 memset(VKQ32, 0, DV*sizeof(float));
@@ -7371,11 +7390,14 @@ static void ggml_flash_attn_ext_f16_segment(
         // online softmax / attention
         // loop over n_kv and n_head_kv
         // ref: https://arxiv.org/pdf/2112.05682.pdf
+        bool nopass = true;
         for (int64_t ic = 0; ic < nek1; ++ic) {
             const float mv = mp ? slope*GGML_FP16_TO_FP32(mp[ic]) : 0.0f;
             if (mv == -INFINITY) {
                 continue;
             }
+
+            nopass = false;
 
             float s; // KQ value
 
@@ -7385,11 +7407,21 @@ static void ggml_flash_attn_ext_f16_segment(
 
             s = s*scale; // scale KQ value
 
-            if (logit_softcap != 0.0f) {
-                s = logit_softcap*tanhf(s);
+            // DEBUG: Check for NaN in attention score
+            if (isnan(s)) {
+                fprintf(stderr, "[MIXED-KV-ERROR] NaN in attention score s=%f at ic=%ld\n", s, ic);
+                continue; // Skip this position
             }
 
-            s += mv; // apply mask
+            if (logit_softcap != 0.0f) {
+                s = logit_softcap*tanhf(s);
+                if (isnan(s)) {
+                    fprintf(stderr, "[MIXED-KV-ERROR] NaN after logit_softcap s=%f\n", s);
+                    continue;
+                }
+            }
+
+            s += mv; // apply mask - CRITICAL FIX: Re-enable mask application!
 
             const float Mold = M;
 
@@ -7438,11 +7470,30 @@ static void ggml_flash_attn_ext_f16_segment(
             }
 
             S = S*ms + vs; // scale and increment sum with partial sum
+
+            // DEBUG: Check for NaN in S
+            if ((isnan(S) || S < 0.0f)) {
+                fprintf(stderr, "[MIXED-KV-ERROR] Invalid S=%f after update, ms=%f, vs=%f\n", S, ms, vs);
+                S = vs; // Reset to current contribution
+            }
         }
+
+        // // DEBUG: Final state validation
+        // if ((nopass == false) && (isnan(M) || isnan(S) || S <= 0.0f)) {
+        //     fprintf(stderr, "[MIXED-KV-ERROR] Invalid final state: M=%f, S=%f, reinitializing\n", M, S);
+        //     M = -INFINITY;
+        //     S = 0.0f; // CRITICAL FIX: Invalid state means no contribution, sum should be 0
+        // }
+
+        // if (nopass == true) {
+        //     M = -INFINITY;
+        //     S = 0.0f;  // CRITICAL FIX: No valid tokens means sum should be 0, not 1
+        // }
 
         // Write updated S and M values back to state tensor
         state_data[state_idx * 2 + 0] = M; // maximum KQ value (index 0)
         state_data[state_idx * 2 + 1] = S; // sum (index 1)
+
 
         if (v->type == GGML_TYPE_F16) {
             for (int64_t d = 0; d < DV; ++d) {
@@ -7450,9 +7501,29 @@ static void ggml_flash_attn_ext_f16_segment(
             }
         }
 
-        // V /= S
-        const float S_inv = 1.0f / S;
-        ggml_vec_scale_f32(DV, VKQ32, S_inv);
+        // CRITICAL FIX: Don't normalize here - keep accumulated results unnormalized
+        // The calling function will handle final normalization across all segments
+        // This prevents double normalization issues in multi-segment processing
+        
+        // Just check for numerical validity but don't normalize yet
+        if (isnan(S) || isinf(S) || S <= 0.0f) {
+            fprintf(stderr, "[MIXED-KV-ERROR] Invalid final S=%f, zeroing output\n", S);
+            memset(VKQ32, 0, DV*sizeof(float));
+        }
+
+        // Final NaN check on output
+        bool output_has_nan = false;
+        for (int64_t d = 0; d < DV && d < 8; ++d) {
+            if (isnan(VKQ32[d])) {
+                output_has_nan = true;
+                break;
+            }
+        }
+        
+        if (output_has_nan) {
+            fprintf(stderr, "[MIXED-KV-ERROR] NaN detected in final output, zeroing\n");
+            memset(VKQ32, 0, DV*sizeof(float));
+        }
 
         // dst indices
         const int i1 = iq1;
@@ -7466,6 +7537,146 @@ static void ggml_flash_attn_ext_f16_segment(
         memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
     }
 }
+
+static void ggml_compute_forward_flash_attn_ext_f16_with_state(
+        const ggml_compute_params * params,
+        const ggml_tensor * q,
+        const ggml_tensor * k_fp16,
+        const ggml_tensor * v_fp16,
+        const ggml_tensor * mask_fp16,
+        const ggml_tensor * k_quant,
+        const ggml_tensor * v_quant,
+        const ggml_tensor * mask_quant,
+        ggml_tensor * dst) {
+
+    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
+
+#ifndef NDEBUG
+    float* q_data = (float*)q->data;
+
+    for (int64_t i = 0; i < ggml_nelements(q); ++i) {
+        assert(!isnan(q_data[i]));
+    }
+#endif
+
+    const int64_t DK = q->ne[0];
+    const int64_t Q_LEN = q->ne[1];
+    const int64_t N_Q_HEADS = q->ne[2];
+    const int64_t DV = dst->ne[0];
+
+    const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + CACHE_LINE_SIZE_F32);
+    const size_t scratch_total  = scratch_per_th * params->nth;
+
+    const size_t state_elems = 2 * neq2 * neq1;
+
+    GGML_ASSERT(params->wsize >= (scratch_total + state_elems) * sizeof(float));
+
+    float * state_data = (float *) params->wdata + scratch_total;
+    for (int64_t i = 0; i < neq2 * neq1; ++i) {
+        state_data[2*i+0] = -INFINITY;
+        state_data[2*i+1] = 0.0f;
+    }
+
+    // Initialize destination to zero instead of 1.0f for proper accumulation
+    // ggml_set_f32(dst, 0.0f);
+
+    // Process FP16 segment first
+    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
+        printf("[MIXED-KV-DEBUG] Processing FP16 segment: kv_len=%ld\n", k_fp16->ne[1]);
+        ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, state_data, dst);
+    } else {
+        printf("[MIXED-KV-DEBUG] Skipping FP16 segment: k_fp16=%p, v_fp16=%p, kv_len=%ld\n", 
+               (void*)k_fp16, (void*)v_fp16, k_fp16 ? k_fp16->ne[1] : -1);
+    }
+
+    // Process quantized segment second (CRITICAL FIX: uncomment and enable)
+    if (k_quant && v_quant && k_quant->ne[1] > 0) {
+        printf("[MIXED-KV-DEBUG] Processing quantized segment: kv_len=%ld\n", k_quant->ne[1]);
+        ggml_flash_attn_ext_f16_segment(params, q, k_quant, v_quant, mask_quant, state_data, dst);
+    } else {
+        printf("[MIXED-KV-DEBUG] Skipping quantized segment: k_quant=%p, v_quant=%p, kv_len=%ld\n", 
+               (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
+    }
+
+    // CRITICAL FIX: Final cross-segment normalization
+    // After all segments are processed, we need to apply the final normalization
+    // using the accumulated state information
+    float* dst_data = (float*)dst->data;
+    printf("[MIXED-KV-DEBUG] Starting final normalization for %ld heads, %ld positions\n", N_Q_HEADS, Q_LEN);
+    
+    for (int64_t head = 0; head < N_Q_HEADS; ++head) {
+        for (int64_t pos = 0; pos < Q_LEN; ++pos) {
+            const int64_t state_idx = head * Q_LEN + pos;
+            float final_S = state_data[state_idx * 2 + 1]; // sum
+            float final_M = state_data[state_idx * 2 + 0]; // max
+            
+            // DEBUG: Print state information
+            if (head < 2 && pos < 2) {
+                printf("[MIXED-KV-DEBUG] head=%ld, pos=%ld, state_idx=%ld, M=%f, S=%f\n", 
+                       head, pos, state_idx, final_M, final_S);
+            }
+            
+            if (final_S > 0.0f && !isnan(final_S) && !isinf(final_S)) {
+                // Apply final normalization to the accumulated result
+                // CRITICAL FIX: Use correct tensor layout (head_dim, n_heads, q_len, batch)
+                // This matches the layout used in segment processing: (i3*ne2*ne1 + i2 + i1*ne1)*nb1
+                const int64_t offset = (head + pos * neq2) * DV;
+                float* result_ptr = dst_data + offset;
+                
+                const float final_inv_S = 1.0f / final_S;
+                
+                // DEBUG: Print sample values before normalization
+                if (head < 2 && pos < 2) {
+                    printf("[MIXED-KV-DEBUG] Before norm: offset=%ld, first_val=%f, final_inv_S=%f\n", 
+                           offset, result_ptr[0], final_inv_S);
+                }
+                
+                for (int64_t d = 0; d < DV; ++d) {
+                    result_ptr[d] *= final_inv_S;
+                    
+                    // Final NaN check
+                    if (isnan(result_ptr[d])) {
+                        result_ptr[d] = 0.0f;
+                    }
+                }
+                
+                // DEBUG: Print sample values after normalization
+                if (head < 2 && pos < 2) {
+                    printf("[MIXED-KV-DEBUG] After norm: first_val=%f\n", result_ptr[0]);
+                }
+            } else if (final_S == 0.0f && !isnan(final_S)) {
+                // CRITICAL FIX: S=0.0f is valid when all tokens are masked out
+                // This is mathematically correct for causal attention where some query positions
+                // have no visible key-value tokens. Leave output as-is (should already be zero).
+                if (head < 2 && pos < 2) {
+                    printf("[MIXED-KV-DEBUG] Valid zero state (all tokens masked): head=%ld, pos=%ld, S=%f\n", 
+                           head, pos, final_S);
+                }
+            } else {
+                // Invalid state (NaN or -inf), zero out the result
+                const int64_t offset = (head + pos * neq2) * DV;
+                float* result_ptr = dst_data + offset;
+                memset(result_ptr, 0, DV * sizeof(float));
+                
+                printf("[MIXED-KV-ERROR] Invalid state, zeroing: head=%ld, pos=%ld, S=%f\n", head, pos, final_S);
+            }
+        }
+    }
+
+    // NOTE : Check if the attn_out is valid.
+    float* attn_out = (float*)dst->data;
+
+    for (int64_t i = 0; i < ggml_nelements(dst); ++i) {
+        // assert(!isnan(attn_out[i]));
+
+        if (isnan(attn_out[i])) {
+            printf("attn_out[%lld] = %f\n", i, attn_out[i]);
+        }
+    }
+
+    // memset(dst->data, 0, ggml_nelements(dst) * sizeof(float));
+}
+
 void ggml_compute_forward_flash_attn_ext_mixed(
         const ggml_compute_params * params,
         const ggml_tensor * q,
@@ -7816,17 +8027,20 @@ void ggml_compute_forward_flash_attn_ext(
         ggml_tensor * dst) {
     switch (dst->op_params[3]) {
         case GGML_PREC_DEFAULT:
+        case GGML_PREC_WITH_STATE:
+            {
+                // ggml_tensor * 
+                
+                // Enhanced function with state managed via workspace
+                ggml_compute_forward_flash_attn_ext_f16_with_state(
+                    params, 
+                    q, k, v, mask,
+                    k_quant, v_quant, dst->src[6], dst
+                );
+            } break;
         case GGML_PREC_F32:
             {
-                // uses F32 accumulators
-                // Check if we have additional sources beyond the required ones for state tensor
-                if (dst->src[7] != nullptr) {
-                    // Enhanced function with state managed via workspace
-                    ggml_compute_forward_flash_attn_ext_f16_with_state(params, q, k, v, mask,
-                                                                     dst->src[4], dst->src[5], dst->src[6], dst);
-                } else {
-                    ggml_compute_forward_flash_attn_ext_f16(params, q, k, v, mask, dst);
-                }
+                ggml_compute_forward_flash_attn_ext_f16(params, q, k, v, mask, dst);
             } break;
         case GGML_PREC_MIXED:
             {

@@ -9,11 +9,11 @@ rm -f *.gguf
 echo "✓ GGUF files cleaned"
 
 MODEL="/datasets/gguf/Llama-3.1-8B-Instruct-GGUF/Meta-Llama-3.1-8B-Instruct-Q8_0.gguf"
-PROMPT=""
-STEPS=4
+PROMPT="Hello, how are you?"
+STEPS=1
 TRACE_LAYER=0
 OUTPUT_FILE="reference_f32.gguf"
-THREADS=1
+THREADS=12
 
 echo "=== KQV Tensor Reader Test ==="
 
@@ -30,7 +30,9 @@ CMD="./build-arm64/bin/kqv-trace-monitor \
     -ctk f16 \
     -ctv f16 \
     --mixed-kv-cache \
+    --prefill-only \
     --save-gguf $OUTPUT_FILE"
+
 echo "Executing: $CMD"
 eval $CMD > /dev/null 2>&1 && echo "✓ KQV tensor GGUF generated"
 

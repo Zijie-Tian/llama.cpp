@@ -2880,7 +2880,18 @@ struct ggml_cplan ggml_graph_plan(
                             const int64_t ne20 = node->src[2]->ne[0]; // DV
 
                             cur = sizeof(float)*(1*ne10 + 2*ne20)*n_tasks;
-                        } else if (mode == GGML_PREC_MIXED) {
+                        } else if (mode == GGML_PREC_WITH_STATE) {
+                            const int64_t DK        = node->src[0]->ne[0];  // DK
+                            const int64_t DV        = node->src[2]->ne[0];  // DV
+                            const int64_t Q_LEN     = node->src[1]->ne[1];  // Q length
+                            const int64_t N_Q_HEADS = node->src[0]->ne[2];  // n_q_heads
+
+                            const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + 16) * sizeof(float);
+                            const size_t scratch_total  = scratch_per_th * n_tasks;
+
+                            cur = scratch_total;
+
+                        }else if (mode == GGML_PREC_MIXED) {
                             const int64_t N_Q_HEADS = node->src[0]->ne[2];  // n_q_heads
                             const int64_t SEQ_LEN   = node->src[0]->ne[1];  // sequence length
                             const int64_t KV_LEN    = node->src[1]->ne[1];  // KV length

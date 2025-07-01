@@ -124,6 +124,19 @@ static void reset_state_tensor(ggml_tensor * state) {
     }
 }
 
+// Simple tensor info without detailed data
+static void print_tensor_summary(ggml_tensor* tensor, const std::string& name) {
+    if (!tensor) {
+        printf("| %-20s | NULL                                | NULL                                | NULL     | NULL       |\n", name.c_str());
+        return;
+    }
+    printf("| %-21s | [%4ld,%4ld,%4ld,%4ld]                 | [%8ld,%8ld,%8ld,%8ld]            | %-8s | %10zu |\n",
+            name.c_str(), 
+            tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3],
+            tensor->nb[0], tensor->nb[1], tensor->nb[2], tensor->nb[3],
+            ggml_type_name(tensor->type), ggml_nelements(tensor));
+}
+
 int main() {
     printf("=== Flash Attention State Tensor - Comprehensive Test ===\n");
 
@@ -131,9 +144,9 @@ int main() {
     const int head_dim       = 32;
     const int n_heads        = 32;
     const int n_kv_heads     = 8;
-    const int seq_len        = 2;
-    const int kv_len         = 64 * 1024;  // Will be split into segments
-    const int n_threads      = 4;
+    const int seq_len        = 7;
+    const int kv_len         = 1024;  // Will be split into segments
+    const int n_threads      = 12;
     const int kv_segments    = 2;  // Split KV into 2 segments
     const int kv_segment_len = kv_len / kv_segments;
 
@@ -200,10 +213,22 @@ int main() {
 
     printf("Fixed test data generated successfully\n");
 
+            // Print table header for tensor summary
+    printf("\n+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
+    printf("| %-21s | %-37s | %-48s | %-8s | %-10s |\n", "Tensor Name", "Dimensions [d0,d1,d2,d3]", "Strides [s0,s1,s2,s3]", "Type", "Elements");
+    printf("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
+
+
     // ============================================================================
     // Test 1: Standard Flash Attention (Reference Result)
     // ============================================================================
-    printf("\n--- Test 1: Standard Flash Attention (Reference) ---\n");
+    // printf("\n--- Test 1: Standard Flash Attention (Reference) ---\n");
+
+    print_tensor_summary(q, "Q");
+    print_tensor_summary(k, "K");
+    print_tensor_summary(v, "V");
+    print_tensor_summary(mask, "Mask");
+    print_tensor_summary(state, "State");
 
     ggml_tensor * result_standard = ggml_flash_attn_ext(ctx, q, k, v, mask,
                                                         1.0f / std::sqrt(head_dim),  // scale
@@ -221,7 +246,6 @@ int main() {
     struct ggml_cgraph * graph_standard = ggml_new_graph(ctx);
     ggml_build_forward_expand(graph_standard, result_standard);
 
-    printf("Computing standard flash attention...\n");
     enum ggml_status status_standard = ggml_graph_compute_with_ctx(ctx, graph_standard, n_threads);
 
     if (status_standard != GGML_STATUS_SUCCESS) {
@@ -230,18 +254,21 @@ int main() {
         return 1;
     }
 
-    printf("Standard flash attention computation successful\n");
-    print_f32_sample("Standard result", result_standard, 8);
+    // printf("Standard flash attention computation successful\n");
+    // print_f32_sample("Standard result", result_standard, 8);
+
+    printf("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
+
 
     // ============================================================================
     // Test 2: Segmented Flash Attention with State Accumulation
     // ============================================================================
-    printf("\n--- Test 2: Segmented Flash Attention with State ---\n");
+    // printf("\n--- Test 2: Segmented Flash Attention with State ---\n");
 
     // Reset state tensor
     reset_state_tensor(state);
 
-    printf("Processing segments using unified op...\n");
+    // printf("Processing segments using unified op...\n");
 
     ggml_tensor * k_fp16_seg = ggml_view_4d(ctx, k, head_dim, kv_segment_len, n_kv_heads, 1,
                                             k->nb[1], k->nb[2], k->nb[3], 0);
@@ -266,11 +293,19 @@ int main() {
         }
     }
 
+    print_tensor_summary(q, "Q");
+    print_tensor_summary(k_fp16_seg, "K_FP16_SEG");
+    print_tensor_summary(v_fp16_seg, "V_FP16_SEG");
+    print_tensor_summary(k_quant_seg, "K_QUANT_SEG");
+    print_tensor_summary(v_quant_seg, "V_QUANT_SEG");
+    print_tensor_summary(mask_fp16_seg, "MASK_FP16_SEG");
+    print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
+
     ggml_tensor * result_seg = ggml_flash_attn_ext_with_state(
         ctx, q, k_fp16_seg, v_fp16_seg, mask_fp16_seg,
-        k_quant_seg, v_quant_seg, mask_quant_seg, state,
+        k_quant_seg, v_quant_seg, mask_quant_seg,
         1.0f / std::sqrt(head_dim), 0.0f, 0.0f);
-    ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_F32);
+    ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_WITH_STATE);
 
     struct ggml_cgraph * graph_seg = ggml_new_graph(ctx);
     ggml_build_forward_expand(graph_seg, result_seg);
@@ -281,8 +316,11 @@ int main() {
         return 1;
     }
 
-    printf("Unified op computed successfully\n");
-    print_f32_sample("Final segmented result", result_seg, 8);
+    // printf("Unified op computed successfully\n");
+    // print_f32_sample("Final segmented result", result_seg, 8);
+
+    printf("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
+
 
     // =====================================================================
     // Test 3: PyTorch Verification using scaled_dot_product_attention
@@ -428,35 +466,6 @@ int main() {
     if (torch_success) {
         pass = pass && max_std_torch < tolerance && max_seg_torch < tolerance;
     }
-
-    // ============================================================================
-    // Test 4: State Tensor Analysis
-    // ============================================================================
-    printf("\n--- Test 4: State Tensor Analysis ---\n");
-
-    printf("Final state tensor values:\n");
-    print_f32_sample("Final state", state, 16);
-
-    float * state_data = (float *) state->data;
-    float   min_m = INFINITY, max_m = -INFINITY;
-    float   min_s = INFINITY, max_s = -INFINITY;
-
-    for (int i = 0; i < n_heads * seq_len; i++) {
-        float m_val = state_data[i * 2 + 0];
-        float s_val = state_data[i * 2 + 1];
-
-        if (m_val != -INFINITY) {
-            min_m = std::min(min_m, m_val);
-            max_m = std::max(max_m, m_val);
-        }
-
-        min_s = std::min(min_s, s_val);
-        max_s = std::max(max_s, s_val);
-    }
-
-    printf("State tensor statistics:\n");
-    printf("  M values: min=%.6f, max=%.6f\n", min_m, max_m);
-    printf("  S values: min=%.6f, max=%.6f\n", min_s, max_s);
 
     // ============================================================================
     // Final Results

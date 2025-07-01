@@ -4599,7 +4599,6 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
         struct ggml_tensor  * k_quant,
         struct ggml_tensor  * v_quant,
         struct ggml_tensor  * qk_mask_quant,
-        struct ggml_tensor  * s_m_state,
         float                 scale,
         float                 max_bias,
         float                 logit_softcap) {
@@ -4619,12 +4618,6 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
         GGML_ASSERT(mask);
     }
 
-    // Validate state tensor format: [2, n_heads * q_len]
-    GGML_ASSERT(s_m_state != NULL);
-    GGML_ASSERT(s_m_state->ne[0] == 2);  // [M, S] pairs
-    GGML_ASSERT(s_m_state->ne[1] == q->ne[2] * q->ne[1]);  // n_heads * q_len
-    GGML_ASSERT(s_m_state->type == GGML_TYPE_F32);
-
     // permute(0, 2, 1, 3)
     int64_t ne[4] = { v->ne[0], q->ne[2], q->ne[1], q->ne[3] };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
@@ -4640,7 +4633,6 @@ struct ggml_tensor * ggml_flash_attn_ext_with_state(
     result->src[4] = k_quant;
     result->src[5] = v_quant;
     result->src[6] = qk_mask_quant;
-    result->src[7] = s_m_state;  // State tensor for S and M values
 
     return result;
 }

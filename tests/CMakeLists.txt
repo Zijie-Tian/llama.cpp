@@ -254,6 +254,7 @@ if (NOT GGML_BACKEND_DL)
     llama_build_and_test(test-unified-cache-copy.cpp)
     llama_build_and_test(test-kv-cache-debug.cpp)
     llama_build_and_test(test-mixed-kv-cache-simple.cpp)
+    llama_build_and_test(test-mixed-kvcache-merge.cpp)
 endif()
 
 # Add llama_batch/sbatch/ubatch test
