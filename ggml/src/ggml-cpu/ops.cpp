@@ -7325,7 +7325,7 @@ static void ggml_flash_attn_ext_f16_segment(
                 const int i1 = iq1;
                 const int i2 = iq2;
                 const int i3 = iq3;
-                float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
+                float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2*ne1 + i1)*nb0);
                 
                 // Scale previous result by S and convert to FP16
                 for (int64_t d = 0; d < DV; ++d) {
@@ -7342,7 +7342,7 @@ static void ggml_flash_attn_ext_f16_segment(
                 const int i1 = iq1;
                 const int i2 = iq2;
                 const int i3 = iq3;
-                float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
+                float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2*ne1 + i1)*nb0);
                 
                 // Scale previous result by S
                 for (int64_t d = 0; d < DV; ++d) {
@@ -7462,8 +7462,9 @@ static void ggml_flash_attn_ext_f16_segment(
         // original
         // memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
 
-        // permute(0, 2, 1, 3)
-        memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+        // permute(0, 2, 1, 3): dst shape is [head_dim, n_heads, seq_len, batch]
+        // Correct indexing: (i3*ne2*ne1 + i2*ne1 + i1)*nb0 + offset for head_dim
+        memcpy((char *) dst->data + (i3*ne2*ne1 + i2*ne1 + i1)*nb0, VKQ32, DV*sizeof(float));
     }
 }
 void ggml_compute_forward_flash_attn_ext_mixed(

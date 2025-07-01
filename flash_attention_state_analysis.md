@@ -6,14 +6,95 @@ The `ggml_compute_forward_flash_attn_ext_f16_with_state` implementation in llama
 
 ## Root Cause Analysis
 
-The issue is located in the `ggml_flash_attn_ext_f16_segment` function in `ggml/src/ggml-cpu/ops.cpp` at line 7650, specifically in the output writing code:
+After extensive investigation, I found multiple issues in the `ggml_flash_attn_ext_f16_segment` function:
+
+### Issue 1: Incorrect Tensor Indexing (PARTIALLY FIXED)
+
+The original issue was in the output tensor indexing at line 7466:
 
 ```cpp
-// permute(0, 2, 1, 3)
+// Original (WRONG)
 memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+
+// Fixed
+memcpy((char *) dst->data + (i3*ne2*ne1 + i2*ne1 + i1)*nb0, VKQ32, DV*sizeof(float));
 ```
 
-### Tensor Layout Analysis
+**Analysis**: 
+- Destination tensor layout: `[head_dim, n_heads, seq_len, batch]` 
+- `nb0` corresponds to sizeof(float) for the head_dim dimension
+- `nb1` was incorrect for this indexing pattern
+- Missing proper stride calculation for multi-dimensional access
+
+### Issue 2: State Tensor Recovery Logic (PARTIALLY FIXED)
+
+The state tensor loading also used incorrect indexing:
+
+```cpp
+// Original (WRONG) - in two places
+float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
+
+// Fixed
+float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2*ne1 + i1)*nb0);
+```
+
+### Issue 3: State Tensor Management Problem (REMAINING)
+
+Despite fixing the indexing issues, tests still show:
+- Max difference: 5.04e-03 (above tolerance of 1.00e-03)
+- State tensor values all show -inf and 0.000000
+- This suggests the state management logic itself may be flawed
+
+## Current Status
+
+### Fixed:
+✅ Tensor indexing calculation for output writing
+✅ Tensor indexing calculation for state recovery
+✅ Proper use of `nb0` stride and `DV*sizeof(float)` size
+
+### Remaining Issues:
+❌ State tensor still shows all -inf/0.0 values
+❌ Results still don't match reference within tolerance
+❌ Possible fundamental flaw in segmented attention algorithm
+
+## Testing Results
+
+**Before Fix**: Only first two hidden_dim segments correct
+**After Partial Fix**: Improved but still 5.04e-03 max difference
+**Expected**: Max difference < 1.00e-03
+
+## Next Steps for Complete Fix
+
+1. **Investigate State Tensor Initialization**: The state may not be properly initialized between segments
+2. **Validate Segmentation Algorithm**: The mathematical approach to splitting attention computation may need review
+3. **Debug State Accumulation**: The continuation logic may have subtle bugs in how it accumulates results across segments
+4. **Verify Thread Safety**: Multi-threading issues could affect state consistency
+
+## Technical Details
+
+### Tensor Dimensions
+- Q: `[head_dim, seq_len, n_heads, batch]`
+- K, V: `[head_dim, kv_len, n_kv_heads, batch]`  
+- Output: `[head_dim, n_heads, seq_len, batch]`
+- State: `[2, n_heads * seq_len]` (for M and S values)
+
+### Fixed Indexing Formula
+```cpp
+// Correct indexing for output tensor write
+dst_offset = (i3*ne2*ne1 + i2*ne1 + i1) * nb0
+```
+
+Where:
+- `i3`: batch index
+- `i2`: head index  
+- `i1`: sequence position index
+- `ne1`: n_heads
+- `ne2`: seq_len
+- `nb0`: sizeof(float)
+
+## Verification
+
+The `test-flash-attn-state` program shows segmented attention produces identical results in isolation, but fails in the tensor reader context, suggesting the issue is in the integration or state management rather than the core algorithm.alysis
 
 The destination tensor `dst` has dimensions:
 - `ne[0]` = `DV` (head_dim)  
