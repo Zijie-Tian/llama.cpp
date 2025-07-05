@@ -7079,7 +7079,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
 
             s += mv; // apply mask
 
-            const float Mold = M;
+            const float M_old = M;
 
             float ms = 1.0f; // upon new higher max val, scale VKQ and KQ sum with this value
             float vs = 1.0f; // post-softmax KQ value, expf(s - M)
@@ -7090,7 +7090,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
                 if (s > M) {
                     // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
                     M = s;
-                    ms = expf(Mold - M);
+                    ms = expf(M_old - M);
 
                     // V = V*expf(Mold - M)
                     ggml_vec_scale_f16(DV, VKQ16, ms);
@@ -7106,7 +7106,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
                 if (s > M) {
                     // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
                     M = s;
-                    ms = expf(Mold - M);
+                    ms = expf(M_old - M);
 
                     // V = V*expf(Mold - M)
                     ggml_vec_scale_f32(DV, VKQ32, ms);
@@ -7268,110 +7268,27 @@ static void ggml_flash_attn_ext_f16_segment(
             continue;
         }
         
-        // Read initial S and M values from state tensor 
-        // State format: [M, S] for each head/position
-        float M = state_data[state_idx * 2 + 0];     // maximum KQ value (index 0)
-        float S = state_data[state_idx * 2 + 1];     // sum (index 1)
+        // Read previous segment's state (if any)
+        float M_prev = state_data[state_idx * 2 + 0];     // previous maximum
+        float S_prev = state_data[state_idx * 2 + 1];     // previous sum of exp
 
-        // DEBUG: Check for NaN in state data
-        if (isnan(S) || isnan(M)) {
-            fprintf(stderr, "[MIXED-KV-ERROR] NaN detected in state data: M=%f, S=%f, state_idx=%ld, head=%d, pos=%d\n",
-                    M, S, state_idx, iq2, iq1);
-            // Initialize with safe values
-            M = -INFINITY;
-            S = 0.0f;
-        }
-
-        // DEBUG: Check for invalid state values
-        if (S < 0.0f || (S > 0.0f && M == -INFINITY)) {
-            fprintf(stderr, "[MIXED-KV-WARNING] Invalid state values: M=%f, S=%f, resetting to defaults\n", M, S);
-            M = -INFINITY;
-            S = 0.0f;
-        }
-
-        // Check if this is a continuation of previous segments
-        bool is_continuation = (M != -INFINITY && S > 0.0f);
+        // Initialize current segment's local max and sum
+        float M = -INFINITY;
+        float S = 0.0f;
+        
+        // Check if we have valid previous state
+        bool has_prev_state = (M_prev != -INFINITY && S_prev > 0.0f && !isnan(M_prev) && !isnan(S_prev));
 
         float       * VKQ32 = (float       *) params->wdata + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
         float       * V32   =                 (VKQ32 + 1*DV);   // (temporary) FP32 V buffer
         ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV);   // (temporary) FP16 VKQ accumulator
         ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV);   // (temporary) buffer for Q converted to quantized/FP16
 
-        // Initialize VKQ accumulator - CRITICAL FIX: restore previous accumulated results
+        // Initialize VKQ accumulator for current segment computation
         if (v->type == GGML_TYPE_F16) {
-            if (is_continuation) {
-                // Load previous accumulated result from dst tensor and scale by previous sum S
-                const int i1 = iq1;
-                const int i2 = iq2;
-                const int i3 = iq3;
-                const float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
-                
-                // DEBUG: Check for NaN in previous result
-                bool has_nan = false;
-                for (int64_t d = 0; d < DV && d < 8; ++d) { // Check first 8 elements
-                    if (isnan(prev_result[d])) {
-                        has_nan = true;
-                        break;
-                    }
-                }
-
-                GGML_ASSERT(!has_nan && "NaN in previous result");
-
-                for (int64_t d = 0; d < DV; ++d) {
-                    float val = prev_result[d];
-                    if (isnan(val) || isinf(val)) {
-                        fprintf(stderr, "[MIXED-KV-ERROR] Invalid accumulated value: val=%f\n", val);
-                        val = 0.0f;
-                    }
-                    VKQ16[d] = GGML_FP32_TO_FP16(val);
-                }
-
-            } else {
-                memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
-                S = 0.0f;
-                M = -INFINITY;
-            }
+            memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
         } else {
-            if (is_continuation) {
-                // Load previous accumulated result from dst tensor and scale by previous sum S
-                const int i1 = iq1;
-                const int i2 = iq2;
-                const int i3 = iq3;
-                const float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
-                
-                // DEBUG: Check for NaN in previous result
-                bool has_nan = false;
-                for (int64_t d = 0; d < DV && d < 8; ++d) { // Check first 8 elements
-                    if (isnan(prev_result[d])) {
-                        has_nan = true;
-                        break;
-                    }
-                }
-                
-                if (has_nan || isnan(S)) {
-                    fprintf(stderr, "[MIXED-KV-ERROR] NaN in continuation data, reinitializing\n");
-                    memset(VKQ32, 0, DV*sizeof(float));
-                    S = 0.0f;
-                    M = -INFINITY;
-                    is_continuation = false;
-                } else {
-                    // CRITICAL FIX: Don't scale by S, just restore the previous unnormalized accumulated result
-                    // The previous result should already be unnormalized (multiplied by its segment's S)
-                    for (int64_t d = 0; d < DV; ++d) {
-                        // Direct load without scaling - the accumulated result is already properly weighted
-                        float val = prev_result[d];
-                        if (isnan(val) || isinf(val)) {
-                            fprintf(stderr, "[MIXED-KV-ERROR] Invalid accumulated value: val=%f\n", val);
-                            val = 0.0f;
-                        }
-                        VKQ32[d] = val;
-                    }
-                }
-            } else {
-                memset(VKQ32, 0, DV*sizeof(float));
-                S = 0.0f;
-                M = -INFINITY;
-            }
+            memset(VKQ32, 0, DV*sizeof(float));
         }
 
         const ggml_fp16_t * mp = mask ? (ggml_fp16_t *)((char *) mask->data + iq1*mask->nb[1]) : NULL;
@@ -7421,9 +7338,9 @@ static void ggml_flash_attn_ext_f16_segment(
                 }
             }
 
-            s += mv; // apply mask - CRITICAL FIX: Re-enable mask application!
+            s += mv; // apply mask
 
-            const float Mold = M;
+            const float M_old = M;
 
             float ms = 1.0f; // upon new higher max val, scale VKQ and KQ sum with this value
             float vs = 1.0f; // post-softmax KQ value, expf(s - M)
@@ -7434,7 +7351,7 @@ static void ggml_flash_attn_ext_f16_segment(
                 if (s > M) {
                     // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
                     M = s;
-                    ms = expf(Mold - M);
+                    ms = expf(M_old - M);
 
                     // V = V*expf(Mold - M)
                     ggml_vec_scale_f16(DV, VKQ16, ms);
@@ -7450,7 +7367,7 @@ static void ggml_flash_attn_ext_f16_segment(
                 if (s > M) {
                     // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
                     M = s;
-                    ms = expf(Mold - M);
+                    ms = expf(M_old - M);
 
                     // V = V*expf(Mold - M)
                     ggml_vec_scale_f32(DV, VKQ32, ms);
@@ -7490,38 +7407,48 @@ static void ggml_flash_attn_ext_f16_segment(
         //     S = 0.0f;  // CRITICAL FIX: No valid tokens means sum should be 0, not 1
         // }
 
-        // Write updated S and M values back to state tensor
-        state_data[state_idx * 2 + 0] = M; // maximum KQ value (index 0)
-        state_data[state_idx * 2 + 1] = S; // sum (index 1)
-
-
+        // Convert to F32 if needed
         if (v->type == GGML_TYPE_F16) {
             for (int64_t d = 0; d < DV; ++d) {
                 VKQ32[d] = GGML_FP16_TO_FP32(VKQ16[d]);
             }
         }
 
-        // CRITICAL FIX: Don't normalize here - keep accumulated results unnormalized
-        // The calling function will handle final normalization across all segments
-        // This prevents double normalization issues in multi-segment processing
-        
-        // Just check for numerical validity but don't normalize yet
-        if (isnan(S) || isinf(S) || S <= 0.0f) {
-            fprintf(stderr, "[MIXED-KV-ERROR] Invalid final S=%f, zeroing output\n", S);
-            memset(VKQ32, 0, DV*sizeof(float));
-        }
-
-        // Final NaN check on output
-        bool output_has_nan = false;
-        for (int64_t d = 0; d < DV && d < 8; ++d) {
-            if (isnan(VKQ32[d])) {
-                output_has_nan = true;
-                break;
+        // Apply FlashDecoding++ algorithm: combine current segment with previous segments
+        if (has_prev_state) {
+            // Load previous unnormalized accumulated result
+            const int i1 = iq1;
+            const int i2 = iq2;
+            const int i3 = iq3;
+            const float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
+            
+            // Compute new maximum
+            float M_new = MAX(M_prev, M);
+            
+            // Compute rescaling factors
+            float scale_prev = expf(M_prev - M_new);
+            float scale_curr = expf(M - M_new);
+            
+            // Update sum of exponentials
+            float S_new = S_prev * scale_prev + S * scale_curr;
+            
+            // Combine outputs: O_new = scale_prev * O_prev + scale_curr * O_curr
+            // We store unnormalized outputs to avoid precision loss
+            for (int64_t d = 0; d < DV; ++d) {
+                VKQ32[d] = prev_result[d] * scale_prev + VKQ32[d] * scale_curr;
             }
+            
+            // Update state for next segment
+            M = M_new;
+            S = S_new;
         }
         
-        if (output_has_nan) {
-            fprintf(stderr, "[MIXED-KV-ERROR] NaN detected in final output, zeroing\n");
+        // Write updated state back
+        state_data[state_idx * 2 + 0] = M;
+        state_data[state_idx * 2 + 1] = S;
+        
+        // Check for numerical validity
+        if (S <= 0.0f || isnan(S) || isinf(S)) {
             memset(VKQ32, 0, DV*sizeof(float));
         }
 
@@ -7551,14 +7478,6 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
     GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
 
-#ifndef NDEBUG
-    float* q_data = (float*)q->data;
-
-    for (int64_t i = 0; i < ggml_nelements(q); ++i) {
-        assert(!isnan(q_data[i]));
-    }
-#endif
-
     const int64_t DK = q->ne[0];
     const int64_t Q_LEN = q->ne[1];
     const int64_t N_Q_HEADS = q->ne[2];
@@ -7572,17 +7491,23 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     GGML_ASSERT(params->wsize >= (scratch_total + state_elems) * sizeof(float));
 
     float * state_data = (float *) params->wdata + scratch_total;
-    for (int64_t i = 0; i < neq2 * neq1; ++i) {
-        state_data[2*i+0] = -INFINITY;
-        state_data[2*i+1] = 0.0f;
+    
+    // Only thread 0 should initialize state and destination
+    if (params->ith == 0) {
+        for (int64_t i = 0; i < neq2 * neq1; ++i) {
+            state_data[2*i+0] = -INFINITY;
+            state_data[2*i+1] = 0.0f;
+        }
+        
+        // Initialize destination to zero for proper accumulation
+        ggml_set_f32(dst, 0.0f);
     }
-
-    // Initialize destination to zero instead of 1.0f for proper accumulation
-    // ggml_set_f32(dst, 0.0f);
+    
+    // Wait for thread 0 to finish initialization
+    ggml_barrier(params->threadpool);
 
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
-        printf("[MIXED-KV-DEBUG] Processing FP16 segment: kv_len=%ld\n", k_fp16->ne[1]);
         ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, state_data, dst);
     } else {
         printf("[MIXED-KV-DEBUG] Skipping FP16 segment: k_fp16=%p, v_fp16=%p, kv_len=%ld\n", 
@@ -7591,20 +7516,23 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
     // Process quantized segment second (CRITICAL FIX: uncomment and enable)
     if (k_quant && v_quant && k_quant->ne[1] > 0) {
-        printf("[MIXED-KV-DEBUG] Processing quantized segment: kv_len=%ld\n", k_quant->ne[1]);
         ggml_flash_attn_ext_f16_segment(params, q, k_quant, v_quant, mask_quant, state_data, dst);
     } else {
         printf("[MIXED-KV-DEBUG] Skipping quantized segment: k_quant=%p, v_quant=%p, kv_len=%ld\n", 
                (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
     }
 
-    // CRITICAL FIX: Final cross-segment normalization
-    // After all segments are processed, we need to apply the final normalization
-    // using the accumulated state information
-    float* dst_data = (float*)dst->data;
-    printf("[MIXED-KV-DEBUG] Starting final normalization for %ld heads, %ld positions\n", N_Q_HEADS, Q_LEN);
+    // Wait for all threads to finish segment processing
+    ggml_barrier(params->threadpool);
     
-    for (int64_t head = 0; head < N_Q_HEADS; ++head) {
+    // CRITICAL FIX: Final cross-segment normalization
+    // Only thread 0 should do the final normalization
+    if (params->ith == 0) {
+        // After all segments are processed, we need to apply the final normalization
+        // using the accumulated state information
+        float* dst_data = (float*)dst->data;
+        
+        for (int64_t head = 0; head < N_Q_HEADS; ++head) {
         for (int64_t pos = 0; pos < Q_LEN; ++pos) {
             const int64_t state_idx = head * Q_LEN + pos;
             float final_S = state_data[state_idx * 2 + 1]; // sum
@@ -7661,20 +7589,19 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
                 printf("[MIXED-KV-ERROR] Invalid state, zeroing: head=%ld, pos=%ld, S=%f\n", head, pos, final_S);
             }
         }
-    }
+        }
+        
+        // NOTE : Check if the attn_out is valid.
+        float* attn_out = (float*)dst->data;
 
-    // NOTE : Check if the attn_out is valid.
-    float* attn_out = (float*)dst->data;
+        for (int64_t i = 0; i < ggml_nelements(dst); ++i) {
+            // assert(!isnan(attn_out[i]));
 
-    for (int64_t i = 0; i < ggml_nelements(dst); ++i) {
-        // assert(!isnan(attn_out[i]));
-
-        if (isnan(attn_out[i])) {
-            printf("attn_out[%lld] = %f\n", i, attn_out[i]);
+            if (isnan(attn_out[i])) {
+                printf("attn_out[%lld] = %f\n", i, attn_out[i]);
+            }
         }
     }
-
-    // memset(dst->data, 0, ggml_nelements(dst) * sizeof(float));
 }
 
 void ggml_compute_forward_flash_attn_ext_mixed(
