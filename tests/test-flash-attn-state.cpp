@@ -90,6 +90,70 @@ static void print_f32_sample(const char * name, ggml_tensor * tensor, int max_el
     printf("\n");
 }
 
+
+/**
+ * Print a visualization of the KQV attention mask.
+ * Shows which tokens can attend to which other tokens.
+ * x = can attend (0 or greater)
+ * - = cannot attend (-INFINITY)
+ */
+ static void print_kqv_mask(ggml_tensor* mask) {
+    GGML_TENSOR_LOCALS(int64_t, ne_mask, mask, ne)
+    GGML_TENSOR_LOCALS(int64_t, nb_mask, mask, nb)
+
+    printf("\n=== KQV Attention Mask ===\n");
+    printf("KV tokens →\n");
+
+    // Print column numbers
+    for (int i = 0; i < ne_mask0; i++) {
+        printf("%d", i % 10);
+    }
+    printf("\n");
+
+    // Print separator
+    for (int i = 0; i < ne_mask0; i++) {
+        printf("=");
+    }
+    printf("\n");
+
+    // Get mask data pointer
+    const char* mask_nonfp32 = (const char*)mask->data;
+    const float* mask_fp32 = (const float*)mask->data;
+
+    ggml_to_float_t to_float = ggml_get_type_traits(mask->type)->to_float;
+
+    float* row_buffer = (float*)malloc(ne_mask0 * sizeof(float));
+    for (int i = 0; i < ne_mask1; ++i) {
+        if (to_float) {
+            to_float(mask_nonfp32 + i * nb_mask1, row_buffer, ne_mask0);
+
+            for (int j = 0; j < ne_mask0; ++j) {
+                if (row_buffer[j] == 0.f) {
+                    printf("x");
+                } else if (row_buffer[j] == -INFINITY) {
+                    printf("-");
+                } else {
+                    printf("?");
+                }
+            }
+            printf("\n");
+        } else {
+            for (int j = 0; j < ne_mask0; ++j) {
+                if (mask_fp32[j] == 0.f) {
+                    printf("x");
+                } else if (mask_fp32[j] == -INFINITY) {
+                    printf("-");
+                } else {
+                    printf("?");
+                }
+            }
+            printf("\n");
+        }
+    }
+
+    free(row_buffer);
+}
+
 static float tensor_max_diff(ggml_tensor * a, ggml_tensor * b) {
     if (ggml_nelements(a) != ggml_nelements(b) || a->type != b->type) {
         printf("ERROR: Tensors have different sizes or types\n");
@@ -144,11 +208,21 @@ int main() {
     const int head_dim       = 32;
     const int n_heads        = 32;
     const int n_kv_heads     = 8;
-    const int seq_len        = 7;
+    const int seq_len        = 59;
     const int kv_len         = 1024;  // Will be split into segments
     const int n_threads      = 12;
     const int kv_segments    = 2;  // Split KV into 2 segments
     const int kv_segment_len = kv_len / kv_segments;
+
+    // // Test parameters
+    // const int head_dim       = 4;
+    // const int n_heads        = 4;
+    // const int n_kv_heads     = 2;
+    // const int seq_len        = 2;
+    // const int kv_len         = 1024 * 16;  // Will be split into segments
+    // const int n_threads      = 12;
+    // const int kv_segments    = 2;  // Split KV into 2 segments
+    // const int kv_segment_len = kv_len / kv_segments;
 
     printf("Test Parameters:\n");
     printf("  head_dim=%d, n_heads=%d, n_kv_heads=%d\n", head_dim, n_heads, n_kv_heads);
@@ -201,15 +275,22 @@ int main() {
     fill_tensor_f16(k, -0.6f, 0.6f);
     fill_tensor_f16(v, -0.7f, 0.7f);
 
-    // Initialize mask (no causal mask - all positions can see all KV)
+    // Initialize mask (causal mask - positions can only see previous and current KV)
     ggml_fp16_t * mask_data = (ggml_fp16_t *) mask->data;
     memset(mask_data, 0, ggml_nbytes(mask));
-    for (int i = 0; i < seq_len; i++) {
-        for (int j = 0; j < kv_len; j++) {
-            // No masking - all positions can see all KV tokens
-            mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(0.0f);
+    for (int i = 0; i < padded_seq_len; i++) {
+        for (int j = 0; j < padded_kv_len; j++) {
+            // For testing: allow all query positions to see all KV positions < kv_len
+            // This ensures both segments have valid attention weights
+            if (j < kv_len && i < seq_len) {
+                mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(0.0f);
+            } else {
+                mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(-INFINITY);
+            }
         }
     }
+
+    // print_kqv_mask(mask);
 
     printf("Fixed test data generated successfully\n");
 
@@ -217,7 +298,6 @@ int main() {
     printf("\n+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
     printf("| %-21s | %-37s | %-48s | %-8s | %-10s |\n", "Tensor Name", "Dimensions [d0,d1,d2,d3]", "Strides [s0,s1,s2,s3]", "Type", "Elements");
     printf("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
-
 
     // ============================================================================
     // Test 1: Standard Flash Attention (Reference Result)
@@ -274,32 +354,61 @@ int main() {
                                             k->nb[1], k->nb[2], k->nb[3], 0);
     ggml_tensor * v_fp16_seg = ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1,
                                             v->nb[1], v->nb[2], v->nb[3], 0);
-    ggml_tensor * k_quant_seg = ggml_view_4d(ctx, k, head_dim, kv_segment_len, n_kv_heads, 1,
+    ggml_tensor * k_quant_seg = ggml_view_4d(ctx, k, head_dim, kv_len - kv_segment_len, n_kv_heads, 1,
                                              k->nb[1], k->nb[2], k->nb[3], kv_segment_len * k->nb[1]);
-    ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1,
+    ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim, kv_len - kv_segment_len, n_kv_heads, 1,
                                              v->nb[1], v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
 
+    // ggml_tensor * mask_transposed = ggml_permute(ctx, mask, 1, 0, 2, 3);
+
+    // ggml_tensor * mask_fp16_seg = ggml_view_4d(ctx, mask_transposed, padded_seq_len, kv_segment_len, n_kv_heads, 1,
+    //                                           mask->nb[1], mask->nb[2], mask->nb[3], 0);
+    // ggml_tensor * mask_quant_seg = ggml_view_4d(ctx, mask_transposed, padded_seq_len, kv_len - kv_segment_len, n_kv_heads, 1,
+    //                                             mask->nb[1], mask->nb[2], mask->nb[3], 0);
+
     const int padded_segment_len = GGML_PAD(kv_segment_len, 64);
-    ggml_tensor * mask_fp16_seg  = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_segment_len, padded_seq_len);
-    ggml_tensor * mask_quant_seg = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_segment_len, padded_seq_len);
-    ggml_fp16_t * mask_seg_data1 = (ggml_fp16_t *) mask_fp16_seg->data;
-    ggml_fp16_t * mask_seg_data2 = (ggml_fp16_t *) mask_quant_seg->data;
-    memset(mask_seg_data1, 0, ggml_nbytes(mask_fp16_seg));
-    memset(mask_seg_data2, 0, ggml_nbytes(mask_quant_seg));
-    for (int i = 0; i < seq_len; i++) {
+    ggml_tensor * mask_fp16_seg  = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_segment_len, padded_seq_len);
+    ggml_tensor * mask_quant_seg = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_kv_len - kv_segment_len, padded_seq_len);
+    
+    ggml_fp16_t * mask_fp16_data = (ggml_fp16_t *) mask_fp16_seg->data;
+    ggml_fp16_t * mask_quant_data = (ggml_fp16_t *) mask_quant_seg->data;
+    // memset(mask_data, 0, ggml_nbytes(mask_fp16_seg));
+    // memset(mask_data, 0, ggml_nbytes(mask_quant_seg));
+    for (int i = 0; i < padded_seq_len; i++) {
         for (int j = 0; j < kv_segment_len; j++) {
-            mask_seg_data1[i * padded_segment_len + j] = ggml_fp32_to_fp16(0.0f);
-            mask_seg_data2[i * padded_segment_len + j] = ggml_fp32_to_fp16(0.0f);
+            // Causal masking - positions can only see up to their position
+            if (j <= i && j < seq_len && i < seq_len) {
+                // Mask out future positions with -INFINITY
+                mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
+            } else {
+                // Mask out future positions with -INFINITY
+                mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(-INFINITY);
+            }
         }
     }
 
-    print_tensor_summary(q, "Q");
-    print_tensor_summary(k_fp16_seg, "K_FP16_SEG");
-    print_tensor_summary(v_fp16_seg, "V_FP16_SEG");
-    print_tensor_summary(k_quant_seg, "K_QUANT_SEG");
-    print_tensor_summary(v_quant_seg, "V_QUANT_SEG");
+    for (int i = 0; i < padded_seq_len; i++) {
+        for (int j = 0; j < padded_kv_len - kv_segment_len; j++) {
+            // Causal masking - positions can only see up to their position
+            // The actual KV position in the full sequence is j + kv_segment_len
+            int actual_kv_pos = j + kv_segment_len;
+            if (actual_kv_pos <= i && actual_kv_pos < kv_len && i < seq_len) {
+                // Can attend to this position
+                mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = ggml_fp32_to_fp16(0.0f);
+            } else {
+                // Cannot attend to this position
+                mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = ggml_fp32_to_fp16(-INFINITY);
+            }
+        }
+    }
+
+    print_tensor_summary(q,             "Q");
+    print_tensor_summary(k_fp16_seg,    "K_FP16_SEG");
+    print_tensor_summary(v_fp16_seg,    "V_FP16_SEG");
+    print_tensor_summary(k_quant_seg,   "K_QUANT_SEG");
+    print_tensor_summary(v_quant_seg,   "V_QUANT_SEG");
     print_tensor_summary(mask_fp16_seg, "MASK_FP16_SEG");
-    print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
+    print_tensor_summary(mask_quant_seg,"MASK_QUANT_SEG");
 
     ggml_tensor * result_seg = ggml_flash_attn_ext_with_state(
         ctx, q, k_fp16_seg, v_fp16_seg, mask_fp16_seg,
@@ -448,7 +557,7 @@ int main() {
         printf("----|-------------|-------------|-----------\n");
     }
 
-    size_t show = std::min((size_t) 128, n_elems);
+    size_t show = std::min((size_t) 256, n_elems);
     for (size_t i = 0; i < show; ++i) {
         float s = standard_data[i];
         float g = segmented_data[i];
@@ -459,6 +568,82 @@ int main() {
         } else {
             printf("%3zu | %11.6f | %11.6f | %.6e\n", i, s, g, std::abs(s - g));
         }
+    }
+
+    // ============================================================================
+    // Print mask
+    // ============================================================================
+
+    print_kqv_mask(mask_fp16_seg);
+    print_kqv_mask(mask_quant_seg);
+
+    // ============================================================================
+    // Max error point
+    // ============================================================================
+    printf("\n=== Max error point ===\n");
+
+    // First find where the large differences occur
+    printf("\nScanning for extreme differences...\n");
+    size_t max_diff_idx = 0;
+    float max_diff_val = 0.0f;
+    for (size_t i = 0; i < n_elems; ++i) {
+        float diff = std::abs(standard_data[i] - segmented_data[i]);
+        if (diff > max_diff_val) {
+            max_diff_val = diff;
+            max_diff_idx = i;
+        }
+    }
+    
+    // Print context around max difference
+    printf("\nMax difference of %.2e found at index %zu\n", max_diff_val, max_diff_idx);
+    printf("Context around max difference (idx %zu):\n", max_diff_idx);
+    size_t context_start = (max_diff_idx >= 10) ? max_diff_idx - 10 : 0;
+    size_t context_end = std::min(max_diff_idx + 10, n_elems);
+    
+    for (size_t i = context_start; i < context_end; ++i) {
+        float s = standard_data[i];
+        float g = segmented_data[i];
+        printf("%s%3zu | S: %11.6f | G: %11.6f | Diff: %.6e\n", 
+                (i == max_diff_idx) ? ">>> " : "    ", i, s, g, std::abs(s - g));
+    }
+    
+    // Also check for patterns of zeros
+    printf("\nChecking for zero patterns in segmented result...\n");
+    size_t zero_count = 0;
+    size_t first_zero = n_elems;
+    for (size_t i = 0; i < n_elems; ++i) {
+        if (segmented_data[i] == 0.0f) {
+            zero_count++;
+            if (first_zero == n_elems) first_zero = i;
+        }
+    }
+    printf("Found %zu zeros in segmented result (%.2f%%)\n", zero_count, 100.0f * zero_count / n_elems);
+    if (zero_count > 0) {
+        printf("First zero at index %zu\n", first_zero);
+        // Print pattern around first zeros
+        size_t pattern_start = (first_zero >= 5) ? first_zero - 5 : 0;
+        size_t pattern_end = std::min(first_zero + 20, n_elems);
+        printf("Pattern around first zeros:\n");
+        for (size_t i = pattern_start; i < pattern_end; ++i) {
+            printf("%3zu: S=%.6f, G=%.6f %s\n", i, standard_data[i], segmented_data[i],
+                    (segmented_data[i] == 0.0f) ? "<-- ZERO" : "");
+        }
+    }
+
+    // Check for systematic scale differences
+    double sum_ratio = 0.0;
+    int valid_ratios = 0;
+    for (size_t i = 0; i < std::min((size_t)1000, n_elems); ++i) {
+        if (std::abs(standard_data[i]) > 1e-6 && std::abs(segmented_data[i]) > 1e-6) {
+            double ratio = segmented_data[i] / standard_data[i];
+            if (std::abs(ratio) < 1000.0) {  // Ignore extreme outliers
+                sum_ratio += ratio;
+                valid_ratios++;
+            }
+        }
+    }
+    if (valid_ratios > 0) {
+        printf("\nAverage ratio (segmented/standard) for first 1000 elements: %.6f\n", sum_ratio / valid_ratios);
     }
 
     const float tolerance = 1e-3f;

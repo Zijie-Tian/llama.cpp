@@ -2886,10 +2886,14 @@ struct ggml_cplan ggml_graph_plan(
                             const int64_t Q_LEN     = node->src[1]->ne[1];  // Q length
                             const int64_t N_Q_HEADS = node->src[0]->ne[2];  // n_q_heads
 
+                            // Need workspace for two independent segments (FP16 and quantized)
+                            // Each segment needs: output buffer + scratch space
+                            const size_t output_size = N_Q_HEADS * Q_LEN * DV * sizeof(float);
                             const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + 16) * sizeof(float);
                             const size_t scratch_total  = scratch_per_th * n_tasks;
-
-                            cur = scratch_total;
+                            
+                            // Total: 2 output buffers + 2 sets of scratch space + 2 sets of state
+                            cur = 2 * output_size + 2 * scratch_total;
 
                         }else if (mode == GGML_PREC_MIXED) {
                             const int64_t N_Q_HEADS = node->src[0]->ne[2];  // n_q_heads
