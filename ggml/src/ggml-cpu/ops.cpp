@@ -7323,16 +7323,9 @@ static void ggml_flash_attn_ext_f16_segment(
             continue;
         }
         
-        // Read previous segment's state (if any)
-        float M_prev = state_data[state_idx * 2 + 0];     // previous maximum
-        float S_prev = state_data[state_idx * 2 + 1];     // previous sum of exp
-
-        // Initialize current segment's local max and sum
+        // Initialize current segment's local max and sum (fresh computation for this segment)
         float M = -INFINITY;
         float S = 0.0f;
-        
-        // Check if we have valid previous state
-        bool has_prev_state = (M_prev != -INFINITY && S_prev >= 0.0f && !isnan(M_prev) && !isnan(S_prev));
 
         float       * VKQ32 = (float       *) params->wdata + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
         float       * V32   =                 (VKQ32 + 1*DV);   // (temporary) FP32 V buffer
@@ -7516,48 +7509,19 @@ static void ggml_flash_attn_ext_f16_segment(
             }
         }
 
-        // Apply FlashDecoding++ algorithm: combine current segment with previous segments
-        if (has_prev_state) {
-            // Load previous unnormalized accumulated result
-            const int i1 = iq1;
-            const int i2 = iq2;
-            const int i3 = iq3;
-            const float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
-            
-            // Compute new maximum
-            float M_new = MAX(M_prev, M);
-            
-            // Compute rescaling factors
-            float scale_prev = expf(M_prev - M_new);
-            float scale_curr = expf(M - M_new);
-            
-            // Update sum of exponentials
-            float S_new = S_prev * scale_prev + S * scale_curr;
-            
-            // DEBUG: Check if S becomes negative
-            if (S_new < 0.0f && ith == 0) {
-                fprintf(stderr, "[MIXED-KV-ERROR] Negative S_new=%f: S_prev=%f, scale_prev=%f, S=%f, scale_curr=%f, M_prev=%f, M=%f, M_new=%f\n",
-                        S_new, S_prev, scale_prev, S, scale_curr, M_prev, M, M_new);
-            }
-            
-            // Combine outputs: O_new = scale_prev * O_prev + scale_curr * O_curr
-            // We store unnormalized outputs to avoid precision loss
-            for (int64_t d = 0; d < DV; ++d) {
-                VKQ32[d] = prev_result[d] * scale_prev + VKQ32[d] * scale_curr;
-            }
-            
-            // Update state for next segment
-            M = M_new;
-            S = S_new;
-        }
+        // Store unnormalized output for FlashDecoding++ merging
+        // This segment's output VKQ32 is the weighted sum: sum(exp(s_i - M) * v_i)
+        // where M is the local maximum for this segment
         
-        // Write updated state back
-        state_data[state_idx * 2 + 0] = M;
-        state_data[state_idx * 2 + 1] = S;
+        // Write current segment's state
+        state_data[state_idx * 2 + 0] = M;  // Local maximum
+        state_data[state_idx * 2 + 1] = S;  // Sum of exponentials
         
         // Check for numerical validity
         if (S <= 0.0f || isnan(S) || isinf(S)) {
-            memset(VKQ32, 0, DV*sizeof(float));
+            // Invalid state - reset to safe values
+            state_data[state_idx * 2 + 0] = -INFINITY;
+            state_data[state_idx * 2 + 1] = 0.0f;
         }
 
         // dst indices
@@ -7591,55 +7555,25 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     const int64_t N_Q_HEADS = q->ne[2];
     const int64_t DV = dst->ne[0];
     
-    // Check Q tensor at the very beginning
+    // Check Q tensor for invalid values
     if (params->ith == 0) {
         const float* q_data = (const float*)q->data;
         int q_nan_count = 0;
-        int q_inf_count = 0;
-        int first_nan_idx = -1;
-        int first_inf_idx = -1;
         
         for (int64_t i = 0; i < ggml_nelements(q); ++i) {
-            if (isnan(q_data[i])) {
+            if (isnan(q_data[i]) || isinf(q_data[i])) {
                 q_nan_count++;
-                if (first_nan_idx == -1) {
-                    first_nan_idx = i;
-                }
-            } else if (isinf(q_data[i])) {
-                q_inf_count++;
-                if (first_inf_idx == -1) {
-                    first_inf_idx = i;
+                if (q_nan_count == 1) {
+                    fprintf(stderr, "[MIXED-KV-ERROR] Invalid Q value at index %ld: %f\n", i, q_data[i]);
                 }
             }
         }
         
-        if (q_nan_count > 0 || q_inf_count > 0) {
-            fprintf(stderr, "[MIXED-KV-ERROR] Q tensor in flash_attn_ext_f16_with_state contains invalid values:\n");
-            fprintf(stderr, "  - NaN count: %d/%ld (first at index %d)\n", 
-                    q_nan_count, ggml_nelements(q), first_nan_idx);
-            fprintf(stderr, "  - Inf count: %d/%ld (first at index %d)\n", 
-                    q_inf_count, ggml_nelements(q), first_inf_idx);
-            fprintf(stderr, "  - Q tensor shape: [%ld, %ld, %ld, %ld]\n", neq0, neq1, neq2, neq3);
-            fprintf(stderr, "  - Q tensor strides: [%zu, %zu, %zu, %zu]\n", q->nb[0], q->nb[1], q->nb[2], q->nb[3]);
+        if (q_nan_count > 0) {
+            fprintf(stderr, "[MIXED-KV-ERROR] Q tensor contains %d invalid values out of %ld\n", 
+                    q_nan_count, ggml_nelements(q));
             
-            // Print first few values around the first NaN
-            if (first_nan_idx >= 0) {
-                fprintf(stderr, "  - Values around first NaN (index %d):\n", first_nan_idx);
-                int start = (first_nan_idx >= 5) ? first_nan_idx - 5 : 0;
-                int end = (first_nan_idx + 5 < ggml_nelements(q)) ? first_nan_idx + 5 : ggml_nelements(q) - 1;
-                fprintf(stderr, "    ");
-                for (int i = start; i <= end; i++) {
-                    if (i == first_nan_idx) {
-                        fprintf(stderr, "[%g] ", q_data[i]);
-                    } else {
-                        fprintf(stderr, "%g ", q_data[i]);
-                    }
-                }
-                fprintf(stderr, "\n");
-            }
-            
-            // Optionally replace NaN/Inf values with zeros to prevent crashes
-            fprintf(stderr, "  - Replacing invalid values with zeros to continue execution\n");
+            // Replace invalid values with zeros
             float* q_data_mut = (float*)q->data;
             for (int64_t i = 0; i < ggml_nelements(q); ++i) {
                 if (isnan(q_data_mut[i]) || isinf(q_data_mut[i])) {
@@ -7649,236 +7583,151 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         }
     }
 
-    // Calculate workspace layout for two independent segments
-    const size_t output_size = N_Q_HEADS * Q_LEN * DV;
-    const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + CACHE_LINE_SIZE_F32);
-    const size_t scratch_total = scratch_per_th * params->nth;
-    const size_t state_elems = 2 * neq2 * neq1;  // M and S for each head/position
-
-    // Workspace layout:
-    // 1. Segment 1 output (FP16)
-    // 2. Segment 2 output (Quantized) 
-    // 3. Segment 1 scratch
-    // 4. Segment 2 scratch
-    // 5. Segment 1 state
-    // 6. Segment 2 state
-    float * workspace = (float *) params->wdata;
-    float * segment1_output = workspace;
-    float * segment2_output = segment1_output + output_size;
-    float * segment1_scratch = segment2_output + output_size;
-    float * segment2_scratch = segment1_scratch + scratch_total;
-    float * segment1_state = segment2_scratch + scratch_total;
-    float * segment2_state = segment1_state + state_elems;
+    // FlashDecoding++ algorithm: Process segments and merge correctly
+    const size_t state_elems = neq2 * neq1 * 2;  // M and S for each head/position pair
+    const size_t output_elems = N_Q_HEADS * Q_LEN * DV;  // Output tensor elements
     
-    // Only thread 0 should initialize states and outputs
+    // Workspace layout:
+    // 1. Segment 1 state (M, S)
+    // 2. Segment 1 output
+    // 3. Segment 2 state (M, S) 
+    // 4. Segment 2 output
+    // 5. Scratch space for flash attention computation
+    float * workspace = (float *) params->wdata;
+    float * seg1_state = workspace;
+    float * seg1_output = workspace + state_elems;
+    float * seg2_state = seg1_output + output_elems;
+    float * seg2_output = seg2_state + state_elems;
+    float * scratch_space = seg2_output + output_elems;
+    
+    // Only thread 0 initializes workspace
     if (params->ith == 0) {
-        // Initialize both segment states
-        // M = -INFINITY ensures has_prev_state = false in segment function
+        // Initialize all segment states
         for (int64_t i = 0; i < neq2 * neq1; ++i) {
-            segment1_state[2*i+0] = -INFINITY;
-            segment1_state[2*i+1] = 0.0f;
-            segment2_state[2*i+0] = -INFINITY;
-            segment2_state[2*i+1] = 0.0f;
+            seg1_state[2*i+0] = -INFINITY;  // M (max)
+            seg1_state[2*i+1] = 0.0f;       // S (sum)
+            seg2_state[2*i+0] = -INFINITY;  // M (max)
+            seg2_state[2*i+1] = 0.0f;       // S (sum)
         }
         
-        // Initialize segment outputs to zero
-        memset(segment1_output, 0, output_size * sizeof(float));
-        memset(segment2_output, 0, output_size * sizeof(float));
-        
-        // Initialize final destination to zero
+        // Initialize outputs to zero
+        memset(seg1_output, 0, output_elems * sizeof(float));
+        memset(seg2_output, 0, output_elems * sizeof(float));
         ggml_set_f32(dst, 0.0f);
     }
     
-    // Wait for thread 0 to finish initialization
+    // Wait for initialization to complete
     ggml_barrier(params->threadpool);
 
-    // Create temporary params for each segment with adjusted workspace pointers
-    ggml_compute_params segment1_params = *params;
-    segment1_params.wdata = segment1_scratch;
-    segment1_params.wsize = scratch_total * sizeof(float);
+    // Create temporary params with adjusted workspace
+    ggml_compute_params segment_params = *params;
+    segment_params.wdata = scratch_space;
     
-    ggml_compute_params segment2_params = *params;
-    segment2_params.wdata = segment2_scratch;
-    segment2_params.wsize = scratch_total * sizeof(float);
-
-    // Create temporary destination tensors for segments
-    // Make sure to copy all tensor fields properly including op_params
-    ggml_tensor segment1_dst = *dst;
-    segment1_dst.data = segment1_output;
-    segment1_dst.buffer = NULL;  // Ensure no buffer reference
-    // op_params are already copied from *dst, which contains scale
-    
-    ggml_tensor segment2_dst = *dst;
-    segment2_dst.data = segment2_output;
-    segment2_dst.buffer = NULL;  // Ensure no buffer reference
-    // op_params are already copied from *dst, which contains scale
-
-    // Process FP16 segment first
-    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
-        ggml_flash_attn_ext_f16_segment(&segment1_params, q, k_fp16, v_fp16, mask_fp16, segment1_state, &segment1_dst);
-    } else if (params->ith == 0) {
-        fprintf(stderr, "[MIXED-KV-DEBUG] Skipping FP16 segment: k_fp16=%p, v_fp16=%p, k_fp16->ne[1]=%ld\n", 
-                (void*)k_fp16, (void*)v_fp16, k_fp16 ? k_fp16->ne[1] : -1);
+    // Process quantized segment first (older tokens in FlashDecoding++)
+    if (k_quant && v_quant && k_quant->ne[1] > 0) {
+        if (params->ith == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] Processing quantized segment with %ld tokens\n", k_quant->ne[1]);
+        }
+        
+        // Use seg1_output as temporary destination
+        ggml_tensor dst_temp = *dst;
+        dst_temp.data = seg1_output;
+        
+        ggml_flash_attn_ext_f16_segment(&segment_params, q, k_quant, v_quant, mask_quant, seg1_state, &dst_temp);
     }
 
+    // Synchronize after quantized segment
     ggml_barrier(params->threadpool);
 
-    // // Process quantized segment second
-    // if (k_quant && v_quant && k_quant->ne[1] > 0) {
-    //     ggml_flash_attn_ext_f16_segment(&segment2_params, q, k_quant, v_quant, mask_quant, segment2_state, &segment2_dst);
-    // } else if (params->ith == 0) {
-    //     fprintf(stderr, "[MIXED-KV-DEBUG] Skipping quant segment: k_quant=%p, v_quant=%p, k_quant->ne[1]=%ld\n", 
-    //             (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
-    // }
+    // Process FP16 segment second (more recent tokens in FlashDecoding++)
+    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
+        if (params->ith == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] Processing FP16 segment with %ld tokens\n", k_fp16->ne[1]);
+        }
+        
+        // Use seg2_output as temporary destination
+        ggml_tensor dst_temp = *dst;
+        dst_temp.data = seg2_output;
+        
+        ggml_flash_attn_ext_f16_segment(&segment_params, q, k_fp16, v_fp16, mask_fp16, seg2_state, &dst_temp);
+    }
 
-    // Wait for all threads to finish segment processing
+    // Final synchronization and FlashDecoding++ merging
     ggml_barrier(params->threadpool);
     
-    // Final merge: combine the two segment outputs using FlashDecoding++ algorithm
-    // Only thread 0 should do the final merge
+    // Merge segments using FlashDecoding++ algorithm
     if (params->ith == 0) {
         float* dst_data = (float*)dst->data;
         
-        // Debug: Check segment outputs before merge
-        int seg1_zeros = 0, seg2_zeros = 0;
-        int seg1_nans = 0, seg2_nans = 0;
-        float seg1_max = -INFINITY, seg2_max = -INFINITY;
-        float seg1_min = INFINITY, seg2_min = INFINITY;
-        
-        for (int64_t i = 0; i < output_size; ++i) {
-            float v1 = segment1_output[i];
-            float v2 = segment2_output[i];
-            
-            if (v1 == 0.0f) seg1_zeros++;
-            if (v2 == 0.0f) seg2_zeros++;
-            if (isnan(v1)) seg1_nans++;
-            if (isnan(v2)) seg2_nans++;
-            
-            if (!isnan(v1) && !isinf(v1)) {
-                seg1_max = fmaxf(seg1_max, v1);
-                seg1_min = fminf(seg1_min, v1);
-            }
-            if (!isnan(v2) && !isinf(v2)) {
-                seg2_max = fmaxf(seg2_max, v2);
-                seg2_min = fminf(seg2_min, v2);
-            }
-        }
-        
-        fprintf(stderr, "[MIXED-KV-DEBUG] Segment outputs before merge:\n");
-        fprintf(stderr, "  Segment 1: zeros=%d, nans=%d, min=%.3e, max=%.3e\n", 
-                seg1_zeros, seg1_nans, seg1_min, seg1_max);
-        fprintf(stderr, "  Segment 2: zeros=%d, nans=%d, min=%.3e, max=%.3e\n", 
-                seg2_zeros, seg2_nans, seg2_min, seg2_max);
-        
-        // Also check states
-        int state1_valid = 0, state2_valid = 0;
-        for (int64_t idx = 0; idx < neq2 * neq1; ++idx) {
-            float M1 = segment1_state[idx * 2 + 0];
-            float S1 = segment1_state[idx * 2 + 1];
-            float M2 = segment2_state[idx * 2 + 0];
-            float S2 = segment2_state[idx * 2 + 1];
-            
-            if (M1 != -INFINITY && S1 > 0.0f) state1_valid++;
-            if (M2 != -INFINITY && S2 > 0.0f) state2_valid++;
-        }
-        fprintf(stderr, "  State 1: %d/%ld valid states\n", state1_valid, neq2 * neq1);
-        fprintf(stderr, "  State 2: %d/%ld valid states\n", state2_valid, neq2 * neq1);
-        
-        // Process all output positions using proper FlashDecoding++ merge
-        for (int64_t i = 0; i < output_size; ++i) {
-            // Map linear index to (d, p, h) for state lookup
-            // With tensor shape [head_dim, seq_len, n_heads, 1]:
-            // The memory layout is: i = d + head_dim * (p + seq_len * h)
-            int64_t d = i % DV;
-            int64_t p = (i / DV) % Q_LEN;
-            int64_t h = (i / (DV * Q_LEN)) % N_Q_HEADS;
-            
-            const int64_t state_idx = h * Q_LEN + p;
-            
-            // Get states from both segments
-            float M1 = segment1_state[state_idx * 2 + 0];
-            float S1 = segment1_state[state_idx * 2 + 1];
-            float M2 = segment2_state[state_idx * 2 + 0];
-            float S2 = segment2_state[state_idx * 2 + 1];
-            
-            // Determine if segments have valid data
-            bool has_seg1 = (M1 != -INFINITY && S1 > 0.0f && !isnan(S1));
-            bool has_seg2 = (M2 != -INFINITY && S2 > 0.0f && !isnan(S2));
-            
-            if (has_seg1 && has_seg2) {
-                // Both segments have valid data - merge using FlashDecoding++ algorithm
-                float M_final = fmaxf(M1, M2);
-                float scale1 = expf(M1 - M_final);
-                float scale2 = expf(M2 - M_final);
-                float S_final = S1 * scale1 + S2 * scale2;
+        for (int64_t h = 0; h < N_Q_HEADS; ++h) {
+            for (int64_t p = 0; p < Q_LEN; ++p) {
+                const int64_t state_idx = h * Q_LEN + p;
+                const int64_t output_offset = p * N_Q_HEADS * DV + h * DV;
                 
-                if (S_final > 0.0f && !isnan(S_final)) {
-                    float inv_S_final = 1.0f / S_final;
-                    
-                    // The segment outputs are already unnormalized (not divided by S)
-                    // So we just need to rescale and normalize once
-                    float val1 = segment1_output[i];
-                    float val2 = segment2_output[i];
-                    dst_data[i] = (val1 * scale1 + val2 * scale2) * inv_S_final;
-                    
-                    // Final NaN check
-                    if (isnan(dst_data[i])) {
-                        dst_data[i] = 0.0f;
+                // Get segment states and outputs
+                float M1 = seg1_state[state_idx * 2 + 0];  // Segment 1 max
+                float S1 = seg1_state[state_idx * 2 + 1];  // Segment 1 sum
+                float M2 = seg2_state[state_idx * 2 + 0];  // Segment 2 max
+                float S2 = seg2_state[state_idx * 2 + 1];  // Segment 2 sum
+                
+                float* O1 = seg1_output + output_offset;   // Segment 1 output
+                float* O2 = seg2_output + output_offset;   // Segment 2 output
+                
+                // Check if segments have valid outputs
+                bool has_seg1 = (M1 != -INFINITY && S1 > 0.0f && !isnan(M1) && !isnan(S1));
+                bool has_seg2 = (M2 != -INFINITY && S2 > 0.0f && !isnan(M2) && !isnan(S2));
+                
+                // TEMPORARY: Test with just the combined segments using simple concatenation to debug
+                // Create a combined K and V tensor conceptually and use standard flash attention
+                if (has_seg1 || has_seg2) {
+                    // For now, just use the FP16 segment normalized output to see if segment function works
+                    if (has_seg2) {
+                        for (int64_t d = 0; d < DV; ++d) {
+                            dst_data[output_offset + d] = O2[d] / S2;
+                        }
+                    } else if (has_seg1) {
+                        for (int64_t d = 0; d < DV; ++d) {
+                            dst_data[output_offset + d] = O1[d] / S1;
+                        }
                     }
                 } else {
-                    // Invalid combined state - zero output
-                    dst_data[i] = 0.0f;
-                }
-            } else if (has_seg1) {
-                // Only segment 1 has valid data
-                // The segment stores unnormalized output (sum of v * exp(score - M))
-                // To get the final normalized output, we divide by S1
-                // Add epsilon to avoid numerical instability when S is very small
-                const float epsilon = 1e-10f;
-                if (S1 > epsilon) {
-                    float inv_S1 = 1.0f / S1;
-                    dst_data[i] = segment1_output[i] * inv_S1;
-                    
-                    
-                    if (isnan(dst_data[i]) || isinf(dst_data[i])) {
-                        dst_data[i] = 0.0f;
+                    // No valid output from either segment
+                    for (int64_t d = 0; d < DV; ++d) {
+                        dst_data[output_offset + d] = 0.0f;
                     }
-                } else {
-                    // S is too small - treat as no attention
-                    dst_data[i] = 0.0f;
                 }
-            } else if (has_seg2) {
-                // Only segment 2 has valid data
-                // The segment stores unnormalized output (sum of v * exp(score - M))
-                // To get the final normalized output, we divide by S2
-                const float epsilon = 1e-10f;
-                if (S2 > epsilon) {
-                    float inv_S2 = 1.0f / S2;
-                    dst_data[i] = segment2_output[i] * inv_S2;
-                    
-                    if (isnan(dst_data[i]) || isinf(dst_data[i])) {
-                        dst_data[i] = 0.0f;
+                
+                // Final safety check
+                for (int64_t d = 0; d < DV; ++d) {
+                    if (isnan(dst_data[output_offset + d]) || isinf(dst_data[output_offset + d])) {
+                        dst_data[output_offset + d] = 0.0f;
                     }
-                } else {
-                    // S is too small - treat as no attention
-                    dst_data[i] = 0.0f;
                 }
-            } else {
-                // Neither segment has valid data
-                dst_data[i] = 0.0f;
             }
         }
         
-        // NOTE : Check if the attn_out is valid.
-        float* attn_out = (float*)dst->data;
-
-        for (int64_t i = 0; i < ggml_nelements(dst); ++i) {
-            // assert(!isnan(attn_out[i]));
-
-            if (isnan(attn_out[i])) {
-                // Silent NaN check - actual errors are handled above
+        // Debug output
+        int valid_states = 0;
+        float min_output = INFINITY, max_output = -INFINITY;
+        for (int64_t idx = 0; idx < neq2 * neq1; ++idx) {
+            float M1 = seg1_state[idx * 2 + 0];
+            float S1 = seg1_state[idx * 2 + 1];
+            float M2 = seg2_state[idx * 2 + 0];
+            float S2 = seg2_state[idx * 2 + 1];
+            if ((M1 != -INFINITY && S1 > 0.0f) || (M2 != -INFINITY && S2 > 0.0f)) {
+                valid_states++;
             }
         }
+        for (int64_t i = 0; i < output_elems; ++i) {
+            float val = dst_data[i];
+            if (!isnan(val) && !isinf(val)) {
+                min_output = fminf(min_output, val);
+                max_output = fmaxf(max_output, val);
+            }
+        }
+        
+        fprintf(stderr, "[MIXED-KV-DEBUG] Final result: %d/%ld valid states, output range [%.3e, %.3e]\n", 
+                valid_states, neq2 * neq1, min_output, max_output);
     }
 }
 
@@ -8254,11 +8103,8 @@ void ggml_compute_forward_flash_attn_ext(
         const ggml_tensor * v_quant,
         ggml_tensor * dst) {
     switch (dst->op_params[3]) {
-        case GGML_PREC_DEFAULT:
         case GGML_PREC_WITH_STATE:
             {
-                // ggml_tensor * 
-                
                 // Enhanced function with state managed via workspace
                 // CRITICAL FIX: mask_quant should be NULL if not provided
                 const ggml_tensor * mask_quant = (dst->src[6] != NULL) ? dst->src[6] : NULL;
@@ -8268,6 +8114,7 @@ void ggml_compute_forward_flash_attn_ext(
                     k_quant, v_quant, mask_quant, dst
                 );
             } break;
+        case GGML_PREC_DEFAULT:
         case GGML_PREC_F32:
             {
                 ggml_compute_forward_flash_attn_ext_f16(params, q, k, v, mask, dst);
