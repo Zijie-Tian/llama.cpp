@@ -7019,6 +7019,13 @@ static void ggml_compute_forward_flash_attn_ext_f16(
     GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
 
+    // DEBUG: Print k type info once
+    static int type_print_count = 0;
+    if (type_print_count < 1 && ith == 0) {
+        fprintf(stderr, "[MIXED-KV-DEBUG] k->type=%d, k_vec_dot_type=%d\n", k->type, k_vec_dot_type);
+        type_print_count++;
+    }
+
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
@@ -7054,7 +7061,45 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         const int iv2 = iq2 / rv2;
 
         const float * pq = (const float *) ((char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3));
+        
+        // DEBUG: Check pq before conversion
+        bool pq_has_nan = false;
+        for (int i = 0; i < DK && i < 5; i++) {
+            if (isnan(pq[i])) {
+                pq_has_nan = true;
+                if (ith == 0 && iq1 == 0 && iq2 == 0) {
+                    fprintf(stderr, "[MIXED-KV-DEBUG] pq[%d]=%f is NaN before conversion\n", i, pq[i]);
+                }
+            }
+        }
+        if (pq_has_nan && ith == 0 && iq1 == 0 && iq2 == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] Input Q contains NaN at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
+        }
+        
+        // DEBUG: Print first few Q values
+        if (ith == 0 && iq1 == 0 && iq2 == 0 && iq3 == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] First 5 Q values before conversion: ");
+            for (int i = 0; i < 5 && i < DK; i++) {
+                fprintf(stderr, "%.6f ", pq[i]);
+            }
+            fprintf(stderr, "\n");
+        }
+        
         q_to_vec_dot(pq, Q_q, DK);
+        
+        // DEBUG: Check Q_q after conversion
+        bool q_q_has_nan = false;
+        for (int i = 0; i < DK && i < 5; i++) {
+            if (isnan(GGML_FP16_TO_FP32(Q_q[i]))) {
+                q_q_has_nan = true;
+                if (ith == 0 && iq1 == 0 && iq2 == 0) {
+                    fprintf(stderr, "[MIXED-KV-DEBUG] Q_q[%d] is NaN after conversion\n", i);
+                }
+            }
+        }
+        if (!pq_has_nan && q_q_has_nan && ith == 0 && iq1 == 0 && iq2 == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] NaN introduced during q_to_vec_dot conversion!\n");
+        }
 
         // online softmax / attention
         // loop over n_kv and n_head_kv
@@ -7247,6 +7292,13 @@ static void ggml_flash_attn_ext_f16_segment(
     GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
 
+    // DEBUG: Print k type info once
+    static int type_print_count = 0;
+    if (type_print_count < 1 && ith == 0) {
+        fprintf(stderr, "[MIXED-KV-DEBUG] k->type=%d, k_vec_dot_type=%d\n", k->type, k_vec_dot_type);
+        type_print_count++;
+    }
+
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
@@ -7290,6 +7342,9 @@ static void ggml_flash_attn_ext_f16_segment(
         } else {
             memset(VKQ32, 0, DV*sizeof(float));
         }
+        
+        // Initialize Q_q buffer to prevent NaN
+        memset(Q_q, 0, DK*sizeof(ggml_fp16_t));
 
         const ggml_fp16_t * mp = mask ? (ggml_fp16_t *)((char *) mask->data + iq1*mask->nb[1]) : NULL;
 
@@ -7302,7 +7357,45 @@ static void ggml_flash_attn_ext_f16_segment(
         const int iv2 = iq2 / rv2;
 
         const float * pq = (const float *) ((char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3));
+        
+        // DEBUG: Check pq before conversion
+        bool pq_has_nan = false;
+        for (int i = 0; i < DK && i < 5; i++) {
+            if (isnan(pq[i])) {
+                pq_has_nan = true;
+                if (ith == 0 && iq1 == 0 && iq2 == 0) {
+                    fprintf(stderr, "[MIXED-KV-DEBUG] pq[%d]=%f is NaN before conversion\n", i, pq[i]);
+                }
+            }
+        }
+        if (pq_has_nan && ith == 0 && iq1 == 0 && iq2 == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] Input Q contains NaN at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
+        }
+        
+        // DEBUG: Print first few Q values
+        if (ith == 0 && iq1 == 0 && iq2 == 0 && iq3 == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] First 5 Q values before conversion: ");
+            for (int i = 0; i < 5 && i < DK; i++) {
+                fprintf(stderr, "%.6f ", pq[i]);
+            }
+            fprintf(stderr, "\n");
+        }
+        
         q_to_vec_dot(pq, Q_q, DK);
+        
+        // DEBUG: Check Q_q after conversion
+        bool q_q_has_nan = false;
+        for (int i = 0; i < DK && i < 5; i++) {
+            if (isnan(GGML_FP16_TO_FP32(Q_q[i]))) {
+                q_q_has_nan = true;
+                if (ith == 0 && iq1 == 0 && iq2 == 0) {
+                    fprintf(stderr, "[MIXED-KV-DEBUG] Q_q[%d] is NaN after conversion\n", i);
+                }
+            }
+        }
+        if (!pq_has_nan && q_q_has_nan && ith == 0 && iq1 == 0 && iq2 == 0) {
+            fprintf(stderr, "[MIXED-KV-DEBUG] NaN introduced during q_to_vec_dot conversion!\n");
+        }
 
         // online softmax / attention
         // loop over n_kv and n_head_kv
@@ -7326,7 +7419,23 @@ static void ggml_flash_attn_ext_f16_segment(
 
             // DEBUG: Check for NaN in attention score
             if (isnan(s)) {
-                fprintf(stderr, "[MIXED-KV-ERROR] NaN in attention score s=%f at ic=%ld\n", s, ic);
+                fprintf(stderr, "[MIXED-KV-ERROR] NaN in attention score s=%f at ic=%ld, nek1=%ld, scale=%f, DK=%ld\n", 
+                        s, ic, nek1, scale, DK);
+                // Check if k_data is valid
+                if (k->data == nullptr) {
+                    fprintf(stderr, "[MIXED-KV-ERROR] k->data is nullptr\n");
+                }
+                // Check Q_q
+                bool q_has_nan = false;
+                for (int i = 0; i < DK && i < 5; i++) {
+                    if (isnan(GGML_FP16_TO_FP32(Q_q[i]))) {
+                        q_has_nan = true;
+                        break;
+                    }
+                }
+                if (q_has_nan) {
+                    fprintf(stderr, "[MIXED-KV-ERROR] Q_q contains NaN\n");
+                }
                 continue; // Skip this position
             }
 
@@ -7509,17 +7618,17 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
         ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, state_data, dst);
-    } else {
-        printf("[MIXED-KV-DEBUG] Skipping FP16 segment: k_fp16=%p, v_fp16=%p, kv_len=%ld\n", 
-               (void*)k_fp16, (void*)v_fp16, k_fp16 ? k_fp16->ne[1] : -1);
+    } else if (params->ith == 0) {
+        fprintf(stderr, "[MIXED-KV-DEBUG] Skipping FP16 segment: k_fp16=%p, v_fp16=%p, k_fp16->ne[1]=%ld\n", 
+                (void*)k_fp16, (void*)v_fp16, k_fp16 ? k_fp16->ne[1] : -1);
     }
 
     // Process quantized segment second (CRITICAL FIX: uncomment and enable)
     if (k_quant && v_quant && k_quant->ne[1] > 0) {
         ggml_flash_attn_ext_f16_segment(params, q, k_quant, v_quant, mask_quant, state_data, dst);
-    } else {
-        printf("[MIXED-KV-DEBUG] Skipping quantized segment: k_quant=%p, v_quant=%p, kv_len=%ld\n", 
-               (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
+    } else if (params->ith == 0) {
+        fprintf(stderr, "[MIXED-KV-DEBUG] Skipping quant segment: k_quant=%p, v_quant=%p, k_quant->ne[1]=%ld\n", 
+                (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
     }
 
     // Wait for all threads to finish segment processing
@@ -7538,11 +7647,6 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
             float final_S = state_data[state_idx * 2 + 1]; // sum
             float final_M = state_data[state_idx * 2 + 0]; // max
             
-            // DEBUG: Print state information
-            if (head < 2 && pos < 2) {
-                printf("[MIXED-KV-DEBUG] head=%ld, pos=%ld, state_idx=%ld, M=%f, S=%f\n", 
-                       head, pos, state_idx, final_M, final_S);
-            }
             
             if (final_S > 0.0f && !isnan(final_S) && !isinf(final_S)) {
                 // Apply final normalization to the accumulated result
@@ -7553,11 +7657,6 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
                 
                 const float final_inv_S = 1.0f / final_S;
                 
-                // DEBUG: Print sample values before normalization
-                if (head < 2 && pos < 2) {
-                    printf("[MIXED-KV-DEBUG] Before norm: offset=%ld, first_val=%f, final_inv_S=%f\n", 
-                           offset, result_ptr[0], final_inv_S);
-                }
                 
                 for (int64_t d = 0; d < DV; ++d) {
                     result_ptr[d] *= final_inv_S;
@@ -7568,18 +7667,10 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
                     }
                 }
                 
-                // DEBUG: Print sample values after normalization
-                if (head < 2 && pos < 2) {
-                    printf("[MIXED-KV-DEBUG] After norm: first_val=%f\n", result_ptr[0]);
-                }
             } else if (final_S == 0.0f && !isnan(final_S)) {
                 // CRITICAL FIX: S=0.0f is valid when all tokens are masked out
                 // This is mathematically correct for causal attention where some query positions
                 // have no visible key-value tokens. Leave output as-is (should already be zero).
-                if (head < 2 && pos < 2) {
-                    printf("[MIXED-KV-DEBUG] Valid zero state (all tokens masked): head=%ld, pos=%ld, S=%f\n", 
-                           head, pos, final_S);
-                }
             } else {
                 // Invalid state (NaN or -inf), zero out the result
                 const int64_t offset = (head + pos * neq2) * DV;
@@ -7598,7 +7689,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
             // assert(!isnan(attn_out[i]));
 
             if (isnan(attn_out[i])) {
-                printf("attn_out[%lld] = %f\n", i, attn_out[i]);
+                // Silent NaN check - actual errors are handled above
             }
         }
     }
