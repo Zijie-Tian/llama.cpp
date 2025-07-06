@@ -104,3 +104,7 @@ The current branch (`tzj/qlutattn`) is implementing a **Mixed Precision KV Cache
 - Always test builds with different backends before submitting PRs
 - The project prioritizes minimal dependencies and cross-platform support
 - When working on the mixed KV cache feature, refer to `MIXED_KV_CACHE_STATUS.md` for implementation details
+
+## Claude Memory
+
+- 请你将当前的知识全部存储下来: A request to store all current knowledge comprehensively

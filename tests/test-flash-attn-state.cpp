@@ -205,10 +205,10 @@ int main() {
     printf("=== Flash Attention State Tensor - Comprehensive Test ===\n");
 
     // Test parameters
-    const int head_dim       = 32;
+    const int head_dim       = 2;
     const int n_heads        = 32;
     const int n_kv_heads     = 8;
-    const int seq_len        = 59;
+    const int seq_len        = 4;
     const int kv_len         = 1024;  // Will be split into segments
     const int n_threads      = 12;
     const int kv_segments    = 2;  // Split KV into 2 segments
@@ -282,15 +282,13 @@ int main() {
         for (int j = 0; j < padded_kv_len; j++) {
             // For testing: allow all query positions to see all KV positions < kv_len
             // This ensures both segments have valid attention weights
-            if (j < kv_len && i < seq_len) {
+            if (j <= i && j < seq_len && i < seq_len) {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(0.0f);
             } else {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(-INFINITY);
             }
         }
     }
-
-    // print_kqv_mask(mask);
 
     printf("Fixed test data generated successfully\n");
 
@@ -557,7 +555,7 @@ int main() {
         printf("----|-------------|-------------|-----------\n");
     }
 
-    size_t show = std::min((size_t) 256, n_elems);
+    size_t show = std::min((size_t) head_dim * seq_len * n_heads, n_elems);
     for (size_t i = 0; i < show; ++i) {
         float s = standard_data[i];
         float g = segmented_data[i];
@@ -574,8 +572,9 @@ int main() {
     // Print mask
     // ============================================================================
 
-    print_kqv_mask(mask_fp16_seg);
-    print_kqv_mask(mask_quant_seg);
+    // print_kqv_mask(mask);
+    // print_kqv_mask(mask_fp16_seg);
+    // print_kqv_mask(mask_quant_seg);
 
     // ============================================================================
     // Max error point

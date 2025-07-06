@@ -7085,11 +7085,13 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         // online softmax / attention
         // loop over n_kv and n_head_kv
         // ref: https://arxiv.org/pdf/2112.05682.pdf
+        int standard_valid = 0;
         for (int64_t ic = 0; ic < nek1; ++ic) {
             const float mv = mp ? slope*GGML_FP16_TO_FP32(mp[ic]) : 0.0f;
             if (mv == -INFINITY) {
                 continue;
             }
+            standard_valid++;
 
             float s; // KQ value
 
@@ -7171,6 +7173,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         // V /= S
         const float S_inv = 1.0f / S;
         ggml_vec_scale_f32(DV, VKQ32, S_inv);
+        
 
         // dst indices
         const int i1 = iq1;
@@ -7323,16 +7326,10 @@ static void ggml_flash_attn_ext_f16_segment(
             continue;
         }
         
-        // Read previous segment's state (if any)
-        float M_prev = state_data[state_idx * 2 + 0];     // previous maximum
-        float S_prev = state_data[state_idx * 2 + 1];     // previous sum of exp
-
         // Initialize current segment's local max and sum
+        // Each segment computes independently - no previous state
         float M = -INFINITY;
         float S = 0.0f;
-        
-        // Check if we have valid previous state
-        bool has_prev_state = (M_prev != -INFINITY && S_prev >= 0.0f && !isnan(M_prev) && !isnan(S_prev));
 
         float       * VKQ32 = (float       *) params->wdata + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
         float       * V32   =                 (VKQ32 + 1*DV);   // (temporary) FP32 V buffer
@@ -7388,12 +7385,18 @@ static void ggml_flash_attn_ext_f16_segment(
         // loop over n_kv and n_head_kv
         // ref: https://arxiv.org/pdf/2112.05682.pdf
         bool nopass = true;
+        int masked_count = 0;
+        int valid_count = 0;
+        
+        
         for (int64_t ic = 0; ic < nek1; ++ic) {
             const float mv = mp ? slope*GGML_FP16_TO_FP32(mp[ic]) : 0.0f;
             if (mv == -INFINITY) {
+                masked_count++;
                 continue;
             }
 
+            valid_count++;
             nopass = false;
 
             float s; // KQ value
@@ -7503,10 +7506,11 @@ static void ggml_flash_attn_ext_f16_segment(
         }
 
         if (nopass == true) {
+            // When all tokens are masked in this segment - output zeros
             M = -INFINITY;
-            S = 0.0f;  // CRITICAL FIX: No valid tokens means sum should be 0, not 1
-            // Also ensure output is zero when no attention is computed
+            S = 0.0f;
             memset(VKQ32, 0, DV*sizeof(float));
+            
         }
 
         // Convert to F32 if needed
@@ -7516,44 +7520,17 @@ static void ggml_flash_attn_ext_f16_segment(
             }
         }
 
-        // Apply FlashDecoding++ algorithm: combine current segment with previous segments
-        if (has_prev_state) {
-            // Load previous unnormalized accumulated result
-            const int i1 = iq1;
-            const int i2 = iq2;
-            const int i3 = iq3;
-            const float * prev_result = (float *) ((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1);
-            
-            // Compute new maximum
-            float M_new = MAX(M_prev, M);
-            
-            // Compute rescaling factors
-            float scale_prev = expf(M_prev - M_new);
-            float scale_curr = expf(M - M_new);
-            
-            // Update sum of exponentials
-            float S_new = S_prev * scale_prev + S * scale_curr;
-            
-            // DEBUG: Check if S becomes negative
-            if (S_new < 0.0f && ith == 0) {
-                fprintf(stderr, "[MIXED-KV-ERROR] Negative S_new=%f: S_prev=%f, scale_prev=%f, S=%f, scale_curr=%f, M_prev=%f, M=%f, M_new=%f\n",
-                        S_new, S_prev, scale_prev, S, scale_curr, M_prev, M, M_new);
-            }
-            
-            // Combine outputs: O_new = scale_prev * O_prev + scale_curr * O_curr
-            // We store unnormalized outputs to avoid precision loss
-            for (int64_t d = 0; d < DV; ++d) {
-                VKQ32[d] = prev_result[d] * scale_prev + VKQ32[d] * scale_curr;
-            }
-            
-            // Update state for next segment
-            M = M_new;
-            S = S_new;
-        }
+        // IMPORTANT: Do NOT normalize (don't divide by S) - store unnormalized result
+        // The normalization will be done in the merge step
+        
+        // The segment function should NOT merge with previous state
+        // It should only compute its own segment's unnormalized output
+        // The merging happens in the main function
         
         // Write updated state back
         state_data[state_idx * 2 + 0] = M;
         state_data[state_idx * 2 + 1] = S;
+        
         
         // Check for numerical validity
         if (S <= 0.0f || isnan(S) || isinf(S)) {
@@ -7569,7 +7546,11 @@ static void ggml_flash_attn_ext_f16_segment(
         // memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
 
         // permute(0, 2, 1, 3)
-        memcpy((char *) dst->data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
+        // CRITICAL: Store unnormalized outputs for FlashDecoding++ algorithm
+        // The output will be normalized later when merging segments
+        int64_t dst_offset = (i3*ne2*ne1 + i2 + i1*ne1);
+        memcpy((char *) dst->data + dst_offset*nb1, VKQ32, nb1);
+        
     }
 }
 
@@ -7723,13 +7704,13 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
     ggml_barrier(params->threadpool);
 
-    // // Process quantized segment second
-    // if (k_quant && v_quant && k_quant->ne[1] > 0) {
-    //     ggml_flash_attn_ext_f16_segment(&segment2_params, q, k_quant, v_quant, mask_quant, segment2_state, &segment2_dst);
-    // } else if (params->ith == 0) {
-    //     fprintf(stderr, "[MIXED-KV-DEBUG] Skipping quant segment: k_quant=%p, v_quant=%p, k_quant->ne[1]=%ld\n", 
-    //             (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
-    // }
+    // Process quantized segment second
+    if (k_quant && v_quant && k_quant->ne[1] > 0) {
+        ggml_flash_attn_ext_f16_segment(&segment2_params, q, k_quant, v_quant, mask_quant, segment2_state, &segment2_dst);
+    } else if (params->ith == 0) {
+        fprintf(stderr, "[DEBUG] Skipping segment 2: k_quant=%p, v_quant=%p, k_quant->ne[1]=%ld\n",
+                (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
+    }
 
     // Wait for all threads to finish segment processing
     ggml_barrier(params->threadpool);
@@ -7739,67 +7720,48 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     if (params->ith == 0) {
         float* dst_data = (float*)dst->data;
         
-        // Debug: Check segment outputs before merge
-        int seg1_zeros = 0, seg2_zeros = 0;
-        int seg1_nans = 0, seg2_nans = 0;
-        float seg1_max = -INFINITY, seg2_max = -INFINITY;
-        float seg1_min = INFINITY, seg2_min = INFINITY;
-        
-        for (int64_t i = 0; i < output_size; ++i) {
-            float v1 = segment1_output[i];
-            float v2 = segment2_output[i];
-            
-            if (v1 == 0.0f) seg1_zeros++;
-            if (v2 == 0.0f) seg2_zeros++;
-            if (isnan(v1)) seg1_nans++;
-            if (isnan(v2)) seg2_nans++;
-            
-            if (!isnan(v1) && !isinf(v1)) {
-                seg1_max = fmaxf(seg1_max, v1);
-                seg1_min = fminf(seg1_min, v1);
-            }
-            if (!isnan(v2) && !isinf(v2)) {
-                seg2_max = fmaxf(seg2_max, v2);
-                seg2_min = fminf(seg2_min, v2);
-            }
-        }
-        
-        fprintf(stderr, "[MIXED-KV-DEBUG] Segment outputs before merge:\n");
-        fprintf(stderr, "  Segment 1: zeros=%d, nans=%d, min=%.3e, max=%.3e\n", 
-                seg1_zeros, seg1_nans, seg1_min, seg1_max);
-        fprintf(stderr, "  Segment 2: zeros=%d, nans=%d, min=%.3e, max=%.3e\n", 
-                seg2_zeros, seg2_nans, seg2_min, seg2_max);
-        
-        // Also check states
-        int state1_valid = 0, state2_valid = 0;
-        for (int64_t idx = 0; idx < neq2 * neq1; ++idx) {
-            float M1 = segment1_state[idx * 2 + 0];
-            float S1 = segment1_state[idx * 2 + 1];
-            float M2 = segment2_state[idx * 2 + 0];
-            float S2 = segment2_state[idx * 2 + 1];
-            
-            if (M1 != -INFINITY && S1 > 0.0f) state1_valid++;
-            if (M2 != -INFINITY && S2 > 0.0f) state2_valid++;
-        }
-        fprintf(stderr, "  State 1: %d/%ld valid states\n", state1_valid, neq2 * neq1);
-        fprintf(stderr, "  State 2: %d/%ld valid states\n", state2_valid, neq2 * neq1);
         
         // Process all output positions using proper FlashDecoding++ merge
         for (int64_t i = 0; i < output_size; ++i) {
-            // Map linear index to (d, p, h) for state lookup
-            // With tensor shape [head_dim, seq_len, n_heads, 1]:
-            // The memory layout is: i = d + head_dim * (p + seq_len * h)
-            int64_t d = i % DV;
-            int64_t p = (i / DV) % Q_LEN;
-            int64_t h = (i / (DV * Q_LEN)) % N_Q_HEADS;
+            // Since both dst and segment outputs use the same permuted layout,
+            // we can use the same index for accessing segment data
+            int64_t segment_idx = i;
             
-            const int64_t state_idx = h * Q_LEN + p;
+            // For state lookup, we need to figure out which (h, p) position this is
+            // The permuted layout stores data as: (h + p * Q_LEN) * DV + d
+            // So we can extract h, p from the linear index
+            int64_t row_idx = i / DV;  // Which "row" of head_dim elements
+            int64_t d = i % DV;        // Which element within head_dim
+            
+            // From row_idx = h + p * Q_LEN, extract h and p
+            int64_t h = row_idx % Q_LEN;
+            int64_t p = row_idx / Q_LEN;
+            
+            // Wait, that doesn't look right. Let me reconsider...
+            // The permutation formula is dst_offset = (i3*ne2*ne1 + i2 + i1*ne1)
+            // where i1=p, i2=h, ne1=Q_LEN, ne2=N_Q_HEADS
+            // So dst_offset = h + p * Q_LEN
+            // This means row h + p * Q_LEN contains the data for position p, head h
+            
+            // Actually, we need to decode based on the actual permutation pattern
+            // The permutation stores data at offset: h + p * ne1 where ne1 = Q_LEN
+            // So for a given row_idx, we have: row_idx = h + p * Q_LEN
+            // This means: h = row_idx % Q_LEN and p = row_idx / Q_LEN
+            // But wait, that's wrong! Let me think again...
+            // Actually with ne1 = Q_LEN and ne2 = N_Q_HEADS:
+            // offset = h + p * Q_LEN means we cycle through heads first, then positions
+            // So: h = row_idx % N_Q_HEADS and p = row_idx / N_Q_HEADS
+            int64_t h_perm = row_idx % N_Q_HEADS;
+            int64_t p_perm = row_idx / N_Q_HEADS;
+            
+            const int64_t state_idx = h_perm * Q_LEN + p_perm;
             
             // Get states from both segments
             float M1 = segment1_state[state_idx * 2 + 0];
             float S1 = segment1_state[state_idx * 2 + 1];
             float M2 = segment2_state[state_idx * 2 + 0];
             float S2 = segment2_state[state_idx * 2 + 1];
+            
             
             // Determine if segments have valid data
             bool has_seg1 = (M1 != -INFINITY && S1 > 0.0f && !isnan(S1));
@@ -7817,9 +7779,10 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
                     
                     // The segment outputs are already unnormalized (not divided by S)
                     // So we just need to rescale and normalize once
-                    float val1 = segment1_output[i];
-                    float val2 = segment2_output[i];
+                    float val1 = segment1_output[segment_idx];
+                    float val2 = segment2_output[segment_idx];
                     dst_data[i] = (val1 * scale1 + val2 * scale2) * inv_S_final;
+                    
                     
                     // Final NaN check
                     if (isnan(dst_data[i])) {
@@ -7837,7 +7800,9 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
                 const float epsilon = 1e-10f;
                 if (S1 > epsilon) {
                     float inv_S1 = 1.0f / S1;
-                    dst_data[i] = segment1_output[i] * inv_S1;
+                    dst_data[i] = segment1_output[segment_idx] * inv_S1;
+                    
+                    
                     
                     
                     if (isnan(dst_data[i]) || isinf(dst_data[i])) {
@@ -7854,7 +7819,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
                 const float epsilon = 1e-10f;
                 if (S2 > epsilon) {
                     float inv_S2 = 1.0f / S2;
-                    dst_data[i] = segment2_output[i] * inv_S2;
+                    dst_data[i] = segment2_output[segment_idx] * inv_S2;
                     
                     if (isnan(dst_data[i]) || isinf(dst_data[i])) {
                         dst_data[i] = 0.0f;
@@ -7868,6 +7833,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
                 dst_data[i] = 0.0f;
             }
         }
+        
         
         // NOTE : Check if the attn_out is valid.
         float* attn_out = (float*)dst->data;
