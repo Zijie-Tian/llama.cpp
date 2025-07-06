@@ -207,7 +207,7 @@ int main() {
     // Test parameters
     const int head_dim       = 2;
     const int n_heads        = 32;
-    const int n_kv_heads     = 8;
+    const int n_kv_heads     = 1;
     const int seq_len        = 4;
     const int kv_len         = 1024;  // Will be split into segments
     const int n_threads      = 12;
@@ -302,10 +302,10 @@ int main() {
     // ============================================================================
     // printf("\n--- Test 1: Standard Flash Attention (Reference) ---\n");
 
-    print_tensor_summary(q, "Q");
-    print_tensor_summary(k, "K");
-    print_tensor_summary(v, "V");
-    print_tensor_summary(mask, "Mask");
+    print_tensor_summary(q,     "Q");
+    print_tensor_summary(k,     "K");
+    print_tensor_summary(v,     "V");
+    print_tensor_summary(mask,  "Mask");
     print_tensor_summary(state, "State");
 
     ggml_tensor * result_standard = ggml_flash_attn_ext(ctx, q, k, v, mask,
