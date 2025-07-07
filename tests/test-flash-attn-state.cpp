@@ -225,7 +225,7 @@ int main() {
     const int head_dim       = 2;
     const int n_heads        = 32;
     const int n_kv_heads     = 1;
-    const int seq_len        = 4;
+    const int seq_len        = 128;
     const int kv_len         = 1024;  // Will be split into segments
     const int n_threads      = 1;
     const int kv_segments    = 2;  // Split KV into 2 segments

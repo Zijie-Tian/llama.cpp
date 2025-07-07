@@ -7481,7 +7481,10 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         const ggml_tensor * mask_quant,
         ggml_tensor * dst) {
     
-    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
+    GGML_TENSOR_LOCALS(int64_t, neq,  q, ne)
+    GGML_TENSOR_LOCALS(size_t,  nbq,  q, nb)
+    GGML_TENSOR_LOCALS(int64_t, ne, dst, ne)
+    GGML_TENSOR_LOCALS(size_t,  nb, dst, nb)
 
     const int64_t DK = q->ne[0];
     const int64_t Q_LEN = q->ne[1];
@@ -7558,160 +7561,47 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
     ggml_barrier(params->threadpool);
 
+    //> Merge the two segments
+    const int64_t nr = neq1 * neq2 * neq3;     //> number of rows, one row is one head_dim.
+    const int64_t dr = (nr + params -> nth - 1) / params -> nth;
+    const int64_t ir0 = dr * params -> ith;
+    const int64_t ir1 = MIN(ir0 + dr, nr);
+
     float * dst_data = (float*)dst->data;
-    float * imm_buffer_fp16_data = (float*)imm_buffer_fp16;
-    float * imm_buffer_quant_data = (float*)imm_buffer_quant;
 
-    for (int64_t i = 0; i < neq2 * neq1 * neq0; ++i) {
-        // dst_data[i] = imm_buffer_fp16_data[i];
-        dst_data[i] = imm_buffer_quant_data[i];
+    for (int64_t ir = ir0; ir < ir1; ++ir) {
+        const int64_t iq3 =  ir / (neq2*neq1);                  //>  ir / (n_q_head * seq_len)                      => Batch idx.
+        const int64_t iq2 = (ir - iq3*neq2*neq1) / neq1;        //> (ir - iq3 * n_q_head * seq_len) / seq_len       => Head idx.
+        const int64_t iq1 = (ir - iq3*neq2*neq1  - iq2*neq1);   //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   => Sequence idx.
+
+        int64_t state_idx = iq1 * neq2 + iq2;
+        float M_fp16 = ws_state_thread_fp16[2*state_idx+0];
+        float S_fp16 = ws_state_thread_fp16[2*state_idx+1];
+
+        float M_quant = ws_state_thread_quant[2*state_idx+0];
+        float S_quant = ws_state_thread_quant[2*state_idx+1];
+
+        float M = MAX(M_fp16, M_quant);
+        float S = S_fp16 * expf(M_fp16 - M) + S_quant * expf(M_quant - M);
+
+        float * imm_fp16_vec  = (float *) ((char *) imm_buffer_fp16  + (iq3*ne2*ne1 + iq2 + iq1*ne1)*nb1);
+        float * imm_quant_vec = (float *) ((char *) imm_buffer_quant + (iq3*ne2*ne1 + iq2 + iq1*ne1)*nb1);
+
+        float scale_fp16  = expf(M_fp16 - M)  * S_fp16  / S;
+        float scale_quant = expf(M_quant - M) * S_quant / S;
+
+        ggml_vec_scale_f32(DV, imm_fp16_vec, scale_fp16);
+        ggml_vec_scale_f32(DV, imm_quant_vec, scale_quant);
+
+        float * dst_vec = (float *) ((char *) dst -> data + (iq3*ne2*ne1 + iq2 + iq1*ne1)*nb1);
+        for (int64_t i = 0; i < DV; ++i) {
+            dst_vec[i] = imm_fp16_vec[i] + imm_quant_vec[i];
+        }
+
+        // ggml_vec_add_f32(DV, dst_data, imm_fp16_vec, imm_quant_vec);
     }
-
-    return;
-
-
-    // // Wait for all threads to finish segment processing
-    // ggml_barrier(params->threadpool);
     
-    // // Final merge: combine the two segment outputs using FlashDecoding++ algorithm
-    // // Only thread 0 should do the final merge
-    // if (params->ith == 0) {
-    //     float* dst_data = (float*)dst->data;
-        
-    //     // Process all output positions using proper FlashDecoding++ merge
-    //     for (int64_t i = 0; i < output_size; ++i) {
-    //         // Since both dst and segment outputs use the same permuted layout,
-    //         // we can use the same index for accessing segment data
-    //         int64_t segment_idx = i;
-            
-    //         // For state lookup, we need to figure out which (h, p) position this is
-    //         // The permuted layout stores data as: (h + p * Q_LEN) * DV + d
-    //         // So we can extract h, p from the linear index
-    //         int64_t row_idx = i / DV;  // Which "row" of head_dim elements
-    //         int64_t d = i % DV;        // Which element within head_dim
-            
-    //         // From row_idx = h + p * Q_LEN, extract h and p
-    //         int64_t h = row_idx % Q_LEN;
-    //         int64_t p = row_idx / Q_LEN;
-            
-    //         // Wait, that doesn't look right. Let me reconsider...
-    //         // The permutation formula is dst_offset = (i3*ne2*ne1 + i2 + i1*ne1)
-    //         // where i1=p, i2=h, ne1=Q_LEN, ne2=N_Q_HEADS
-    //         // So dst_offset = h + p * Q_LEN
-    //         // This means row h + p * Q_LEN contains the data for position p, head h
-            
-    //         // Actually, we need to decode based on the actual permutation pattern
-    //         // The permutation stores data at offset: h + p * ne1 where ne1 = Q_LEN
-    //         // So for a given row_idx, we have: row_idx = h + p * Q_LEN
-    //         // This means: h = row_idx % Q_LEN and p = row_idx / Q_LEN
-    //         // But wait, that's wrong! Let me think again...
-    //         // Actually with ne1 = Q_LEN and ne2 = N_Q_HEADS:
-    //         // offset = h + p * Q_LEN means we cycle through heads first, then positions
-    //         // So: h = row_idx % N_Q_HEADS and p = row_idx / N_Q_HEADS
-    //         int64_t h_perm = row_idx % N_Q_HEADS;
-    //         int64_t p_perm = row_idx / N_Q_HEADS;
-            
-    //         const int64_t state_idx = h_perm * Q_LEN + p_perm;
-            
-            
-    //         // Get states from both segments
-    //         float M1 = segment1_state[state_idx * 2 + 0];
-    //         float S1 = segment1_state[state_idx * 2 + 1];
-    //         float M2 = segment2_state[state_idx * 2 + 0];
-    //         float S2 = segment2_state[state_idx * 2 + 1];
-            
-            
-            
-    //         // Determine if segments have valid data
-    //         // Note: S=0 means no attention weights, which should result in zero output
-    //         // Also check for the case where M=0, S=0 which indicates no valid attention
-    //         bool has_seg1 = (M1 != -INFINITY && S1 > 0.0f && !isnan(S1));
-    //         bool has_seg2 = (M2 != -INFINITY && S2 > 0.0f && !isnan(S2));
-            
-    //         // Special case: if both M and S are exactly 0, treat as no data
-    //         if (M1 == 0.0f && S1 == 0.0f) has_seg1 = false;
-    //         if (M2 == 0.0f && S2 == 0.0f) has_seg2 = false;
-            
-            
-    //         if (has_seg1 && has_seg2) {
-    //             // Both segments have valid data - merge using FlashDecoding++ algorithm
-    //             float M_final = fmaxf(M1, M2);
-    //             float scale1 = expf(M1 - M_final);
-    //             float scale2 = expf(M2 - M_final);
-    //             float S_final = S1 * scale1 + S2 * scale2;
-                
-    //             if (S_final > 0.0f && !isnan(S_final)) {
-    //                 float inv_S_final = 1.0f / S_final;
-                    
-    //                 // The segment outputs are already unnormalized (not divided by S)
-    //                 // So we just need to rescale and normalize once
-    //                 float val1 = segment1_output[segment_idx];
-    //                 float val2 = segment2_output[segment_idx];
-    //                 dst_data[i] = (val1 * scale1 + val2 * scale2) * inv_S_final;
-                    
-                    
-    //                 // Final NaN check
-    //                 if (isnan(dst_data[i])) {
-    //                     dst_data[i] = 0.0f;
-    //                 }
-    //             } else {
-    //                 // Invalid combined state - zero output
-    //                 dst_data[i] = 0.0f;
-    //             }
-    //         } else if (has_seg1) {
-    //             // Only segment 1 has valid data
-    //             // The segment stores unnormalized output (sum of v * exp(score - M))
-    //             // To get the final normalized output, we divide by S1
-    //             // Add epsilon to avoid numerical instability when S is very small
-    //             const float epsilon = 1e-10f;
-    //             if (S1 > epsilon) {
-    //                 float inv_S1 = 1.0f / S1;
-    //                 dst_data[i] = segment1_output[segment_idx] * inv_S1;
-                    
-                    
-    //                 if (isnan(dst_data[i]) || isinf(dst_data[i])) {
-    //                     dst_data[i] = 0.0f;
-    //                 }
-    //             } else {
-    //                 // S is too small - treat as no attention
-    //                 dst_data[i] = 0.0f;
-    //             }
-    //         } else if (has_seg2) {
-    //             // Only segment 2 has valid data
-    //             // The segment stores unnormalized output (sum of v * exp(score - M))
-    //             // To get the final normalized output, we divide by S2
-    //             const float epsilon = 1e-10f;
-    //             if (S2 > epsilon) {
-    //                 float inv_S2 = 1.0f / S2;
-    //                 dst_data[i] = segment2_output[segment_idx] * inv_S2;
-                    
-    //                 if (isnan(dst_data[i]) || isinf(dst_data[i])) {
-    //                     dst_data[i] = 0.0f;
-    //                 }
-    //             } else {
-    //                 // S is too small - treat as no attention
-    //                 dst_data[i] = 0.0f;
-    //             }
-    //         } else {
-    //             // Neither segment has valid data
-    //             dst_data[i] = 0.0f;
-    //         }
-    //     }
-        
-    //     // NOTE : Check if the attn_out is valid.
-    //     float* attn_out = (float*)dst->data;
-
-    //     for (int64_t i = 0; i < ggml_nelements(dst); ++i) {
-    //         // assert(!isnan(attn_out[i]));
-
-    //         if (isnan(attn_out[i])) {
-    //             // Silent NaN check - actual errors are handled above
-    //         }
-    //     }
-    // }
-    
-    // // Wait for thread 0 to finish the merge before allowing other threads to proceed
-    // ggml_barrier(params->threadpool);
+    ggml_barrier(params->threadpool);
 }
 
 void ggml_compute_forward_flash_attn_ext_mixed(
