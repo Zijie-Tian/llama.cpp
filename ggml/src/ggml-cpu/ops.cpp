@@ -7250,11 +7250,6 @@ static void ggml_flash_attn_ext_f16_segment(
 
     GGML_ASSERT(neq1 == N);      //> q -> ne[1] == q_len
 
-    // dst cannot be transposed or permuted
-    GGML_ASSERT(nb0 == sizeof(float));
-    GGML_ASSERT(nb0 <= nb1);
-    GGML_ASSERT(nb1 <= nb2);
-    GGML_ASSERT(nb2 <= nb3);
 
     // broadcast factors
     const int64_t rk2 = neq2/nek2;     //> n_q_head / n_kv_head
@@ -7273,7 +7268,7 @@ static void ggml_flash_attn_ext_f16_segment(
     const int dr = (nr + nth - 1)/nth;
 
     // row range for this thread
-    const int ir0 = dr * ith;
+    const int ir0 = dr*ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
     float scale_adjusted = scale;
@@ -7631,13 +7626,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     const size_t scratch_total  = scratch_per_th * params->nth;
     const size_t state_elems    = 2 * neq2 * neq1;  // M and S for each head/position
 
-    // Workspace layout:
-    // 1. Segment 1 output (FP16)
-    // 2. Segment 2 output (Quantized) 
-    // 3. Segment 1 scratch
-    // 4. Segment 2 scratch
-    // 5. Segment 1 state
-    // 6. Segment 2 state
+    // Workspace:
     float * workspace = (float *) params->wdata;
     float * segment1_output     = workspace;
     float * segment2_output     = segment1_output + output_size;
@@ -7668,15 +7657,6 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     // Wait for thread 0 to finish initialization
     ggml_barrier(params->threadpool);
 
-    // Create temporary params for each segment with adjusted workspace pointers
-    ggml_compute_params segment1_params = *params;
-    segment1_params.wdata = segment1_scratch;
-    segment1_params.wsize = scratch_total * sizeof(float);
-    
-    ggml_compute_params segment2_params = *params;
-    segment2_params.wdata = segment2_scratch;
-    segment2_params.wsize = scratch_total * sizeof(float);
-
     // Extract scale parameters from dst
     float scale         = 1.0f;
     float max_bias      = 0.0f;
@@ -7688,6 +7668,9 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
+        // Create params with adjusted workspace pointer for segment 1
+        ggml_compute_params segment1_params = *params;
+        segment1_params.wdata = segment1_scratch;
         ggml_flash_attn_ext_f16_segment(&segment1_params, q, k_fp16, v_fp16, mask_fp16, segment1_state, segment1_output, scale, max_bias, logit_softcap);
     } else if (params->ith == 0) {
         fprintf(stderr, "[MIXED-KV-DEBUG] Skipping FP16 segment: k_fp16=%p, v_fp16=%p, k_fp16->ne[1]=%ld\n", 
@@ -7696,13 +7679,16 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
     ggml_barrier(params->threadpool);
 
-    // Process quantized segment second
-    if (k_quant && v_quant && k_quant->ne[1] > 0) {
-        ggml_flash_attn_ext_f16_segment(&segment2_params, q, k_quant, v_quant, mask_quant, segment2_state, segment2_output, scale, max_bias, logit_softcap);
-    } else if (params->ith == 0) {
-        fprintf(stderr, "[DEBUG] Skipping segment 2: k_quant=%p, v_quant=%p, k_quant->ne[1]=%ld\n",
-                (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
-    }
+    // // Process quantized segment second
+    // if (k_quant && v_quant && k_quant->ne[1] > 0) {
+    //     // Create params with adjusted workspace pointer for segment 2
+    //     ggml_compute_params segment2_params = *params;
+    //     segment2_params.wdata = segment2_scratch;
+    //     ggml_flash_attn_ext_f16_segment(&segment2_params, q, k_quant, v_quant, mask_quant, segment2_state, segment2_output, scale, max_bias, logit_softcap);
+    // } else if (params->ith == 0) {
+    //     fprintf(stderr, "[DEBUG] Skipping segment 2: k_quant=%p, v_quant=%p, k_quant->ne[1]=%ld\n",
+    //             (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
+    // }
 
     // Wait for all threads to finish segment processing
     ggml_barrier(params->threadpool);
