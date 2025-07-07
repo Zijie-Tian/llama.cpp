@@ -18,7 +18,8 @@
 #include <vector>
 
 // Use fixed seed for reproducible results
-static std::mt19937 g_rng(std::random_device{}());
+// static std::mt19937 g_rng(std::random_device{}());
+static std::mt19937 g_rng(42);
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
     float *                               data       = (float *) dst->data;
@@ -37,6 +38,22 @@ static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_
 
     for (size_t i = 0; i < n_elements; i++) {
         data[i] = ggml_fp32_to_fp16(dis(g_rng));
+    }
+}
+
+static void set_tensor_f32(ggml_tensor * dst, float value) {
+    float * data = (float *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = value;
+    }
+}
+
+static void set_tensor_f16(ggml_tensor * dst, float value) {
+    ggml_fp16_t * data = (ggml_fp16_t *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = ggml_fp32_to_fp16(value);
     }
 }
 
@@ -210,7 +227,7 @@ int main() {
     const int n_kv_heads     = 1;
     const int seq_len        = 4;
     const int kv_len         = 1024;  // Will be split into segments
-    const int n_threads      = 12;
+    const int n_threads      = 1;
     const int kv_segments    = 2;  // Split KV into 2 segments
     const int kv_segment_len = kv_len / kv_segments;
 
@@ -274,6 +291,10 @@ int main() {
     fill_tensor_f32(q, -0.8f, 0.8f);
     fill_tensor_f16(k, -0.6f, 0.6f);
     fill_tensor_f16(v, -0.7f, 0.7f);
+
+    // set_tensor_f32(q, 2.0f);
+    // set_tensor_f16(k, 0.5f);
+    // set_tensor_f16(v, 0.25f);
 
     // Initialize mask (causal mask - positions can only see previous and current KV)
     ggml_fp16_t * mask_data = (ggml_fp16_t *) mask->data;
@@ -427,7 +448,6 @@ int main() {
 
     printf("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
 
-
     // =====================================================================
     // Test 3: PyTorch Verification using scaled_dot_product_attention
     // =====================================================================
@@ -553,6 +573,10 @@ int main() {
         printf("Idx | Standard    | Segmented   | S-G Diff\n");
         printf("----|-------------|-------------|-----------\n");
     }
+
+    // ============================================================================
+    // Print first 128 elements
+    // ============================================================================
 
     size_t show = std::min((size_t) head_dim * seq_len * n_heads, n_elems);
     for (size_t i = 0; i < show; ++i) {

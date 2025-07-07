@@ -7019,7 +7019,6 @@ static void ggml_compute_forward_flash_attn_ext_f16(
     GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
 
-
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
@@ -7194,8 +7193,8 @@ static void ggml_flash_attn_ext_f16_segment(
         const ggml_tensor * k,
         const ggml_tensor * v,
         const ggml_tensor * mask,
-        float * state_data,
         float * dst_data,
+        void * workspace,
         const float scale,
         const float max_bias,
         const float logit_softcap) {
@@ -7250,7 +7249,6 @@ static void ggml_flash_attn_ext_f16_segment(
 
     GGML_ASSERT(neq1 == N);      //> q -> ne[1] == q_len
 
-
     // broadcast factors
     const int64_t rk2 = neq2/nek2;     //> n_q_head / n_kv_head
     const int64_t rk3 = neq3/nek3;     //> n_q_batch / n_kv_batch
@@ -7259,16 +7257,12 @@ static void ggml_flash_attn_ext_f16_segment(
     const int64_t rv3 = neq3/nev3;     //> n_q_batch / n_v_batch
 
     // parallelize by q rows using ggml_vec_dot_f32
-
-    // total rows in q
     const int nr = neq1*neq2*neq3;     //> number of rows, one row is one head_dim.
 
     // NOTE: Parallelize by q rows.
-    // rows per thread
     const int dr = (nr + nth - 1)/nth;
 
-    // row range for this thread
-    const int ir0 = dr*ith;
+    const int ir0 = dr * ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
     float scale_adjusted = scale;
@@ -7293,35 +7287,33 @@ static void ggml_flash_attn_ext_f16_segment(
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
-        const int iq3 =  ir / (neq2*neq1);                  //>  ir / (n_q_head * seq_len)                      -> Batch idx.
-        const int iq2 = (ir - iq3*neq2*neq1) / neq1;        //> (ir - iq3 * n_q_head * seq_len) / seq_len       -> Head idx.
-        const int iq1 = (ir - iq3*neq2*neq1  - iq2*neq1);   //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   -> Sequence idx.
+        const int iq3 =  ir / (neq2*neq1);                  //>  ir / (n_q_head * seq_len)                      => Batch idx.
+        const int iq2 = (ir - iq3*neq2*neq1) / neq1;        //> (ir - iq3 * n_q_head * seq_len) / seq_len       => Head idx.
+        const int iq1 = (ir - iq3*neq2*neq1  - iq2*neq1);   //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   => Sequence idx.
 
         const uint32_t h = iq2; // head index
         const float slope = (max_bias > 0.0f) ? h < n_head_log2 ? powf(m0, h + 1) : powf(m1, 2*(h - n_head_log2) + 1) : 1.0f;
 
-        // Calculate state tensor offset for this head/position
-        const int64_t state_idx = iq2 * neq1 + iq1;         //> head_idx * seq_len + sequence_idx
-        
-        // DEBUG: Add bounds checking for state access
-        const int64_t max_state_elements = neq2 * neq1 * 2; // 2 for M and S
-        if (state_idx * 2 + 1 >= max_state_elements) {
-            fprintf(stderr, "[MIXED-KV-ERROR] State index out of bounds: state_idx=%ld, max_elements=%ld\n",
-                    state_idx, max_state_elements);
-            continue;
-        }
-        
-        // Initialize current segment's local max and sum
-        // Each segment computes independently - no previous state
-        float M = -INFINITY;
-        float S = 0.0f;
+        // float S = 0.0f;      // sum
+        // float M = -INFINITY; // maximum KQ value
 
-        float       * VKQ32 = (float       *) params->wdata + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
-        float       * V32   =                 (VKQ32 + 1*DV);   // (temporary) FP32 V buffer
-        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV);   // (temporary) FP16 VKQ accumulator
-        ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV);   // (temporary) buffer for Q converted to quantized/FP16
+        const size_t output_size    = N_Q_HEADS * Q_LEN * DV;
 
-        // Initialize VKQ accumulator for current segment computation
+        // float       * VKQ32 = (float       *) params->wdata + output_size * 2 
+        //     + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
+
+        float * state_data = (float *) workspace;
+
+        float       * VKQ32 = (float       *) workspace
+            + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
+
+        float       * V32   =                 (VKQ32 + 1*DV); // (temporary) FP32 V buffer
+        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1*DV); // (temporary) FP16 VKQ accumulator
+        ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2*DV); // (temporary) buffer for Q converted to quantized/FP16
+
+        float M = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0];
+        float S = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1];
+
         if (v->type == GGML_TYPE_F16) {
             memset(VKQ16, 0, DV*sizeof(ggml_fp16_t));
         } else {
@@ -7369,61 +7361,32 @@ static void ggml_flash_attn_ext_f16_segment(
         // online softmax / attention
         // loop over n_kv and n_head_kv
         // ref: https://arxiv.org/pdf/2112.05682.pdf
-        bool nopass = true;
-        int masked_count = 0;
-        int valid_count = 0;
-        
-        
+        int standard_valid = 0;
         for (int64_t ic = 0; ic < nek1; ++ic) {
             const float mv = mp ? slope*GGML_FP16_TO_FP32(mp[ic]) : 0.0f;
             if (mv == -INFINITY) {
-                masked_count++;
                 continue;
             }
-
-            valid_count++;
-            nopass = false;
+            standard_valid++;
 
             float s; // KQ value
 
             //> k_data: [head_dim, kv_len, n_kv_head, n_kv_batch]
             const char * k_data = (const char *) k->data + ( ic*nbk1 + ik2*nbk2 + ik3*nbk3);
-            
             kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
             
             // DEBUG: Check s before scaling
             float s_raw = s;
-            
-            s = s*scale_adjusted; // scale KQ value
 
-            // DEBUG: Check for NaN in attention score
-            if (isnan(s)) {
-                // fprintf(stderr, "[MIXED-KV-ERROR] NaN in attention score s=%f (raw=%f) at ic=%ld, nek1=%ld, scale=%f, DK=%ld\n", 
-                //         s, s_raw, ic, nek1, scale, DK);
-                // Check if k_data is valid
-                if (k->data == nullptr) {
-                    fprintf(stderr, "[MIXED-KV-ERROR] k->data is nullptr\n");
-                }
-                // Check Q_q
-                bool q_has_nan = false;
-                for (int i = 0; i < DK && i < 5; i++) {
-                    if (isnan(GGML_FP16_TO_FP32(Q_q[i]))) {
-                        q_has_nan = true;
-                        break;
-                    }
-                }
-                if (q_has_nan) {
-                    fprintf(stderr, "[MIXED-KV-ERROR] Q_q contains NaN\n");
-                }
-                continue; // Skip this position
+            s = s*scale; // scale KQ value
+            
+            // DEBUG: Check for NaN after scaling
+            if (isnan(s) && !isnan(s_raw)) {
+                fprintf(stderr, "[MIXED-KV-ERROR] NaN introduced by scaling: s_raw=%f, scale=%f, s=%f\n", s_raw, scale, s);
             }
 
             if (logit_softcap != 0.0f) {
                 s = logit_softcap*tanhf(s);
-                if (isnan(s)) {
-                    fprintf(stderr, "[MIXED-KV-ERROR] NaN after logit_softcap s=%f\n", s);
-                    continue;
-                }
             }
 
             s += mv; // apply mask
@@ -7475,72 +7438,35 @@ static void ggml_flash_attn_ext_f16_segment(
             }
 
             S = S*ms + vs; // scale and increment sum with partial sum
-
-            // DEBUG: Check for NaN in S
-            if ((isnan(S) || S < 0.0f)) {
-                fprintf(stderr, "[MIXED-KV-ERROR] Invalid S=%f after update, ms=%f, vs=%f\n", S, ms, vs);
-                S = vs; // Reset to current contribution
-            }
         }
 
-        // DEBUG: Final state validation
-        if ((nopass == false) && (isnan(M) || isnan(S) || S <= 0.0f)) {
-            fprintf(stderr, "[MIXED-KV-ERROR] Invalid final state: M=%f, S=%f, reinitializing\n", M, S);
-            M = -INFINITY;
-            S = 0.0f; // CRITICAL FIX: Invalid state means no contribution, sum should be 0
-        }
-
-        if (nopass == true) {
-            // When all tokens are masked in this segment - output zeros
-            M = -INFINITY;
-            S = 0.0f;
-
-            fprintf(stderr, "[MIXED-KV-ERROR] nopass at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
-            memset(VKQ32, 0, DV*sizeof(float));
-            
-        }
-
-        // Convert to F32 if needed
         if (v->type == GGML_TYPE_F16) {
             for (int64_t d = 0; d < DV; ++d) {
                 VKQ32[d] = GGML_FP16_TO_FP32(VKQ16[d]);
             }
         }
 
-        // IMPORTANT: Do NOT normalize (don't divide by S) - store unnormalized result
-        // The normalization will be done in the merge step
-        
-        // The segment function should NOT merge with previous state
-        // It should only compute its own segment's unnormalized output
-        // The merging happens in the main function
-        
-        // Write updated state back
-        state_data[state_idx * 2 + 0] = M;
-        state_data[state_idx * 2 + 1] = S;
-        
-        // Check for numerical validity
-        if (S <= 0.0f || isnan(S) || isinf(S)) {
-            fprintf(stderr, "[MIXED-KV-ERROR] S=%f, isnan(S)=%d, isinf(S)=%d at iq1=%d, iq2=%d, iq3=%d\n", S, isnan(S), isinf(S), iq1, iq2, iq3);
+        state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0] = M;
+        state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1] = S;
+
+        if (S != 0.0f) {
+            // V /= S
+            const float S_inv = 1.0f / S;
+            ggml_vec_scale_f32(DV, VKQ32, S_inv);
+        } else {
             memset(VKQ32, 0, DV*sizeof(float));
         }
+
+        // dst indices
+        const int i1 = iq1;
+        const int i2 = iq2;
+        const int i3 = iq3;
 
         // original
         // memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
 
-        // permute(0, 2, 1, 3) -> [head_dim, seq_len, n_q_head, n_q_batch]
-        // CRITICAL: Store unnormalized outputs for FlashDecoding++ algorithm
-        // The output will be normalized later when merging segments
-        //> iq3 -> batch idx.
-        //> iq2 -> head idx.
-        //> iq1 -> sequence idx.
-        //> dst use shape [head_dim, seq_len, n_q_head, n_q_batch]
-        int64_t dst_offset = (iq3 * ne2 * ne1 + iq2 + iq1 * ne1) * ne0; //> (batch_idx * n_q_head * seq_len + head_idx + sequence_idx * seq_len) * head_dim
-
-        if (*VKQ32 == 0.0f) {
-            fprintf(stderr, "[MIXED-KV-ERROR] VKQ32 is 0.0f at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
-        }
-
-        memcpy(dst_data + dst_offset, VKQ32, DV*sizeof(float));
+        // permute(0, 2, 1, 3)
+        memcpy((char *) dst_data + (i3*ne2*ne1 + i2 + i1*ne1)*nb1, VKQ32, nb1);
     }
 }
 
@@ -7554,104 +7480,41 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         const ggml_tensor * v_quant,
         const ggml_tensor * mask_quant,
         ggml_tensor * dst) {
-
+    
     GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
 
     const int64_t DK = q->ne[0];
     const int64_t Q_LEN = q->ne[1];
     const int64_t N_Q_HEADS = q->ne[2];
     const int64_t DV = dst->ne[0];
-    
-    // Check Q tensor at the very beginning
-    if (params->ith == 0) {
-        const float* q_data = (const float*)q->data;
-        int q_nan_count = 0;
-        int q_inf_count = 0;
-        int first_nan_idx = -1;
-        int first_inf_idx = -1;
-        
-        for (int64_t i = 0; i < ggml_nelements(q); ++i) {
-            if (isnan(q_data[i])) {
-                q_nan_count++;
-                if (first_nan_idx == -1) {
-                    first_nan_idx = i;
-                }
-            } else if (isinf(q_data[i])) {
-                q_inf_count++;
-                if (first_inf_idx == -1) {
-                    first_inf_idx = i;
-                }
-            }
-        }
-        
-        if (q_nan_count > 0 || q_inf_count > 0) {
-            fprintf(stderr, "[MIXED-KV-ERROR] Q tensor in flash_attn_ext_f16_with_state contains invalid values:\n");
-            fprintf(stderr, "  - NaN count: %d/%ld (first at index %d)\n", 
-                    q_nan_count, ggml_nelements(q), first_nan_idx);
-            fprintf(stderr, "  - Inf count: %d/%ld (first at index %d)\n", 
-                    q_inf_count, ggml_nelements(q), first_inf_idx);
-            fprintf(stderr, "  - Q tensor shape: [%ld, %ld, %ld, %ld]\n", neq0, neq1, neq2, neq3);
-            fprintf(stderr, "  - Q tensor strides: [%zu, %zu, %zu, %zu]\n", q->nb[0], q->nb[1], q->nb[2], q->nb[3]);
-            
-            // Print first few values around the first NaN
-            if (first_nan_idx >= 0) {
-                fprintf(stderr, "  - Values around first NaN (index %d):\n", first_nan_idx);
-                int start = (first_nan_idx >= 5) ? first_nan_idx - 5 : 0;
-                int end = (first_nan_idx + 5 < ggml_nelements(q)) ? first_nan_idx + 5 : ggml_nelements(q) - 1;
-                fprintf(stderr, "    ");
-                for (int i = start; i <= end; i++) {
-                    if (i == first_nan_idx) {
-                        fprintf(stderr, "[%g] ", q_data[i]);
-                    } else {
-                        fprintf(stderr, "%g ", q_data[i]);
-                    }
-                }
-                fprintf(stderr, "\n");
-            }
-            
-            // Optionally replace NaN/Inf values with zeros to prevent crashes
-            fprintf(stderr, "  - Replacing invalid values with zeros to continue execution\n");
-            float* q_data_mut = (float*)q->data;
-            for (int64_t i = 0; i < ggml_nelements(q); ++i) {
-                if (isnan(q_data_mut[i]) || isinf(q_data_mut[i])) {
-                    q_data_mut[i] = 0.0f;
-                }
-            }
-        }
-    }
 
     // Calculate workspace layout for two independent segments
     const size_t output_size    = N_Q_HEADS * Q_LEN * DV;
-    const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + CACHE_LINE_SIZE_F32);
+    const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + 2 * DV + DK + CACHE_LINE_SIZE_F32);
     const size_t scratch_total  = scratch_per_th * params->nth;
     const size_t state_elems    = 2 * neq2 * neq1;  // M and S for each head/position
 
     // Workspace:
-    float * workspace = (float *) params->wdata;
-    float * segment1_output     = workspace;
-    float * segment2_output     = segment1_output + output_size;
-    float * segment1_scratch    = segment2_output + output_size;
-    float * segment2_scratch    = segment1_scratch + scratch_total;
-    float * segment1_state      = segment2_scratch + scratch_total;
-    float * segment2_state      = segment1_state + state_elems;
-    
-    // Only thread 0 should initialize states and outputs
-    if (params->ith == 0) {
-        // Initialize both segment states
-        // M = -INFINITY ensures has_prev_state = false in segment function
-        for (int64_t i = 0; i < neq2 * neq1; ++i) {
-            segment1_state[2*i+0] = -INFINITY;
-            segment1_state[2*i+1] = 0.0f;
-            segment2_state[2*i+0] = -INFINITY;
-            segment2_state[2*i+1] = 0.0f;
-        }
-        
-        // Initialize segment outputs to zero
-        memset(segment1_output, 0, output_size * sizeof(float));
-        memset(segment2_output, 0, output_size * sizeof(float));
-        
-        // Initialize final destination to zero
-        ggml_set_f32(dst, 0.0f);
+    char * workspace = (char *) params->wdata;      //> wsize is bytes
+    size_t workspace_size = params->wsize;
+
+    char * imm_buffer_fp16 = workspace;
+    char * imm_buffer_quant = imm_buffer_fp16 + output_size * sizeof(float);
+
+    char * ws_thread_fp16  = workspace + 2 * output_size * sizeof(float)                                 + params -> ith * scratch_per_th * sizeof(float);
+    char * ws_thread_quant = workspace + 2 * output_size * sizeof(float) + scratch_total * sizeof(float) + params -> ith * scratch_per_th * sizeof(float);
+
+    // memset(imm_buffer_fp16,  0, output_size * sizeof(float));     //> initialize imm_buffer_fp16 to zero
+    // memset(imm_buffer_quant, 0, output_size * sizeof(float));     //> initialize imm_buffer_quant to zero
+
+    float * ws_state_thread_fp16  = (float *) ws_thread_fp16;
+    float * ws_state_thread_quant = (float *) ws_thread_quant;
+
+    for (int64_t i = 0; i < neq2 * neq1; ++i) {
+        ws_state_thread_fp16[2*i+0]  = -INFINITY;
+        ws_state_thread_fp16[2*i+1]  = 0.0f;
+        ws_state_thread_quant[2*i+0] = -INFINITY;
+        ws_state_thread_quant[2*i+1] = 0.0f;
     }
     
     // Wait for thread 0 to finish initialization
@@ -7668,172 +7531,187 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
-        // Create params with adjusted workspace pointer for segment 1
-        ggml_compute_params segment1_params = *params;
-        segment1_params.wdata = segment1_scratch;
-        ggml_flash_attn_ext_f16_segment(&segment1_params, q, k_fp16, v_fp16, mask_fp16, segment1_state, segment1_output, scale, max_bias, logit_softcap);
-    } else if (params->ith == 0) {
-        fprintf(stderr, "[MIXED-KV-DEBUG] Skipping FP16 segment: k_fp16=%p, v_fp16=%p, k_fp16->ne[1]=%ld\n", 
-                (void*)k_fp16, (void*)v_fp16, k_fp16 ? k_fp16->ne[1] : -1);
+        ggml_flash_attn_ext_f16_segment(
+            params, 
+            q, k_fp16, v_fp16, mask_fp16, 
+            (float*)imm_buffer_fp16, 
+            ws_thread_fp16,
+            scale, 
+            max_bias, 
+            logit_softcap
+        );
+    } 
+
+    ggml_barrier(params->threadpool);
+
+    if (k_quant && v_quant && k_quant->ne[1] > 0) {
+        ggml_flash_attn_ext_f16_segment(
+            params, 
+            q, k_quant, v_quant, mask_quant, 
+            (float*)imm_buffer_quant,
+            ws_thread_quant,
+            scale, 
+            max_bias, 
+            logit_softcap
+        );
     }
 
     ggml_barrier(params->threadpool);
 
-    // // Process quantized segment second
-    // if (k_quant && v_quant && k_quant->ne[1] > 0) {
-    //     // Create params with adjusted workspace pointer for segment 2
-    //     ggml_compute_params segment2_params = *params;
-    //     segment2_params.wdata = segment2_scratch;
-    //     ggml_flash_attn_ext_f16_segment(&segment2_params, q, k_quant, v_quant, mask_quant, segment2_state, segment2_output, scale, max_bias, logit_softcap);
-    // } else if (params->ith == 0) {
-    //     fprintf(stderr, "[DEBUG] Skipping segment 2: k_quant=%p, v_quant=%p, k_quant->ne[1]=%ld\n",
-    //             (void*)k_quant, (void*)v_quant, k_quant ? k_quant->ne[1] : -1);
-    // }
+    float * dst_data = (float*)dst->data;
+    float * imm_buffer_fp16_data = (float*)imm_buffer_fp16;
+    float * imm_buffer_quant_data = (float*)imm_buffer_quant;
 
-    // Wait for all threads to finish segment processing
-    ggml_barrier(params->threadpool);
+    for (int64_t i = 0; i < neq2 * neq1 * neq0; ++i) {
+        // dst_data[i] = imm_buffer_fp16_data[i];
+        dst_data[i] = imm_buffer_quant_data[i];
+    }
+
+    return;
+
+
+    // // Wait for all threads to finish segment processing
+    // ggml_barrier(params->threadpool);
     
-    // Final merge: combine the two segment outputs using FlashDecoding++ algorithm
-    // Only thread 0 should do the final merge
-    if (params->ith == 0) {
-        float* dst_data = (float*)dst->data;
+    // // Final merge: combine the two segment outputs using FlashDecoding++ algorithm
+    // // Only thread 0 should do the final merge
+    // if (params->ith == 0) {
+    //     float* dst_data = (float*)dst->data;
         
-        // Process all output positions using proper FlashDecoding++ merge
-        for (int64_t i = 0; i < output_size; ++i) {
-            // Since both dst and segment outputs use the same permuted layout,
-            // we can use the same index for accessing segment data
-            int64_t segment_idx = i;
+    //     // Process all output positions using proper FlashDecoding++ merge
+    //     for (int64_t i = 0; i < output_size; ++i) {
+    //         // Since both dst and segment outputs use the same permuted layout,
+    //         // we can use the same index for accessing segment data
+    //         int64_t segment_idx = i;
             
-            // For state lookup, we need to figure out which (h, p) position this is
-            // The permuted layout stores data as: (h + p * Q_LEN) * DV + d
-            // So we can extract h, p from the linear index
-            int64_t row_idx = i / DV;  // Which "row" of head_dim elements
-            int64_t d = i % DV;        // Which element within head_dim
+    //         // For state lookup, we need to figure out which (h, p) position this is
+    //         // The permuted layout stores data as: (h + p * Q_LEN) * DV + d
+    //         // So we can extract h, p from the linear index
+    //         int64_t row_idx = i / DV;  // Which "row" of head_dim elements
+    //         int64_t d = i % DV;        // Which element within head_dim
             
-            // From row_idx = h + p * Q_LEN, extract h and p
-            int64_t h = row_idx % Q_LEN;
-            int64_t p = row_idx / Q_LEN;
+    //         // From row_idx = h + p * Q_LEN, extract h and p
+    //         int64_t h = row_idx % Q_LEN;
+    //         int64_t p = row_idx / Q_LEN;
             
-            // Wait, that doesn't look right. Let me reconsider...
-            // The permutation formula is dst_offset = (i3*ne2*ne1 + i2 + i1*ne1)
-            // where i1=p, i2=h, ne1=Q_LEN, ne2=N_Q_HEADS
-            // So dst_offset = h + p * Q_LEN
-            // This means row h + p * Q_LEN contains the data for position p, head h
+    //         // Wait, that doesn't look right. Let me reconsider...
+    //         // The permutation formula is dst_offset = (i3*ne2*ne1 + i2 + i1*ne1)
+    //         // where i1=p, i2=h, ne1=Q_LEN, ne2=N_Q_HEADS
+    //         // So dst_offset = h + p * Q_LEN
+    //         // This means row h + p * Q_LEN contains the data for position p, head h
             
-            // Actually, we need to decode based on the actual permutation pattern
-            // The permutation stores data at offset: h + p * ne1 where ne1 = Q_LEN
-            // So for a given row_idx, we have: row_idx = h + p * Q_LEN
-            // This means: h = row_idx % Q_LEN and p = row_idx / Q_LEN
-            // But wait, that's wrong! Let me think again...
-            // Actually with ne1 = Q_LEN and ne2 = N_Q_HEADS:
-            // offset = h + p * Q_LEN means we cycle through heads first, then positions
-            // So: h = row_idx % N_Q_HEADS and p = row_idx / N_Q_HEADS
-            int64_t h_perm = row_idx % N_Q_HEADS;
-            int64_t p_perm = row_idx / N_Q_HEADS;
+    //         // Actually, we need to decode based on the actual permutation pattern
+    //         // The permutation stores data at offset: h + p * ne1 where ne1 = Q_LEN
+    //         // So for a given row_idx, we have: row_idx = h + p * Q_LEN
+    //         // This means: h = row_idx % Q_LEN and p = row_idx / Q_LEN
+    //         // But wait, that's wrong! Let me think again...
+    //         // Actually with ne1 = Q_LEN and ne2 = N_Q_HEADS:
+    //         // offset = h + p * Q_LEN means we cycle through heads first, then positions
+    //         // So: h = row_idx % N_Q_HEADS and p = row_idx / N_Q_HEADS
+    //         int64_t h_perm = row_idx % N_Q_HEADS;
+    //         int64_t p_perm = row_idx / N_Q_HEADS;
             
-            const int64_t state_idx = h_perm * Q_LEN + p_perm;
-            
-            
-            // Get states from both segments
-            float M1 = segment1_state[state_idx * 2 + 0];
-            float S1 = segment1_state[state_idx * 2 + 1];
-            float M2 = segment2_state[state_idx * 2 + 0];
-            float S2 = segment2_state[state_idx * 2 + 1];
+    //         const int64_t state_idx = h_perm * Q_LEN + p_perm;
             
             
+    //         // Get states from both segments
+    //         float M1 = segment1_state[state_idx * 2 + 0];
+    //         float S1 = segment1_state[state_idx * 2 + 1];
+    //         float M2 = segment2_state[state_idx * 2 + 0];
+    //         float S2 = segment2_state[state_idx * 2 + 1];
             
             
-            // Determine if segments have valid data
-            // Note: S=0 means no attention weights, which should result in zero output
-            // Also check for the case where M=0, S=0 which indicates no valid attention
-            bool has_seg1 = (M1 != -INFINITY && S1 > 0.0f && !isnan(S1));
-            bool has_seg2 = (M2 != -INFINITY && S2 > 0.0f && !isnan(S2));
             
-            // Special case: if both M and S are exactly 0, treat as no data
-            if (M1 == 0.0f && S1 == 0.0f) has_seg1 = false;
-            if (M2 == 0.0f && S2 == 0.0f) has_seg2 = false;
+    //         // Determine if segments have valid data
+    //         // Note: S=0 means no attention weights, which should result in zero output
+    //         // Also check for the case where M=0, S=0 which indicates no valid attention
+    //         bool has_seg1 = (M1 != -INFINITY && S1 > 0.0f && !isnan(S1));
+    //         bool has_seg2 = (M2 != -INFINITY && S2 > 0.0f && !isnan(S2));
+            
+    //         // Special case: if both M and S are exactly 0, treat as no data
+    //         if (M1 == 0.0f && S1 == 0.0f) has_seg1 = false;
+    //         if (M2 == 0.0f && S2 == 0.0f) has_seg2 = false;
             
             
-            if (has_seg1 && has_seg2) {
-                // Both segments have valid data - merge using FlashDecoding++ algorithm
-                float M_final = fmaxf(M1, M2);
-                float scale1 = expf(M1 - M_final);
-                float scale2 = expf(M2 - M_final);
-                float S_final = S1 * scale1 + S2 * scale2;
+    //         if (has_seg1 && has_seg2) {
+    //             // Both segments have valid data - merge using FlashDecoding++ algorithm
+    //             float M_final = fmaxf(M1, M2);
+    //             float scale1 = expf(M1 - M_final);
+    //             float scale2 = expf(M2 - M_final);
+    //             float S_final = S1 * scale1 + S2 * scale2;
                 
-                if (S_final > 0.0f && !isnan(S_final)) {
-                    float inv_S_final = 1.0f / S_final;
+    //             if (S_final > 0.0f && !isnan(S_final)) {
+    //                 float inv_S_final = 1.0f / S_final;
                     
-                    // The segment outputs are already unnormalized (not divided by S)
-                    // So we just need to rescale and normalize once
-                    float val1 = segment1_output[segment_idx];
-                    float val2 = segment2_output[segment_idx];
-                    dst_data[i] = (val1 * scale1 + val2 * scale2) * inv_S_final;
-                    
-                    
-                    // Final NaN check
-                    if (isnan(dst_data[i])) {
-                        dst_data[i] = 0.0f;
-                    }
-                } else {
-                    // Invalid combined state - zero output
-                    dst_data[i] = 0.0f;
-                }
-            } else if (has_seg1) {
-                // Only segment 1 has valid data
-                // The segment stores unnormalized output (sum of v * exp(score - M))
-                // To get the final normalized output, we divide by S1
-                // Add epsilon to avoid numerical instability when S is very small
-                const float epsilon = 1e-10f;
-                if (S1 > epsilon) {
-                    float inv_S1 = 1.0f / S1;
-                    dst_data[i] = segment1_output[segment_idx] * inv_S1;
+    //                 // The segment outputs are already unnormalized (not divided by S)
+    //                 // So we just need to rescale and normalize once
+    //                 float val1 = segment1_output[segment_idx];
+    //                 float val2 = segment2_output[segment_idx];
+    //                 dst_data[i] = (val1 * scale1 + val2 * scale2) * inv_S_final;
                     
                     
-                    if (isnan(dst_data[i]) || isinf(dst_data[i])) {
-                        dst_data[i] = 0.0f;
-                    }
-                } else {
-                    // S is too small - treat as no attention
-                    dst_data[i] = 0.0f;
-                }
-            } else if (has_seg2) {
-                // Only segment 2 has valid data
-                // The segment stores unnormalized output (sum of v * exp(score - M))
-                // To get the final normalized output, we divide by S2
-                const float epsilon = 1e-10f;
-                if (S2 > epsilon) {
-                    float inv_S2 = 1.0f / S2;
-                    dst_data[i] = segment2_output[segment_idx] * inv_S2;
+    //                 // Final NaN check
+    //                 if (isnan(dst_data[i])) {
+    //                     dst_data[i] = 0.0f;
+    //                 }
+    //             } else {
+    //                 // Invalid combined state - zero output
+    //                 dst_data[i] = 0.0f;
+    //             }
+    //         } else if (has_seg1) {
+    //             // Only segment 1 has valid data
+    //             // The segment stores unnormalized output (sum of v * exp(score - M))
+    //             // To get the final normalized output, we divide by S1
+    //             // Add epsilon to avoid numerical instability when S is very small
+    //             const float epsilon = 1e-10f;
+    //             if (S1 > epsilon) {
+    //                 float inv_S1 = 1.0f / S1;
+    //                 dst_data[i] = segment1_output[segment_idx] * inv_S1;
                     
-                    if (isnan(dst_data[i]) || isinf(dst_data[i])) {
-                        dst_data[i] = 0.0f;
-                    }
-                } else {
-                    // S is too small - treat as no attention
-                    dst_data[i] = 0.0f;
-                }
-            } else {
-                // Neither segment has valid data
-                dst_data[i] = 0.0f;
-            }
-        }
+                    
+    //                 if (isnan(dst_data[i]) || isinf(dst_data[i])) {
+    //                     dst_data[i] = 0.0f;
+    //                 }
+    //             } else {
+    //                 // S is too small - treat as no attention
+    //                 dst_data[i] = 0.0f;
+    //             }
+    //         } else if (has_seg2) {
+    //             // Only segment 2 has valid data
+    //             // The segment stores unnormalized output (sum of v * exp(score - M))
+    //             // To get the final normalized output, we divide by S2
+    //             const float epsilon = 1e-10f;
+    //             if (S2 > epsilon) {
+    //                 float inv_S2 = 1.0f / S2;
+    //                 dst_data[i] = segment2_output[segment_idx] * inv_S2;
+                    
+    //                 if (isnan(dst_data[i]) || isinf(dst_data[i])) {
+    //                     dst_data[i] = 0.0f;
+    //                 }
+    //             } else {
+    //                 // S is too small - treat as no attention
+    //                 dst_data[i] = 0.0f;
+    //             }
+    //         } else {
+    //             // Neither segment has valid data
+    //             dst_data[i] = 0.0f;
+    //         }
+    //     }
         
-        
-        // NOTE : Check if the attn_out is valid.
-        float* attn_out = (float*)dst->data;
+    //     // NOTE : Check if the attn_out is valid.
+    //     float* attn_out = (float*)dst->data;
 
-        for (int64_t i = 0; i < ggml_nelements(dst); ++i) {
-            // assert(!isnan(attn_out[i]));
+    //     for (int64_t i = 0; i < ggml_nelements(dst); ++i) {
+    //         // assert(!isnan(attn_out[i]));
 
-            if (isnan(attn_out[i])) {
-                // Silent NaN check - actual errors are handled above
-            }
-        }
-    }
+    //         if (isnan(attn_out[i])) {
+    //             // Silent NaN check - actual errors are handled above
+    //         }
+    //     }
+    // }
     
-    // Wait for thread 0 to finish the merge before allowing other threads to proceed
-    ggml_barrier(params->threadpool);
+    // // Wait for thread 0 to finish the merge before allowing other threads to proceed
+    // ggml_barrier(params->threadpool);
 }
 
 void ggml_compute_forward_flash_attn_ext_mixed(
