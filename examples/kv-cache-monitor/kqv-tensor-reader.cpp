@@ -911,7 +911,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         /*.ctx      = */ &ggml_ctx,
     };
 
-    const int n_threads = 1;
+    const int n_threads = 12;
 
     // NOTICE : This is GGUF_CONTEXT
     struct gguf_context* ctx = gguf_init_from_file(params.input_file.c_str(), gguf_params);
@@ -963,7 +963,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         ggml_tensor * Q = tensors[1].first;
         ggml_tensor * K = tensors[2].first;
         ggml_tensor * V = tensors[3].first;
-        ggml_tensor * kq_mask = tensors.size() > 4 ? tensors[4].first : nullptr;
+        ggml_tensor * KQ_mask = tensors.size() > 4 ? tensors[4].first : nullptr;
 
         // ggml_print_tensor((uint8_t*)K->data, K->type, K->ne, K->nb, 8);
         // ggml_print_tensor((uint8_t*)V->data, V->type, V->ne, V->nb, 8);
@@ -972,9 +972,9 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         ggml_tensor * V_quant = nullptr;
         ggml_tensor * KQ_mask_quant = nullptr;
         if (tensors.size() > 5) {
-            K_quant = tensors[5].first;
-            V_quant = tensors[6].first;
-            KQ_mask_quant = tensors[7].first;
+            K_quant         = tensors[5].first;
+            V_quant         = tensors[6].first;
+            KQ_mask_quant   = tensors[7].first;
             LOG_DBG("Quantized tensors - K_quant: %s, V_quant: %s, KQ_mask_quant: %s\n",
                     K_quant->name, V_quant->name, KQ_mask_quant->name);
         }
@@ -995,10 +995,10 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         int valid_count_quant   = 0;
         int valid_count_merged  = 0;
 
-        if (kq_mask) {
-            print_tensor_summary(kq_mask, "Mask");
+        if (KQ_mask) {
+            print_tensor_summary(KQ_mask, "Mask");
             // Count valid KV cache entries in the original mask
-            // valid_count_orig = count_valid_kv_cache_first_row(kq_mask, 0);
+            // valid_count_orig = count_valid_kv_cache_first_row(KQ_mask, 0);
         }
         if (K_quant && V_quant) {
             print_tensor_summary(K_quant, "K_quant");
@@ -1024,7 +1024,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
         );
         ggml_tensor * mask_merged = ggml_new_tensor_4d(
             compute_ctx, GGML_TYPE_F32, 
-            kq_mask->ne[0] + kq_mask->ne[0], kq_mask->ne[1], kq_mask->ne[2], kq_mask->ne[3]
+            KQ_mask->ne[0] + KQ_mask->ne[0], KQ_mask->ne[1], KQ_mask->ne[2], KQ_mask->ne[3]
         );
 
         struct ggml_cgraph * k_merge_graph = build_merge_kv_graph(compute_ctx, K_merged, K, K_quant);
@@ -1043,7 +1043,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
             return 1;
         }
 
-        struct ggml_cgraph * mask_merge_graph = build_merge_mask_graph(compute_ctx, mask_merged, kq_mask, KQ_mask_quant);
+        struct ggml_cgraph * mask_merge_graph = build_merge_mask_graph(compute_ctx, mask_merged, KQ_mask, KQ_mask_quant);
         enum ggml_status mask_status = ggml_graph_compute_with_ctx(compute_ctx, mask_merge_graph, 1);
         if (mask_status != GGML_STATUS_SUCCESS) {
             printf("ERROR: Mask merge computation failed with status: %d\n", mask_status);
@@ -1077,7 +1077,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
 
         //> Build Graph and compute flash attention with state
         struct ggml_cgraph * flash_result_with_state_graph = build_flash_attn_with_state_graph(
-            compute_ctx, Q, K, V, kq_mask, K_quant, V_quant, KQ_mask_quant, scale
+            compute_ctx, Q, K, V, KQ_mask, K_quant, V_quant, KQ_mask_quant, scale
         );
         ggml_tensor * flash_result_with_state = compute_graph(compute_ctx, flash_result_with_state_graph, n_threads);
 
@@ -1091,7 +1091,7 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
 
         LOG_INF("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
 
-        ggml_tensor * k_fp16_ref = nullptr;
+        ggml_tensor * k_fp16_ref   = nullptr;
         ggml_tensor * k_quant_part = nullptr;
         if (valid_count_quant != 0) {
             k_fp16_ref = ggml_view_2d(compute_ctx, K, K->ne[0], valid_count_quant, K->nb[1], 0);
@@ -1100,26 +1100,18 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
             struct ggml_cgraph * gf = ggml_new_graph(compute_ctx);
             ggml_build_forward_expand(gf, k_fp16_ref);
             ggml_build_forward_expand(gf, k_quant_part);
-            ggml_graph_compute_with_ctx(compute_ctx, gf, 8);  
+            ggml_graph_compute_with_ctx(compute_ctx, gf, n_threads);  
 
             print_tensor_summary(k_fp16_ref, "k_fp16_ref");
             print_tensor_summary(k_quant_part, "k_quant_part");
             LOG_INF("+-----------------------+---------------------------------------+--------------------------------------------------+----------+------------+\n");
-
-            // LOG_INF("K_fp16 : \n");
-            // ggml_print_tensor((uint8_t*)k_fp16_ref->data, k_fp16_ref->type, k_fp16_ref->ne, k_fp16_ref->nb, 8);
-            // LOG_INF("K_quant : \n");
-            // ggml_print_tensor((uint8_t*)k_quant_part->data, k_quant_part->type, k_quant_part->ne, k_quant_part->nb, 8);
         }
 
         struct ggml_cgraph * substract_graph = build_subtract_graph(compute_ctx, flash_result, flash_result_with_state);
         ggml_tensor * substract_result = compute_graph(compute_ctx, substract_graph, n_threads);
 
-        ggml_print_tensor((uint8_t*)substract_result->data, substract_result->type, substract_result->ne, substract_result->nb, 8);
-
-        // print_kqv_mask(kq_mask);
-
-        // print_kqv_mask(KQ_mask_quant);
+        print_kqv_mask(KQ_mask);
+        print_kqv_mask(KQ_mask_quant);
 
         // // > Print the tensor.        
         // LOG_INF("---------------   KQV Output (reshaped)  ---------------\n");
@@ -1131,12 +1123,11 @@ static bool read_kqv_tensors(const kqv_tensor_params& params) {
 
         // Calculate NMSE instead of printing tensors
         double nmse = calculate_nmse(flash_result, kqv_out_reshaped);
-        double nmse_state_vs_std = calculate_nmse(flash_result_with_state, flash_result);
-        double nmse_with_state = calculate_nmse(flash_result_with_state, kqv_out_reshaped);
+        // double nmse_state_vs_std = calculate_nmse(flash_result_with_state, flash_result);
+        double nmse_with_state = calculate_nmse(flash_result, kqv_out_reshaped);
         
         if (nmse >= 0.0) {
             LOG_INF("Step %d: Flash Attention vs KQV Output Comparison\n", step);
-            print_comparison_stats(flash_result, flash_result_with_state, nmse_state_vs_std);
             print_comparison_stats(flash_result_with_state, kqv_out_reshaped, nmse_with_state);
             nmse_results.push_back(nmse);
             valid_steps.push_back(step);

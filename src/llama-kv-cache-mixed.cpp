@@ -86,7 +86,7 @@ llama_kv_cache_mixed::llama_kv_cache_mixed(
         if (it == ctx_map.end()) {
             // Allocate enough memory for both FP16 and quantized tensors
             ggml_init_params params = {
-                /*.mem_size   =*/ size_t(8u*hparams.n_layer*ggml_tensor_overhead()), // Increase to 8x for mixed tensors
+                /*.mem_size   =*/ size_t(8u * hparams.n_layer*ggml_tensor_overhead()), // Increase to 8x for mixed tensors
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -144,14 +144,12 @@ llama_kv_cache_mixed::llama_kv_cache_mixed(
         // NOTICE: The FP16 tensors are not used during alignment testing, but they are used during quantization.
         layer.k_fp16    = ggml_new_tensor_2d(ctx, config.hot_type_k, n_embd_k_gqa, kv_size);
         layer.v_fp16    = ggml_new_tensor_2d(ctx, config.hot_type_v, n_embd_v_gqa, kv_size);
-        // layer.k_fp16    = ggml_new_tensor_2d(ctx, config.hot_type_k, n_embd_k_gqa, config.max_fp16_window + config.quantization_threshold);
-        // layer.v_fp16    = ggml_new_tensor_2d(ctx, config.hot_type_v, n_embd_v_gqa, config.max_fp16_window + config.quantization_threshold);
 
-        // Create quantized tensors (for future use, but not used during alignment testing)
+        //> Create quantized tensors (for future use, but not used during alignment testing)
         layer.k_quant   = ggml_new_tensor_2d(ctx, config.cold_type_k, n_embd_k_gqa, kv_size);
         layer.v_quant   = ggml_new_tensor_2d(ctx, config.cold_type_v, n_embd_v_gqa, kv_size);
 
-        // Use naming convention similar to unified cache for FP16 tensors
+        //> Use naming convention similar to unified cache for FP16 tensors
         ggml_format_name(layer.k_fp16,      "cache_k_l%d",          il);
         ggml_format_name(layer.v_fp16,      "cache_v_l%d",          il);
         ggml_format_name(layer.k_quant,     "cache_k_quant_l%d",    il);
@@ -279,7 +277,7 @@ void llama_kv_cache_mixed::clear() {
     head = 0;
     used = 0;
 
-    // Clear all layers and count tokens for debug output
+    //> Clear all layers and count tokens for debug output
     for (auto & layer : layers) {
         layer.quant_k_tokens = 0;
         layer.quant_v_tokens = 0;

@@ -26,6 +26,7 @@ CMD="./build-arm64/bin/llama-kqv-trace-monitor \
     --seed 1024 \
     -ctk f16 \
     -ctv f16 \
+    --mixed-kv-cache \
     --save-gguf reference_f16.gguf"
 echo "Executing: $CMD"
 eval $CMD > /dev/null 2>&1 && echo "✓ F16 reference created"
