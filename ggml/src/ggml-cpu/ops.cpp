@@ -7356,6 +7356,7 @@ static void ggml_flash_attn_ext_f16_segment(
             fprintf(stderr, "[MIXED-KV-ERROR] Found invalid values in Q at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
         }
         
+        // TODO: Modify this place, so we can access the KV cache in a block step.
         q_to_vec_dot(pq_temp, Q_q, DK);
 
         // online softmax / attention

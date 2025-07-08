@@ -2118,7 +2118,7 @@ static void quantize_row_q4_0_impl(const float * GGML_RESTRICT x, block_q4_0 * G
 
     float sum_x2 = 0;
     for (int j = 0; j < n_per_row; ++j) sum_x2 += x[j]*x[j];
-    float sigma2 = sum_x2/n_per_row;
+    float sigma2 = sum_x2 / n_per_row;
 
     const int64_t nb = n_per_row/QK4_0;
     for (int ib = 0; ib < nb; ++ib) {

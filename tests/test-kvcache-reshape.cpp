@@ -1,4 +1,5 @@
 #include <ggml.h>
+#include <ggml-cpu.h>
 #include <ggml-alloc.h>
 #include <ggml-backend.h>
 
@@ -6,13 +7,116 @@
 #include <cstdlib>
 #include <cstring>
 #include <cassert>
+#include <random>
 
-int main() {
-    printf("Testing KV cache tensor reshape with GGML\n");
-    
-    // Initialize GGML
+// Use fixed seed for reproducible results
+// static std::mt19937 g_rng(std::random_device{}());
+static std::mt19937 g_rng(42);
+
+static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
+    float *                               data       = (float *) dst->data;
+    size_t                                n_elements = ggml_nelements(dst);
+    std::uniform_real_distribution<float> dis(min_val, max_val);
+
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = dis(g_rng);
+    }
+}
+
+static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
+    ggml_fp16_t *                         data       = (ggml_fp16_t *) dst->data;
+    size_t                                n_elements = ggml_nelements(dst);
+    std::uniform_real_distribution<float> dis(min_val, max_val);
+
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = ggml_fp32_to_fp16(dis(g_rng));
+    }
+}
+
+static void set_tensor_f32(ggml_tensor * dst, float value) {
+    float * data = (float *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = value;
+    }
+}
+
+static void set_tensor_f16(ggml_tensor * dst, float value) {
+    ggml_fp16_t * data = (ggml_fp16_t *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = ggml_fp32_to_fp16(value);
+    }
+}
+
+static void print_tensor_info(const char * name, ggml_tensor * tensor) {
+    printf("%s: [%ld, %ld, %ld, %ld] type=%s, elements=%ld\n", name, tensor->ne[0], tensor->ne[1], tensor->ne[2],
+           tensor->ne[3], ggml_type_name(tensor->type), ggml_nelements(tensor));
+}
+
+static struct ggml_tensor * compute_graph(
+    ggml_context* ctx,
+    struct ggml_cgraph * gf,
+    int n_threads = 12
+) {
+    ggml_graph_compute_with_ctx(ctx, gf, n_threads);
+
+    return ggml_graph_node(gf, -1);
+}
+
+static void ggml_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne, const size_t * nb, int64_t n) {
+    GGML_ASSERT(n > 0);
+    float sum = 0;
+    for (int64_t i3 = 0; i3 < ne[3]; i3++) {
+        printf("                                     [\n");
+        for (int64_t i2 = 0; i2 < ne[2]; i2++) {
+            if (i2 == n && ne[2] > 2*n) {
+                printf("                                      ..., \n");
+                i2 = ne[2] - n;
+            }
+            printf("                                      [\n");
+            for (int64_t i1 = 0; i1 < ne[1]; i1++) {
+                if (i1 == n && ne[1] > 2*n) {
+                    printf("                                       ..., \n");
+                    i1 = ne[1] - n;
+                }
+                printf("                                       [");
+                for (int64_t i0 = 0; i0 < ne[0]; i0++) {
+                    if (i0 == n && ne[0] > 2*n) {
+                        printf("..., ");
+                        i0 = ne[0] - n;
+                    }
+                    size_t i = i3 * nb[3] + i2 * nb[2] + i1 * nb[1] + i0 * nb[0];
+                    float v;
+                    if (type == GGML_TYPE_F16) {
+                        v = ggml_fp16_to_fp32(*(ggml_fp16_t *) &data[i]);
+                    } else if (type == GGML_TYPE_F32) {
+                        v = *(float *) &data[i];
+                    } else if (type == GGML_TYPE_I32) {
+                        v = (float) *(int32_t *) &data[i];
+                    } else if (type == GGML_TYPE_I16) {
+                        v = (float) *(int16_t *) &data[i];
+                    } else if (type == GGML_TYPE_I8) {
+                        v = (float) *(int8_t *) &data[i];
+                    } else {
+                        GGML_ABORT("fatal error");
+                    }
+                    printf("%12.4f", v);
+                    sum += v;
+                    if (i0 < ne[0] - 1) printf(", ");
+                }
+                printf("],\n");
+            }
+            printf("                                      ],\n");
+        }
+        printf("                                     ]\n");
+        printf("                                     sum = %f\n", sum);
+    }
+}
+
+int main() {    
     struct ggml_init_params params = {
-        .mem_size   = 16*1024*1024,
+        .mem_size   = 1024*1024*1024,
         .mem_buffer = NULL,
         .no_alloc   = false,
     };
@@ -22,116 +126,40 @@ int main() {
         fprintf(stderr, "Failed to initialize GGML context\n");
         return 1;
     }
+
+    const int head_dim   = 128;
+    const int seq_len    = 1024;
+    const int n_heads    = 16;
+    const int n_kv_heads = 16;
+    const int kv_len     = 1024;
+
+    // Create tensors for flash attention
+    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads,   1);
+    ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
+    ggml_tensor * v = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
+
+    // Fill with FIXED reproducible data
+    printf("\nGenerating fixed test data (seed=42)...\n");
+    fill_tensor_f32(q, -0.8f, 0.8f);
+    fill_tensor_f16(k, -0.6f, 0.6f);
+    fill_tensor_f16(v, -0.7f, 0.7f);
+
+    print_tensor_info("Q", q);
+    print_tensor_info("K", k);
+    print_tensor_info("V", v);
+
+    ggml_tensor * k_quant = ggml_new_tensor_4d(ctx, GGML_TYPE_Q4_0, head_dim, kv_len, n_kv_heads, 1);    
+
+    struct ggml_cgraph * gf = ggml_new_graph(ctx);
+    ggml_tensor * cpy_dst = ggml_cpy(ctx, k, k_quant);
+    ggml_build_forward_expand(gf, cpy_dst);
+
+    struct ggml_tensor * result = compute_graph(ctx, gf, 12);
     
-    // Create a KV cache-like tensor
-    // Typical KV cache dimensions: [n_embd, n_head, n_ctx, n_batch]
-    // Let's use smaller dimensions for testing
-    const int64_t n_embd = 128;   // embedding dimension
-    const int64_t n_head = 8;     // number of heads
-    const int64_t n_ctx = 64;     // context length
-    const int64_t n_batch = 4;    // batch size
-    
-    printf("Creating KV cache tensor with shape [%lld, %lld, %lld, %lld]\n", 
-           n_embd, n_head, n_ctx, n_batch);
-    
-    // Create the original tensor
-    struct ggml_tensor * kv_cache = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, 
-                                                        n_embd, n_head, n_ctx, n_batch);
-    
-    // Fill with some test data
-    float * data = (float *)kv_cache->data;
-    for (int i = 0; i < ggml_nelements(kv_cache); i++) {
-        data[i] = (float)(i % 100) / 100.0f;
-    }
-    
-    printf("Original tensor shape: [%lld, %lld, %lld, %lld]\n", 
-           kv_cache->ne[0], kv_cache->ne[1], kv_cache->ne[2], kv_cache->ne[3]);
-    printf("Total elements: %lld\n", ggml_nelements(kv_cache));
-    
-    // Test reshape operation 1: Merge head and embedding dimensions
-    // New shape: [n_embd * n_head, n_ctx, n_batch]
-    struct ggml_tensor * reshaped1 = ggml_reshape_3d(ctx, kv_cache, 
-                                                      n_embd * n_head, n_ctx, n_batch);
-    
-    printf("\nReshape 1 - Merged head and embedding dimensions:\n");
-    printf("New shape: [%lld, %lld, %lld]\n", 
-           reshaped1->ne[0], reshaped1->ne[1], reshaped1->ne[2]);
-    printf("Total elements: %lld\n", ggml_nelements(reshaped1));
-    
-    // Verify the data is still accessible correctly
-    float * reshaped1_data = (float *)reshaped1->data;
-    bool reshape1_valid = true;
-    for (int i = 0; i < 10; i++) {
-        if (data[i] != reshaped1_data[i]) {
-            reshape1_valid = false;
-            break;
-        }
-    }
-    printf("Reshape 1 data integrity: %s\n", reshape1_valid ? "PASS" : "FAIL");
-    
-    // Test reshape operation 2: Flatten to 2D
-    // New shape: [n_embd * n_head, n_ctx * n_batch]
-    struct ggml_tensor * reshaped2 = ggml_reshape_2d(ctx, kv_cache, 
-                                                      n_embd * n_head, n_ctx * n_batch);
-    
-    printf("\nReshape 2 - Flattened to 2D:\n");
-    printf("New shape: [%lld, %lld]\n", reshaped2->ne[0], reshaped2->ne[1]);
-    printf("Total elements: %lld\n", ggml_nelements(reshaped2));
-    
-    // Verify the data
-    float * reshaped2_data = (float *)reshaped2->data;
-    bool reshape2_valid = true;
-    for (int i = 0; i < 10; i++) {
-        if (data[i] != reshaped2_data[i]) {
-            reshape2_valid = false;
-            break;
-        }
-    }
-    printf("Reshape 2 data integrity: %s\n", reshape2_valid ? "PASS" : "FAIL");
-    
-    // Test reshape operation 3: Complete flatten to 1D
-    struct ggml_tensor * reshaped3 = ggml_reshape_1d(ctx, kv_cache, 
-                                                      n_embd * n_head * n_ctx * n_batch);
-    
-    printf("\nReshape 3 - Flattened to 1D:\n");
-    printf("New shape: [%lld]\n", reshaped3->ne[0]);
-    printf("Total elements: %lld\n", ggml_nelements(reshaped3));
-    
-    // Verify the data
-    float * reshaped3_data = (float *)reshaped3->data;
-    bool reshape3_valid = true;
-    for (int i = 0; i < 10; i++) {
-        if (data[i] != reshaped3_data[i]) {
-            reshape3_valid = false;
-            break;
-        }
-    }
-    printf("Reshape 3 data integrity: %s\n", reshape3_valid ? "PASS" : "FAIL");
-    
-    // Test reshape back to original dimensions
-    struct ggml_tensor * reshaped_back = ggml_reshape_4d(ctx, reshaped3,
-                                                          n_embd, n_head, n_ctx, n_batch);
-    
-    printf("\nReshape back to original 4D:\n");
-    printf("New shape: [%lld, %lld, %lld, %lld]\n", 
-           reshaped_back->ne[0], reshaped_back->ne[1], 
-           reshaped_back->ne[2], reshaped_back->ne[3]);
-    
-    // Verify dimensions match original
-    bool dims_match = (reshaped_back->ne[0] == kv_cache->ne[0] &&
-                       reshaped_back->ne[1] == kv_cache->ne[1] &&
-                       reshaped_back->ne[2] == kv_cache->ne[2] &&
-                       reshaped_back->ne[3] == kv_cache->ne[3]);
-    
-    printf("Dimensions match original: %s\n", dims_match ? "PASS" : "FAIL");
-    
+    print_tensor_info("K_quant", k_quant);
+
     // Clean up
     ggml_free(ctx);
-    
-    // Summary
-    printf("\n=== Test Summary ===\n");
-    printf("All tests %s\n", 
-           (reshape1_valid && reshape2_valid && reshape3_valid && dims_match) ? "PASSED" : "FAILED");
     
     return 0;
 }
