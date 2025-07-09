@@ -227,29 +227,29 @@ typedef struct {
 static_assert(sizeof(block_q8_1) == 2*sizeof(ggml_half) + QK8_1, "wrong q8_1 block size/padding");
 
 //> Added QLUTATTN block
-#define QKLUTATTN_W1G128 16
+#define QKLUTATTN_W1G128 128
 typedef struct {
     ggml_half d;                // scale
     ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W1G128];    // 8-bit quants
+    uint8_t   qs[QKLUTATTN_W1G128 / 8];    // 8-bit quants
 } block_qlutattn_w1g128;
-static_assert(sizeof(block_qlutattn_w1g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W1G128, "wrong qlutattn_w1g128 block size/padding");
+static_assert(sizeof(block_qlutattn_w1g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W1G128 / 8, "wrong qlutattn_w1g128 block size/padding");
 
-#define QKLUTATTN_W2G128 32
+#define QKLUTATTN_W2G128 128
 typedef struct {
     ggml_half d;                // scale
     ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W2G128];    // 8-bit quants
+    uint8_t   qs[QKLUTATTN_W2G128 / 4];    // 8-bit quants
 } block_qlutattn_w2g128;
-static_assert(sizeof(block_qlutattn_w2g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W2G128, "wrong qlutattn_w2g128 block size/padding");
+static_assert(sizeof(block_qlutattn_w2g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W2G128 / 4, "wrong qlutattn_w2g128 block size/padding");
 
-#define QKLUTATTN_W4G128 64
+#define QKLUTATTN_W4G128 128
 typedef struct {
     ggml_half d;                // scale
     ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W4G128];    // 8-bit quants
+    uint8_t   qs[QKLUTATTN_W4G128 / 2];    // 8-bit quants
 } block_qlutattn_w4g128;
-static_assert(sizeof(block_qlutattn_w4g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G128, "wrong qlutattn_w4g128 block size/padding");
+static_assert(sizeof(block_qlutattn_w4g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G128 / 2, "wrong qlutattn_w4g128 block size/padding");
 
 //
 // Ternary quantization

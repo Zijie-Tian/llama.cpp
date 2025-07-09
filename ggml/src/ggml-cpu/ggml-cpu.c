@@ -429,19 +429,37 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .nrows                    = 1,
     },
 #endif
-    [GGML_TYPE_QLUTATTN_W1G128] = {
+    [GGML_TYPE_QLUTATTN_W1G128_K] = {
         .from_float               = quantize_row_qlutattn_w1g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_W2G128] = {
+    [GGML_TYPE_QLUTATTN_W2G128_K] = {
         .from_float               = quantize_row_qlutattn_w2g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_W4G128] = {
+    [GGML_TYPE_QLUTATTN_W4G128_K] = {
+        .from_float               = quantize_row_qlutattn_w4g128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_QLUTATTN_W1G128_V] = {
+        .from_float               = quantize_row_qlutattn_w1g128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_QLUTATTN_W2G128_V] = {
+        .from_float               = quantize_row_qlutattn_w2g128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_QLUTATTN_W4G128_V] = {
         .from_float               = quantize_row_qlutattn_w4g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,

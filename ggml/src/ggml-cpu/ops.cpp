@@ -40,6 +40,15 @@ static void ggml_compute_forward_dup_same_cont(
     }
 }
 
+static bool is_qlutattn_type(ggml_type type) {
+    return type == GGML_TYPE_QLUTATTN_W1G128_K ||
+           type == GGML_TYPE_QLUTATTN_W2G128_K ||
+           type == GGML_TYPE_QLUTATTN_W4G128_K ||
+           type == GGML_TYPE_QLUTATTN_W1G128_V ||
+           type == GGML_TYPE_QLUTATTN_W2G128_V ||
+           type == GGML_TYPE_QLUTATTN_W4G128_V;
+}
+
 static void ggml_compute_forward_dup_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -116,13 +125,42 @@ static void ggml_compute_forward_dup_f16(
                         id += ne00 * (ne01 - ir1);
                     }
                 }
+            } else if (is_qlutattn_type(dst->type) && ggml_get_type_traits_cpu(dst->type)->from_float) {
+                // NOTICE: This is QLUTATTN quantization.
+                ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
+                float * src0_f32 = (float *) params->wdata + (ne00 + CACHE_LINE_SIZE_F32) * ith;
+                
+                size_t id = 0;
+                size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));   //> dst -> dtype_size * n_qgroup
+                char * dst_ptr = (char *) dst->data;
+
+                for (int i03 = 0; i03 < ne03; i03++) {
+                    for (int i02 = 0; i02 < ne02; i02++) {
+                        id += rs * ir0;
+                        for (int i01 = ir0; i01 < ir1; i01++) {
+                            const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+
+                            for (int i00 = 0; i00 < ne00; i00++) {
+                                src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
+                            }
+
+                            //> dst_ptr is CHAR type.
+                            quantize_row_q(src0_f32, dst_ptr + id, ne00);
+                            id += rs;
+                        }
+                        id += rs * (ne01 - ir1);    // NOTE : this thread only quantize specific rows.
+                    }
+                }
+                
+                GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
+
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
                 // NOTICE: Do quant here.
                 ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
                 float * src0_f32 = (float *) params->wdata + (ne00 + CACHE_LINE_SIZE_F32) * ith;
 
                 size_t id = 0;
-                size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));
+                size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));   //> dtype_size * n_qgroup
                 char * dst_ptr = (char *) dst->data;
 
                 for (int i03 = 0; i03 < ne03; i03++) {
@@ -141,7 +179,7 @@ static void ggml_compute_forward_dup_f16(
                         id += rs * (ne01 - ir1);
                     }
                 }
-                // GGML_LOG_INFO("DO QUANT: id=%u, rs=%u, ne00=%u, ne01=%u, ne02=%u, ne03=%u\n", id, rs, ne00, ne01, ne02, ne03);
+                GGML_LOG_INFO("DO QUANT: id=%u, rs=%u, ne00=%u, ne01=%u, ne02=%u, ne03=%u\n", id, rs, ne00, ne01, ne02, ne03);
             } else {
                 GGML_ABORT("fatal error"); // TODO: implement
             }
@@ -1152,7 +1190,7 @@ static void ggml_compute_forward_dup_q(
         uint32_t i = ir * qk;
 
         const int64_t i03 = i/(ne00 * ne01 * ne02);
-        const int64_t i02 = (i - i03*ne00*ne01*ne02 )/ (ne00*ne01);
+        const int64_t i02 = (i - i03*ne00*ne01*ne02 ) / (ne00*ne01);
         const int64_t i01 = (i - i03*ne00*ne01*ne02  -  i02*ne01*ne00) / ne00;
         const int64_t i00 = i - i03*ne00*ne01*ne02 - i02*ne01*ne00 - i01*ne00;
         const int64_t x_offset = (i00/qk)*nb00 + i01*nb01 + i02*nb02 + i03 * nb03;
@@ -7019,6 +7057,8 @@ static void ggml_compute_forward_flash_attn_ext_f16(
     GGML_ASSERT((                            q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float  ) && "fattn: unsupported V-type");
 
+    // GGML_ASSERT
+
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
@@ -7042,7 +7082,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         } else {
             memset(VKQ32, 0, DV*sizeof(float));
         }
-        
+
         // Initialize Q_q buffer to prevent NaN
         memset(Q_q, 0, DK*sizeof(ggml_fp16_t));
 
@@ -7057,11 +7097,11 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         const int iv2 = iq2 / rv2;
 
         const float * pq = (const float *) ((char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3));
-        
+
         // Validate and sanitize Q values before conversion
         float pq_temp[512]; // Temporary buffer for sanitized Q values (DK should be <= 512)
         GGML_ASSERT(DK <= 512);
-        
+
         bool found_invalid = false;
         for (int i = 0; i < DK; i++) {
             if (isnan(pq[i]) || isinf(pq[i])) {
@@ -7074,11 +7114,11 @@ static void ggml_compute_forward_flash_attn_ext_f16(
                 pq_temp[i] = pq[i];
             }
         }
-        
+
         if (found_invalid && ith == 0 && iq1 == 0 && iq2 == 0) {
             fprintf(stderr, "[MIXED-KV-ERROR] Found invalid values in Q at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
         }
-        
+
         q_to_vec_dot(pq_temp, Q_q, DK);
 
         // online softmax / attention
@@ -7097,12 +7137,12 @@ static void ggml_compute_forward_flash_attn_ext_f16(
             //> k_data: [head_dim, kv_len, n_kv_head, n_kv_batch]
             const char * k_data = (const char *) k->data + ( ic*nbk1 + ik2*nbk2 + ik3*nbk3);
             kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
-            
+
             // DEBUG: Check s before scaling
             float s_raw = s;
 
             s = s*scale; // scale KQ value
-            
+
             // DEBUG: Check for NaN after scaling
             if (isnan(s) && !isnan(s_raw)) {
                 fprintf(stderr, "[MIXED-KV-ERROR] NaN introduced by scaling: s_raw=%f, scale=%f, s=%f\n", s_raw, scale, s);
@@ -7172,7 +7212,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         // V /= S
         const float S_inv = 1.0f / S;
         ggml_vec_scale_f32(DV, VKQ32, S_inv);
-        
+
 
         // dst indices
         const int i1 = iq1;
@@ -7217,7 +7257,7 @@ static void ggml_flash_attn_ext_f16_segment(
     const int64_t ne2 = neq1;  // Q_LEN
     const int64_t ne3 = neq3;  // batch
 
-    //> Reconstruct the nb 
+    //> Reconstruct the nb
     const int64_t nb0 = sizeof(float);
     const int64_t nb1 = ne0 * nb0;
     const int64_t nb2 = ne1 * nb1;
@@ -7299,7 +7339,7 @@ static void ggml_flash_attn_ext_f16_segment(
 
         const size_t output_size    = N_Q_HEADS * Q_LEN * DV;
 
-        // float       * VKQ32 = (float       *) params->wdata + output_size * 2 
+        // float       * VKQ32 = (float       *) params->wdata + output_size * 2
         //     + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
 
         float * state_data = (float *) workspace;
@@ -7319,7 +7359,7 @@ static void ggml_flash_attn_ext_f16_segment(
         } else {
             memset(VKQ32, 0, DV*sizeof(float));
         }
-        
+
         // Initialize Q_q buffer to prevent NaN
         memset(Q_q, 0, DK*sizeof(ggml_fp16_t));
 
@@ -7334,11 +7374,11 @@ static void ggml_flash_attn_ext_f16_segment(
         const int iv2 = iq2 / rv2;
 
         const float * pq = (const float *) ((char *) q->data + (iq1*nbq1 + iq2*nbq2 + iq3*nbq3));
-        
+
         // Validate and sanitize Q values before conversion
         float pq_temp[512]; // Temporary buffer for sanitized Q values (DK should be <= 512)
         GGML_ASSERT(DK <= 512);
-        
+
         bool found_invalid = false;
         for (int i = 0; i < DK; i++) {
             if (isnan(pq[i]) || isinf(pq[i])) {
@@ -7351,11 +7391,11 @@ static void ggml_flash_attn_ext_f16_segment(
                 pq_temp[i] = pq[i];
             }
         }
-        
+
         if (found_invalid && ith == 0 && iq1 == 0 && iq2 == 0) {
             fprintf(stderr, "[MIXED-KV-ERROR] Found invalid values in Q at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
         }
-        
+
         // TODO: Modify this place, so we can access the KV cache in a block step.
         q_to_vec_dot(pq_temp, Q_q, DK);
 
@@ -7375,12 +7415,12 @@ static void ggml_flash_attn_ext_f16_segment(
             //> k_data: [head_dim, kv_len, n_kv_head, n_kv_batch]
             const char * k_data = (const char *) k->data + ( ic*nbk1 + ik2*nbk2 + ik3*nbk3);
             kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
-            
+
             // DEBUG: Check s before scaling
             float s_raw = s;
 
             s = s*scale; // scale KQ value
-            
+
             // DEBUG: Check for NaN after scaling
             if (isnan(s) && !isnan(s_raw)) {
                 fprintf(stderr, "[MIXED-KV-ERROR] NaN introduced by scaling: s_raw=%f, scale=%f, s=%f\n", s_raw, scale, s);
@@ -7481,7 +7521,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         const ggml_tensor * v_quant,
         const ggml_tensor * mask_quant,
         ggml_tensor * dst) {
-    
+
     GGML_TENSOR_LOCALS(int64_t, neq,  q, ne)
     GGML_TENSOR_LOCALS(size_t,  nbq,  q, nb)
     GGML_TENSOR_LOCALS(int64_t, ne, dst, ne)
@@ -7520,7 +7560,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
         ws_state_thread_quant[2*i+0] = -INFINITY;
         ws_state_thread_quant[2*i+1] = 0.0f;
     }
-    
+
     // Wait for thread 0 to finish initialization
     ggml_barrier(params->threadpool);
 
@@ -7528,7 +7568,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     float scale         = 1.0f;
     float max_bias      = 0.0f;
     float logit_softcap = 0.0f;
-    
+
     memcpy(&scale,         (float *) dst->op_params + 0, sizeof(float));
     memcpy(&max_bias,      (float *) dst->op_params + 1, sizeof(float));
     memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
@@ -7536,26 +7576,26 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
         ggml_flash_attn_ext_f16_segment(
-            params, 
-            q, k_fp16, v_fp16, mask_fp16, 
-            (float*)imm_buffer_fp16, 
+            params,
+            q, k_fp16, v_fp16, mask_fp16,
+            (float*)imm_buffer_fp16,
             ws_thread_fp16,
-            scale, 
-            max_bias, 
+            scale,
+            max_bias,
             logit_softcap
         );
-    } 
+    }
 
     ggml_barrier(params->threadpool);
 
     if (k_quant && v_quant && k_quant->ne[1] > 0) {
         ggml_flash_attn_ext_f16_segment(
-            params, 
-            q, k_quant, v_quant, mask_quant, 
+            params,
+            q, k_quant, v_quant, mask_quant,
             (float*)imm_buffer_quant,
             ws_thread_quant,
-            scale, 
-            max_bias, 
+            scale,
+            max_bias,
             logit_softcap
         );
     }
@@ -7601,7 +7641,7 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(
 
         // ggml_vec_add_f32(DV, dst_data, imm_fp16_vec, imm_quant_vec);
     }
-    
+
     ggml_barrier(params->threadpool);
 }
 
@@ -7616,7 +7656,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(
         ggml_tensor * dst) {
     GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
     GGML_TENSOR_LOCALS(size_t,  nbq, q,   nb)
-    
+
     // Check Q tensor at mixed KV cache entry point
     if (params->ith == 0) {
         const float* q_data = (const float*)q->data;
@@ -7630,11 +7670,11 @@ void ggml_compute_forward_flash_attn_ext_mixed(
             }
         }
         if (q_nan_count > 0) {
-            fprintf(stderr, "[MIXED-KV-ERROR] Total NaN in Q (flash_attn_ext_mixed): %d/%ld\n", 
+            fprintf(stderr, "[MIXED-KV-ERROR] Total NaN in Q (flash_attn_ext_mixed): %d/%ld\n",
                     q_nan_count, ggml_nelements(q));
             // Try to trace where the NaN comes from
             fprintf(stderr, "[MIXED-KV-ERROR] Q tensor shape: [%ld, %ld, %ld, %ld]\n", neq0, neq1, neq2, neq3);
-            
+
             // NOTE: The real issue is that Q contains NaN before flash attention
             // This needs to be investigated at the model level
         }
@@ -7661,7 +7701,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(
     const int64_t DV            = nev0;     //> head_dim for values
     const int64_t SEQ_LEN       = neq1;     //> q_len
     const int64_t KV_LEN_FP16   = nek1;     //> fp16 kv sequence length
-    const int64_t KV_LEN_QUANT  = nek_quant1; //> quantized kv sequence length  
+    const int64_t KV_LEN_QUANT  = nek_quant1; //> quantized kv sequence length
     const int64_t KV_LEN        = KV_LEN_FP16 + KV_LEN_QUANT; //> total kv sequence length
     const int64_t N_KV_HEAD     = nek2;     //> number of kv heads
     const int64_t N_Q_HEADS     = neq2;     //> number of query heads
@@ -7750,7 +7790,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(
         for (int64_t kv_head = 0; kv_head < N_KV_HEAD; ++ kv_head) {
             const char * k_data = nullptr;
             const char * v_data = nullptr;
-            
+
             // Determine which tensor to use based on kv_pos
             if (kv_pos < KV_LEN_FP16) {
                 // Use FP16 tensors
@@ -7862,7 +7902,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(
             for (int t = 1; t < nth; ++t) {
                 float * t_workspace = (float *) params->wdata + t * (OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV + Q_Q_SIZE_FLOATS + 1 + CACHE_LINE_SIZE_F32);
                 volatile float * t_sync_buffer = (volatile float *)(t_workspace + OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV + Q_Q_SIZE_FLOATS);
-                
+
                 // Add memory barrier before reading
 #if defined(__GNUC__) || defined(__clang__)
                 __sync_synchronize();
@@ -7872,12 +7912,12 @@ void ggml_compute_forward_flash_attn_ext_mixed(
                     break;
                 }
             }
-            
+
             // Add a small delay to avoid busy-waiting too aggressively
             if (!all_threads_ready) {
                 usleep(1); // Sleep for 1 microsecond
             }
-            
+
             wait_cycles++;
         }
 
@@ -7980,13 +8020,13 @@ void ggml_compute_forward_flash_attn_ext(
         case GGML_PREC_DEFAULT:
         case GGML_PREC_WITH_STATE:
             {
-                // ggml_tensor * 
-                
+                // ggml_tensor *
+
                 // Enhanced function with state managed via workspace
                 // CRITICAL FIX: mask_quant should be NULL if not provided
                 const ggml_tensor * mask_quant = (dst->src[6] != NULL) ? dst->src[6] : NULL;
                 ggml_compute_forward_flash_attn_ext_f16_with_state(
-                    params, 
+                    params,
                     q, k, v, mask,
                     k_quant, v_quant, mask_quant, dst
                 );

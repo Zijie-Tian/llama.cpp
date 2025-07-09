@@ -617,24 +617,42 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .is_quantized             = false,
     },
 #endif
-    [GGML_TYPE_QLUTATTN_W1G128] = {
-        .type_name                = "qlutattn_w1g128",
-        .blck_size                = 128,
-        .type_size                = sizeof(block_qlutattn_w1g128),
-        .is_quantized             = true,
-    },
-    [GGML_TYPE_QLUTATTN_W2G128] = {
-        .type_name                = "qlutattn_w2g128",
-        .blck_size                = 128,
-        .type_size                = sizeof(block_qlutattn_w2g128),
-        .is_quantized             = true,
-    },
-    [GGML_TYPE_QLUTATTN_W4G128] = {
-        .type_name                = "qlutattn_w4g128",
-        .blck_size                = 128,
-        .type_size                = sizeof(block_qlutattn_w4g128),
-        .is_quantized             = true,
-    },
+    // [GGML_TYPE_QLUTATTN_W1G128_K] = {
+    //     .type_name                = "qlutattn_w1g128_k",
+    //     .blck_size                = 128,
+    //     .type_size                = sizeof(block_qlutattn_w1g128),
+    //     .is_quantized             = true,
+    // },
+    // [GGML_TYPE_QLUTATTN_W2G128_K] = {
+    //     .type_name                = "qlutattn_w2g128_k",
+    //     .blck_size                = 128,
+    //     .type_size                = sizeof(block_qlutattn_w2g128),
+    //     .is_quantized             = true,
+    // },
+    // [GGML_TYPE_QLUTATTN_W4G128_K] = {
+    //     .type_name                = "qlutattn_w4g128_k",
+    //     .blck_size                = 128,
+    //     .type_size                = sizeof(block_qlutattn_w4g128),
+    //     .is_quantized             = true,
+    // },
+    // [GGML_TYPE_QLUTATTN_W1G128_V] = {
+    //     .type_name                = "qlutattn_w1g128_v",
+    //     .blck_size                = 128,
+    //     .type_size                = sizeof(block_qlutattn_w1g128),
+    //     .is_quantized             = true,
+    // },
+    // [GGML_TYPE_QLUTATTN_W2G128_V] = {
+    //     .type_name                = "qlutattn_w2g128_v",
+    //     .blck_size                = 128,
+    //     .type_size                = sizeof(block_qlutattn_w2g128),
+    //     .is_quantized             = true,
+    // },
+    // [GGML_TYPE_QLUTATTN_W4G128_V] = {
+    //     .type_name                = "qlutattn_w4g128_v",
+    //     .blck_size                = 128,
+    //     .type_size                = sizeof(block_qlutattn_w4g128),
+    //     .is_quantized             = true,
+    // },
     [GGML_TYPE_I8] = {
         .type_name                = "i8",
         .blck_size                = 1,
@@ -916,30 +934,54 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = 0,
         .is_quantized             = false,
     },
-    [GGML_TYPE_QLUTATTN_W1G128] = {
-        .type_name                = "qlutattn_w1g128",
+    [GGML_TYPE_QLUTATTN_W1G128_K] = {
+        .type_name                = "qlutattn_w1g128_k",
         .blck_size                = QKLUTATTN_W1G128,
         .type_size                = sizeof(block_qlutattn_w1g128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w1g128,
         .from_float_ref           = (ggml_from_float_t) quantize_row_qlutattn_w1g128_ref,
     },
-    [GGML_TYPE_QLUTATTN_W2G128] = {
-        .type_name                = "qlutattn_w2g128",
+    [GGML_TYPE_QLUTATTN_W2G128_K] = {
+        .type_name                = "qlutattn_w2g128_k",
         .blck_size                = QKLUTATTN_W2G128,
         .type_size                = sizeof(block_qlutattn_w2g128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w2g128,
         .from_float_ref           = (ggml_from_float_t) quantize_row_qlutattn_w2g128_ref,
     },
-    [GGML_TYPE_QLUTATTN_W4G128] = {
-        .type_name                = "qlutattn_w4g128",
+    [GGML_TYPE_QLUTATTN_W4G128_K] = {
+        .type_name                = "qlutattn_w4g128_k",
         .blck_size                = QKLUTATTN_W4G128,
         .type_size                = sizeof(block_qlutattn_w4g128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w4g128,
         .from_float_ref           = (ggml_from_float_t) quantize_row_qlutattn_w4g128_ref,
     },
+    [GGML_TYPE_QLUTATTN_W1G128_V] = {
+        .type_name                = "qlutattn_w1g128_v",
+        .blck_size                = QKLUTATTN_W1G128,
+        .type_size                = sizeof(block_qlutattn_w1g128),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w1g128,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_qlutattn_w1g128_ref,
+    },
+    [GGML_TYPE_QLUTATTN_W2G128_V] = {
+        .type_name                = "qlutattn_w2g128_v",
+        .blck_size                = QKLUTATTN_W2G128,
+        .type_size                = sizeof(block_qlutattn_w2g128),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w2g128,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_qlutattn_w2g128_ref,
+    },
+    [GGML_TYPE_QLUTATTN_W4G128_V] = {
+        .type_name                = "qlutattn_w4g128_v",
+        .blck_size                = QKLUTATTN_W4G128,
+        .type_size                = sizeof(block_qlutattn_w4g128),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w4g128,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_qlutattn_w4g128_ref,
+    }
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
@@ -1254,8 +1296,7 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         for (int i = 0; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
         }
-    }
-    else {
+    } else {
         nbytes = tensor->ne[0]*tensor->nb[0]/blck_size;
         for (int i = 1; i < GGML_MAX_DIMS; ++i) {
             nbytes += (tensor->ne[i] - 1)*tensor->nb[i];
@@ -1267,7 +1308,6 @@ size_t ggml_nbytes(const struct ggml_tensor * tensor) {
         nbytes += GGUF_DEFAULT_ALIGNMENT;
     }
 #endif
-
 
     return nbytes;
 }
@@ -1733,7 +1773,7 @@ static struct ggml_tensor * ggml_new_tensor_impl(
     }
 
     result->nb[0] = ggml_type_size(type);
-    result->nb[1] = result->nb[0]*(result->ne[0]/ggml_blck_size(type));
+    result->nb[1] = result->nb[0]*(result->ne[0]/ggml_blck_size(type)); //> sizeof(block) * (last_dim / (group_size))
     for (int i = 2; i < GGML_MAX_DIMS; i++) {
         result->nb[i] = result->nb[i - 1]*result->ne[i - 1];
     }

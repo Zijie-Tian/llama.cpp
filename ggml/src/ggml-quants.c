@@ -113,8 +113,9 @@ static void pseudo_quantize_qlutattn_f32(
     }
 }
 
+// TODO: Currently these QLUTATTN quantization functions are JUST Q4_0 quantization.
 void quantize_row_qlutattn_w1g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w1g128 * GGML_RESTRICT y, int64_t k) {
-    const int qk = QKLUTATTN_W1G128;    //> llama.cpp LOCK the groupsize.
+    const int qk = QKLUTATTN_W1G128 / 8;    //> llama.cpp LOCK the groupsize.
     assert(k % qk == 0);
     const int nb = k / (qk * 8);
 
@@ -144,7 +145,7 @@ void quantize_row_qlutattn_w1g128_ref(const float * GGML_RESTRICT x, block_qluta
 }
 
 void quantize_row_qlutattn_w2g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w2g128 * GGML_RESTRICT y, int64_t k) {
-    const int qk = QKLUTATTN_W2G128;
+    const int qk = QKLUTATTN_W2G128 / 4;
     const int nelem_per_byte = 128 / qk;
     assert(k % 128 == 0);
     const int nb = k / 128;
@@ -170,7 +171,7 @@ void quantize_row_qlutattn_w2g128_ref(const float * GGML_RESTRICT x, block_qluta
 }
 
 void quantize_row_qlutattn_w4g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w4g128 * GGML_RESTRICT y, int64_t k) {
-    const int qk = QKLUTATTN_W4G128;
+    const int qk = QKLUTATTN_W4G128 / 2;
     const int nelem_per_byte = 128 / qk;
     assert(k % 128 == 0);
     const int nb = k / 128;
@@ -459,7 +460,8 @@ static void pseudo_dequantize_qlutattn(
 }
 
 void dequantize_row_qlutattn_w1g128(const block_qlutattn_w1g128 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    static const int qk = QKLUTATTN_W1G128;
+    static const int qk = QKLUTATTN_W1G128 / 8;
+    static const int nelem_per_byte = 128 / qk;
 
     assert(k % 128 == 0);
 
@@ -471,29 +473,29 @@ void dequantize_row_qlutattn_w1g128(const block_qlutattn_w1g128 * GGML_RESTRICT 
         const float m = GGML_FP16_TO_FP32(x[i].m);
 
         for (int j = 0; j < qk; ++j) {
-            const uint8_t x7 = (x[i].qs[j]          & 0x01);
-            const uint8_t x6 = (x[i].qs[j] >>   1)  & 0x01;
-            const uint8_t x5 = (x[i].qs[j] >>   2)  & 0x01;
-            const uint8_t x4 = (x[i].qs[j] >>   3)  & 0x01;
-            const uint8_t x3 = (x[i].qs[j] >>   4)  & 0x01;
-            const uint8_t x2 = (x[i].qs[j] >>   5)  & 0x01;
-            const uint8_t x1 = (x[i].qs[j] >>   6)  & 0x01;
-            const uint8_t x0 = (x[i].qs[j] >>   7)  & 0x01;
+            const int x7 = (x[i].qs[j]          & 0x01);
+            const int x6 = (x[i].qs[j] >>   1)  & 0x01;
+            const int x5 = (x[i].qs[j] >>   2)  & 0x01;
+            const int x4 = (x[i].qs[j] >>   3)  & 0x01;
+            const int x3 = (x[i].qs[j] >>   4)  & 0x01;
+            const int x2 = (x[i].qs[j] >>   5)  & 0x01;
+            const int x1 = (x[i].qs[j] >>   6)  & 0x01;
+            const int x0 = (x[i].qs[j] >>   7)  & 0x01;
 
-            y[i*128 + j + 0   ] = x0*d - m - (d * K);
-            y[i*128 + j + 1   ] = x1*d - m - (d * K);
-            y[i*128 + j + 2   ] = x2*d - m - (d * K);
-            y[i*128 + j + 3   ] = x3*d - m - (d * K);
-            y[i*128 + j + 4   ] = x4*d - m - (d * K);
-            y[i*128 + j + 5   ] = x5*d - m - (d * K);
-            y[i*128 + j + 6   ] = x6*d - m - (d * K);
-            y[i*128 + j + 7   ] = x7*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 0   ] = x0*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 1   ] = x1*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 2   ] = x2*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 3   ] = x3*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 4   ] = x4*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 5   ] = x5*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 6   ] = x6*d - m - (d * K);
+            y[i*128 + j * nelem_per_byte + 7   ] = x7*d - m - (d * K);
         }
     }
 }
 
 void dequantize_row_qlutattn_w2g128(const block_qlutattn_w2g128 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    const int qk = QKLUTATTN_W2G128;
+    const int qk = QKLUTATTN_W2G128 / 4;
     const int nelem_per_byte = 128 / qk;
     assert(k % 128 == 0);
     const int nb = k / 128;
@@ -518,7 +520,7 @@ void dequantize_row_qlutattn_w2g128(const block_qlutattn_w2g128 * GGML_RESTRICT 
 }
 
 void dequantize_row_qlutattn_w4g128(const block_qlutattn_w4g128 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
-    const int qk = QKLUTATTN_W4G128;
+    const int qk = QKLUTATTN_W4G128 / 2;
     const int nelem_per_byte = 128 / qk;
     assert(k % 128 == 0);
     const int nb = k / 128;

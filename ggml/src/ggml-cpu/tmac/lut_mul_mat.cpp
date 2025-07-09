@@ -730,8 +730,7 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
         if (!strcmp(tensor->name, "token_embd.weight") || !strcmp(tensor->name, "output.weight")) {
             GGML_LOG_WARN("Do not find kcfg for %s. Consider compiling T-MAC kernel for it if vocab size is a multiply of 128 or 320, detected %lld.\n", tensor->name, tensor->ne[1]);
             return;
-        }
-        else {
+        } else {
             // TODO: Instead of fatal error, try to avoid using t-mac?
             GGML_LOG_ERROR("Failed to find kcfg. Abort transforming\n");
             return;
