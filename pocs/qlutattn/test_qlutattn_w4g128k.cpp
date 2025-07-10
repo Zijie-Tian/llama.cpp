@@ -10,7 +10,8 @@
 #include <random>
 
 // Use fixed seed for reproducible results
-static std::mt19937 g_rng(42);
+// static std::mt19937 g_rng(42);
+static std::mt19937 g_rng(std::random_device{}());
 
 static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
     ggml_fp16_t *                         data       = (ggml_fp16_t *) dst->data;

@@ -359,37 +359,47 @@ static void ggml_compute_forward_dup_f16_qlutattn(
     const int ith = params->ith; // thread index
     const int nth = params->nth; // number of threads
 
-    // parallelize by rows
-    const int nr = ne01;
-    // number of rows per thread
-    const int dr = (nr + nth - 1) / nth;
-    // row range for this thread
-    const int ir0 = dr * ith;
-    const int ir1 = MIN(ir0 + dr, nr);
+    if (ith != 0) {
+        // NOTICE : Currently, this function is only for the first thread.
+        return;
+    }
+
+    // GGML_ASSERT(ne01 % ggml_blck_size(dst->type) == 0);
+
+    // NOTE : Do per-channel quantization.
+
+    int group_size  = ggml_blck_size(dst->type);
+    int n_groups    = ne00 * ne01 / group_size;
+    int n_steps     = ne01 / group_size;    // kv_len / group_size
 
     // NOTICE: This is QLUTATTN quantization.
-    ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
-    float * src0_f32 = (float *) params->wdata + (ne00 + CACHE_LINE_SIZE_F32) * ith;
+    ggml_from_float_t const quantize_block_q = ggml_get_type_traits_cpu(dst->type)->from_float;
+    float * src0_f32 = (float *) params->wdata + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith; // NOTICE : Too large.
     
     size_t id = 0;
-    size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));   //> dst -> dtype_size * n_qgroup
+    size_t rs = nb0 * (ne00 * ne01 / group_size);   //> dst -> dtype_size * n_qgroup
     char * dst_ptr = (char *) dst->data;
 
     for (int i03 = 0; i03 < ne03; i03++) {
         for (int i02 = 0; i02 < ne02; i02++) {
-            id += rs * ir0;
-            for (int i01 = ir0; i01 < ir1; i01++) {
-                const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+            for (int ig = 0; ig < n_steps; ig++) {
+                const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * ne00 * nb00 + i02*nb02 + i03*nb03); 
+
+                // for (int g_iter = 0; g_iter < group_size * ne00; g_iter++) {
+                //     src0_f32[g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter]);
+                // }
 
                 for (int i00 = 0; i00 < ne00; i00++) {
-                    src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
+                    for (int g_iter = 0; g_iter < group_size; g_iter++) {
+                        src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * ne00 + i00]);
+                    }
                 }
 
                 //> dst_ptr is CHAR type.
-                quantize_row_q(src0_f32, dst_ptr + id, ne00);
+                quantize_block_q(src0_f32, dst_ptr + id, group_size * ne00);
+
                 id += rs;
             }
-            id += rs * (ne01 - ir1);    // NOTE : this thread only quantize specific rows.
         }
     }
     // GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
@@ -1220,7 +1230,7 @@ static void ggml_compute_forward_dup_q(
     ggml_to_float_t const dequantize_row_q = ggml_get_type_traits(type)->to_float;
 
     size_t qk = ggml_blck_size(type);
-    const int64_t nr = ggml_nelements(src1) / qk;
+    const int64_t nr = ggml_nelements(src1) / qk;   //> n_elem / group_size
 
     // destination must be contiguous in the first dimension
     GGML_ASSERT(nb10 == ggml_type_size(dst->type));
@@ -1270,8 +1280,8 @@ static void ggml_compute_forward_dup_qlutattn(
     const ggml_type type = src0->type;
     ggml_to_float_t const dequantize_row_q = ggml_get_type_traits(type)->to_float;
 
-    size_t qk = ggml_blck_size(type);
-    const int64_t nr = ggml_nelements(src1) / qk;
+    size_t qk = ggml_blck_size(type);               //> group_size 128 for QLUTATTN quantization.
+    const int64_t nr = ggml_nelements(src1) / qk;   //> ne3 * ne2 * ne1 * ne0 / group_size
 
     // destination must be contiguous in the first dimension
     GGML_ASSERT(nb10 == ggml_type_size(dst->type));
@@ -1281,28 +1291,46 @@ static void ggml_compute_forward_dup_qlutattn(
     const int ith = params->ith;
     const int nth = params->nth;
 
-    const int dr = (nr + nth - 1)/nth;
+    // NOTICE : Only the first thread will be used for debugging.
+    // if (ith != 0) {
+    //     return;
+    // }
+
+    float * src0_f32 = (float *) params->wdata + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith; // NOTICE : Too large.
+
+    const int dr = (nr + nth - 1) / nth;
 
     // row range for this thread
-    const int ir0 = dr*ith;
+    const int ir0 = dr * ith;
     const int ir1 = MIN(ir0 + dr, nr);
 
     for (int64_t ir = ir0; ir < ir1; ++ir) {
+        uint32_t i = ir * qk;   //> ig * group_size.
 
-        uint32_t i = ir * qk;
+        const int64_t i03 =  i / (ne00 * ne01 * ne02);                                  //> Batch idx
+        const int64_t i02 = (i - i03*ne00*ne01*ne02 ) / (ne00*ne01);                    //> Head idx
+        const int64_t i01 = (i - i03*ne00*ne01*ne02  -  i02*ne01*ne00) / ne00;          //> KV idx
+        const int64_t i00 =  i - i03*ne00*ne01*ne02 - i02*ne01*ne00 - i01*ne00;         //> head_dim idx
+        const int64_t x_offset = (i00 / qk)*nb00 + i01*nb01 + i02*nb02 + i03 * nb03;    //> Offset into source tensor
 
-        const int64_t i03 = i/(ne00 * ne01 * ne02);                                  //> Batch idx
-        const int64_t i02 = (i - i03*ne00*ne01*ne02 ) / (ne00*ne01);                 //> Head idx   
-        const int64_t i01 = (i - i03*ne00*ne01*ne02  -  i02*ne01*ne00) / ne00;       //> KV idx
-        const int64_t i00 = i - i03*ne00*ne01*ne02 - i02*ne01*ne00 - i01*ne00;       //> head_dim idx
-        const int64_t x_offset = (i00/qk)*nb00 + i01*nb01 + i02*nb02 + i03 * nb03;   //> Offset into source tensor
-
-        const int64_t i13 = i/(ne10 * ne11 * ne12);
+        const int64_t i13 =  i / (ne10 * ne11 * ne12);
         const int64_t i12 = (i - i13*ne10*ne11*ne12) / (ne10*ne11);
         const int64_t i11 = (i - i13*ne10*ne11*ne12 - i12*ne10*ne11) / ne10;
-        const int64_t i10 = i - i13*ne10*ne11*ne12 - i12*ne10*ne11 - i11*ne10;
-        const int64_t dst_offset = i10*nb10 + i11*nb11 + i12*nb12 + i13*nb13;
+        const int64_t i10 =  i - i13*ne10*ne11*ne12 - i12*ne10*ne11 - i11*ne10;
 
+        GGML_LOG("[i00: %d, i01: %d, i02: %d, i03: %d -> [i10: %d, i11: %d, i12: %d, i13: %d], QK: %d\n", i00, i01, i02, i03, i10, i11, i12, i13, qk);
+
+        // memset(src0_f32, 0, qk * sizeof(float));
+        // dequantize_row_q(
+        //         (const void *) ((char *) src0->data + x_offset),
+        //              (float *) src0_f32, qk);
+
+        // for (int iqk = 0; iqk < qk; iqk++) {
+        //     ((float *) dst->data)[i11*nb10 + iqk*nb11 + i12*nb12 + i13*nb13] = src0_f32[iqk];
+        // }
+
+        // NOTICE : dst is transposed.
+        const int64_t dst_offset = i10*nb10 + i11*nb11 + i12*nb12 + i13*nb13;
         dequantize_row_q(
                 (const void *) ((char *) src0->data + x_offset),
                         (float *) ((char *)  dst->data + dst_offset), qk);

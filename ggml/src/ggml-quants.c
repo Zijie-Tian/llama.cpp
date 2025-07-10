@@ -170,7 +170,7 @@ void quantize_row_qlutattn_w2g128_ref(const float * GGML_RESTRICT x, block_qluta
     }
 }
 
-void quantize_row_qlutattn_w4g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w4g128 * GGML_RESTRICT y, int64_t k) {
+void quantize_row_qlutattn_w4g128_ref_per_token(const float * GGML_RESTRICT x, block_qlutattn_w4g128 * GGML_RESTRICT y, int64_t k) {
     const int qk = QKLUTATTN_W4G128 / 2;
     const int nelem_per_byte = 128 / qk;
     assert(k % 128 == 0);
@@ -179,6 +179,31 @@ void quantize_row_qlutattn_w4g128_ref(const float * GGML_RESTRICT x, block_qluta
     float scale[nb];
     float zero[nb];
     uint8_t quantized[nb * 128];
+    pseudo_quantize_qlutattn_f32(x, quantized, scale, zero, k, 4, 128);
+
+    for (int i = 0; i < nb; i++) {
+        for (int j = 0; j < qk; j++) {
+            const uint8_t x0 = quantized[i * 128 + j * nelem_per_byte + 0];
+            const uint8_t x1 = quantized[i * 128 + j * nelem_per_byte + 1];
+
+            y[i].qs[j] = (x0 << 4) | (x1 << 0);
+        }
+
+        y[i].d = GGML_FP32_TO_FP16(scale[i]);
+        y[i].m = GGML_FP32_TO_FP16(zero[i]);
+    }
+}
+
+void quantize_row_qlutattn_w4g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w4g128 * GGML_RESTRICT y, int64_t k) {
+    const int qk = QKLUTATTN_W4G128 / 2;
+    const int nelem_per_byte = 128 / qk;
+    assert(k % QKLUTATTN_W4G128 == 0);
+    const int nb = k / 128;
+
+    float scale[nb];
+    float zero[nb];
+    uint8_t quantized[nb * 128];    //> pesudo quantize results.
+    //> Per-channel quantization. for head_dim = 128.
     pseudo_quantize_qlutattn_f32(x, quantized, scale, zero, k, 4, 128);
 
     for (int i = 0; i < nb; i++) {

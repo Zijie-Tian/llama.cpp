@@ -2794,6 +2794,26 @@ struct ggml_cplan ggml_graph_plan(
                             (node->src[0]->type == GGML_TYPE_BF16 && node->src[1] && node->src[1]->type == GGML_TYPE_F16)) {
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * n_tasks;
                         }
+                        //> override for QLUTATTN quantization.
+                        if (node->type == GGML_TYPE_QLUTATTN_W1G128_K ||
+                            node->type == GGML_TYPE_QLUTATTN_W2G128_K ||
+                            node->type == GGML_TYPE_QLUTATTN_W4G128_K ||
+                            node->type == GGML_TYPE_QLUTATTN_W1G128_V ||
+                            node->type == GGML_TYPE_QLUTATTN_W2G128_V ||
+                            node->type == GGML_TYPE_QLUTATTN_W4G128_V) {
+                            //> We need do block quantization.
+                            cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
+                        } 
+
+                        if (node->src[0]->type == GGML_TYPE_QLUTATTN_W1G128_K ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_K ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_K ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W1G128_V ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_V ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_V  ) {
+                            cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
+                        }
+
                     } break;
                 case GGML_OP_ADD:
                 case GGML_OP_ADD1:
