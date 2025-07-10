@@ -1292,48 +1292,38 @@ static void ggml_compute_forward_dup_qlutattn(
     const int nth = params->nth;
 
     // NOTICE : Only the first thread will be used for debugging.
-    // if (ith != 0) {
-    //     return;
-    // }
+    if (ith != 0) {
+        return;
+    }
 
     float * src0_f32 = (float *) params->wdata + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith; // NOTICE : Too large.
 
-    const int dr = (nr + nth - 1) / nth;
-
-    // row range for this thread
-    const int ir0 = dr * ith;
-    const int ir1 = MIN(ir0 + dr, nr);
-
-    for (int64_t ir = ir0; ir < ir1; ++ir) {
-        uint32_t i = ir * qk;   //> ig * group_size.
-
-        const int64_t i03 =  i / (ne00 * ne01 * ne02);                                  //> Batch idx
-        const int64_t i02 = (i - i03*ne00*ne01*ne02 ) / (ne00*ne01);                    //> Head idx
-        const int64_t i01 = (i - i03*ne00*ne01*ne02  -  i02*ne01*ne00) / ne00;          //> KV idx
-        const int64_t i00 =  i - i03*ne00*ne01*ne02 - i02*ne01*ne00 - i01*ne00;         //> head_dim idx
-        const int64_t x_offset = (i00 / qk)*nb00 + i01*nb01 + i02*nb02 + i03 * nb03;    //> Offset into source tensor
-
-        const int64_t i13 =  i / (ne10 * ne11 * ne12);
-        const int64_t i12 = (i - i13*ne10*ne11*ne12) / (ne10*ne11);
-        const int64_t i11 = (i - i13*ne10*ne11*ne12 - i12*ne10*ne11) / ne10;
-        const int64_t i10 =  i - i13*ne10*ne11*ne12 - i12*ne10*ne11 - i11*ne10;
-
-        GGML_LOG("[i00: %d, i01: %d, i02: %d, i03: %d -> [i10: %d, i11: %d, i12: %d, i13: %d], QK: %d\n", i00, i01, i02, i03, i10, i11, i12, i13, qk);
-
-        // memset(src0_f32, 0, qk * sizeof(float));
-        // dequantize_row_q(
-        //         (const void *) ((char *) src0->data + x_offset),
-        //              (float *) src0_f32, qk);
-
-        // for (int iqk = 0; iqk < qk; iqk++) {
-        //     ((float *) dst->data)[i11*nb10 + iqk*nb11 + i12*nb12 + i13*nb13] = src0_f32[iqk];
-        // }
-
-        // NOTICE : dst is transposed.
-        const int64_t dst_offset = i10*nb10 + i11*nb11 + i12*nb12 + i13*nb13;
-        dequantize_row_q(
-                (const void *) ((char *) src0->data + x_offset),
-                        (float *) ((char *)  dst->data + dst_offset), qk);
+    // Process per head and per KV position
+    int n_steps = ne01 / qk;  // Number of quantization groups per KV sequence
+    
+    for (int i03 = 0; i03 < ne03; i03++) {      // batch
+        for (int i02 = 0; i02 < ne02; i02++) {  // head
+            for (int ig = 0; ig < n_steps; ig++) {  // quantization group
+                // Calculate source offset for this quantization group
+                const int64_t src_offset = ig * ggml_row_size(type, qk * ne00) + i02*nb02 + i03*nb03;
+                
+                // Dequantize the block
+                dequantize_row_q(
+                    (const void *) ((char *) src0->data + src_offset),
+                    src0_f32, qk * ne00);
+                
+                // Transpose back from per-channel layout to original layout
+                for (int i00 = 0; i00 < ne00; i00++) {
+                    for (int g_iter = 0; g_iter < qk; g_iter++) {
+                        int64_t kv_idx = ig * qk + g_iter;
+                        if (kv_idx < ne01) {
+                            const int64_t dst_offset = i00*nb10 + kv_idx*nb11 + i02*nb12 + i03*nb13;
+                            ((float *) dst->data)[dst_offset / sizeof(float)] = src0_f32[i00 * qk + g_iter];
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
