@@ -369,36 +369,32 @@ static void ggml_compute_forward_dup_f16_qlutattn(
     // NOTE : Do per-channel quantization.
 
     int group_size  = ggml_blck_size(dst->type);
-    int n_groups    = ne00 * ne01 / group_size;
     int n_steps     = ne01 / group_size;    // kv_len / group_size
 
     // NOTICE: This is QLUTATTN quantization.
     ggml_from_float_t const quantize_block_q = ggml_get_type_traits_cpu(dst->type)->from_float;
     float * src0_f32 = (float *) params->wdata + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith; // NOTICE : Too large.
     
-    size_t id = 0;
-    size_t rs = nb0 * (ne00 * ne01 / group_size);   //> dst -> dtype_size * n_qgroup
+    size_t rs = ggml_row_size(dst->type, group_size * ne00);   // Size of one quantized block
     char * dst_ptr = (char *) dst->data;
 
     for (int i03 = 0; i03 < ne03; i03++) {
         for (int i02 = 0; i02 < ne02; i02++) {
             for (int ig = 0; ig < n_steps; ig++) {
-                const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * ne00 * nb00 + i02*nb02 + i03*nb03); 
+                const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03); 
 
-                // for (int g_iter = 0; g_iter < group_size * ne00; g_iter++) {
-                //     src0_f32[g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter]);
-                // }
-
+                // Transpose data for per-channel quantization
                 for (int i00 = 0; i00 < ne00; i00++) {
                     for (int g_iter = 0; g_iter < group_size; g_iter++) {
-                        src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * ne00 + i00]);
+                        src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
                     }
                 }
 
+                // Calculate destination offset
+                size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+                
                 //> dst_ptr is CHAR type.
-                quantize_block_q(src0_f32, dst_ptr + id, group_size * ne00);
-
-                id += rs;
+                quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
             }
         }
     }
@@ -1281,12 +1277,11 @@ static void ggml_compute_forward_dup_qlutattn(
     ggml_to_float_t const dequantize_row_q = ggml_get_type_traits(type)->to_float;
 
     size_t qk = ggml_blck_size(type);               //> group_size 128 for QLUTATTN quantization.
-    const int64_t nr = ggml_nelements(src1) / qk;   //> ne3 * ne2 * ne1 * ne0 / group_size
 
     // destination must be contiguous in the first dimension
-    GGML_ASSERT(nb10 == ggml_type_size(dst->type));
+    GGML_ASSERT(nb0 == ggml_type_size(dst->type));
     // must either have first dimension large enough to hold a row, or fully contiguous
-    GGML_ASSERT((ne10 % qk) == 0 || ggml_is_contiguous(dst));
+    GGML_ASSERT((ne00 % qk) == 0 || ggml_is_contiguous(dst));
 
     const int ith = params->ith;
     const int nth = params->nth;
@@ -1305,7 +1300,8 @@ static void ggml_compute_forward_dup_qlutattn(
         for (int i02 = 0; i02 < ne02; i02++) {  // head
             for (int ig = 0; ig < n_steps; ig++) {  // quantization group
                 // Calculate source offset for this quantization group
-                const int64_t src_offset = ig * ggml_row_size(type, qk * ne00) + i02*nb02 + i03*nb03;
+                size_t rs = ggml_row_size(type, qk * ne00);
+                const int64_t src_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
                 
                 // Dequantize the block
                 dequantize_row_q(
@@ -1317,7 +1313,7 @@ static void ggml_compute_forward_dup_qlutattn(
                     for (int g_iter = 0; g_iter < qk; g_iter++) {
                         int64_t kv_idx = ig * qk + g_iter;
                         if (kv_idx < ne01) {
-                            const int64_t dst_offset = i00*nb10 + kv_idx*nb11 + i02*nb12 + i03*nb13;
+                            const int64_t dst_offset = i00*nb0 + kv_idx*nb1 + i02*nb2 + i03*nb3;
                             ((float *) dst->data)[dst_offset / sizeof(float)] = src0_f32[i00 * qk + g_iter];
                         }
                     }
