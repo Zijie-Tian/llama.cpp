@@ -1821,17 +1821,38 @@ void quantize_row_q8_K(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, in
 #endif
 }
 
+//> ===================================================================================================
+//> QLUTATTN KV1 128x128 and PG quantization.
+//> ===================================================================================================
+
+void quantize_block_qlutattn_kv1_128x128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    // TODO : Implement this by SIMD.
+    quantize_block_qlutattn_kv1_128x128_ref(x, y, k);
+}
+
+void quantize_block_qlutattn_kv2_128x128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    // TODO : Implement this by SIMD.
+    quantize_block_qlutattn_kv2_128x128_ref(x, y, k);
+}
+
+void quantize_block_qlutattn_kv4_128x128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    // TODO : Implement this by SIMD.
+    quantize_block_qlutattn_kv4_128x128_ref(x, y, k);
+}
+
+
+//> Following just use the reference implementation.
+
 void quantize_row_qlutattn_w1g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_qlutattn_w1g128_ref(x, y, k);
+    quantize_row_qlutattn_w1g128_pg_ref(x, y, k);
 }
-
 void quantize_row_qlutattn_w2g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_qlutattn_w2g128_ref(x, y, k);
+    quantize_row_qlutattn_w2g128_pg_ref(x, y, k);
+}
+void quantize_row_qlutattn_w4g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_qlutattn_w4g128_pg_ref(x, y, k);
 }
 
-void quantize_row_qlutattn_w4g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
-    quantize_row_qlutattn_w4g128_ref(x, y, k);
-}
 
 //===================================== Dot products =================================
 

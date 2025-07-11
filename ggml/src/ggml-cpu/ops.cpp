@@ -49,6 +49,12 @@ static bool is_qlutattn_type(ggml_type type) {
            type == GGML_TYPE_QLUTATTN_W4G128_PT;
 }
 
+static bool is_qlutattn_kv_type(ggml_type type) {
+    return type == GGML_TYPE_QLUTATTN_KV1_128x128 ||
+           type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
+           type == GGML_TYPE_QLUTATTN_KV4_128x128;
+}
+
 static void ggml_compute_forward_dup_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -383,25 +389,35 @@ static void ggml_compute_forward_dup_f16_qlutattn(
             for (int ig = 0; ig < n_steps; ig++) {
                 const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03); 
 
-                if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PC || dst->type == GGML_TYPE_QLUTATTN_W2G128_PC || dst->type == GGML_TYPE_QLUTATTN_W1G128_PC) {
+                if (dst->type == GGML_TYPE_QLUTATTN_KV1_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV2_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
                     // Transpose data for per-channel quantization
                     for (int i00 = 0; i00 < ne00; i00++) {
                         for (int g_iter = 0; g_iter < group_size; g_iter++) {
                             src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
                         }
                     }
+
+                } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PC || dst->type == GGML_TYPE_QLUTATTN_W2G128_PC || dst->type == GGML_TYPE_QLUTATTN_W1G128_PC) {
+                    // Transpose data for per-channel quantization
+                    for (int i00 = 0; i00 < ne00; i00++) {
+                        for (int g_iter = 0; g_iter < group_size; g_iter++) {
+                            src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
+                        }
+                    }
+
+                    // Calculate destination offset
+                    size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+                    quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
                 } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PT || dst->type == GGML_TYPE_QLUTATTN_W2G128_PT || dst->type == GGML_TYPE_QLUTATTN_W1G128_PT) {
                     // Transpose data for per-channel quantization
                     for (int i00 = 0; i00 < ne00 * group_size; i00++) {
                         src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
                     }
-                }
 
-                // Calculate destination offset
-                size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
-                
-                //> dst_ptr is CHAR type.
-                quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+                    // Calculate destination offset
+                    size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+                    quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+                }
             }
         }
     }

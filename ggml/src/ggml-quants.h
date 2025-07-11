@@ -40,9 +40,13 @@ GGML_API void quantize_row_iq3_s_ref  (const float * GGML_RESTRICT x, block_iq3_
 GGML_API void quantize_row_iq2_s_ref  (const float * GGML_RESTRICT x, block_iq2_s   * GGML_RESTRICT y, int64_t k);
 
 //> Add quantize_qlutattn_w1g128, quantize_qlutattn_w2g128, quantize_qlutattn_w4g128
-GGML_API void quantize_row_qlutattn_w1g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w1g128 * GGML_RESTRICT y, int64_t k);
-GGML_API void quantize_row_qlutattn_w2g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w2g128 * GGML_RESTRICT y, int64_t k);
-GGML_API void quantize_row_qlutattn_w4g128_ref(const float * GGML_RESTRICT x, block_qlutattn_w4g128 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_qlutattn_w1g128_pg_ref(const float * GGML_RESTRICT x, block_qlutattn_w1g128 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_qlutattn_w2g128_pg_ref(const float * GGML_RESTRICT x, block_qlutattn_w2g128 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_row_qlutattn_w4g128_pg_ref(const float * GGML_RESTRICT x, block_qlutattn_w4g128 * GGML_RESTRICT y, int64_t k);
+
+GGML_API void quantize_block_qlutattn_kv1_128x128_ref(const float * GGML_RESTRICT x, block_qlutattn_kv1_128x128 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_block_qlutattn_kv2_128x128_ref(const float * GGML_RESTRICT x, block_qlutattn_kv2_128x128 * GGML_RESTRICT y, int64_t k);
+GGML_API void quantize_block_qlutattn_kv4_128x128_ref(const float * GGML_RESTRICT x, block_qlutattn_kv4_128x128 * GGML_RESTRICT y, int64_t k);
 
 //> ===================================================================================================
 //> Dequantization

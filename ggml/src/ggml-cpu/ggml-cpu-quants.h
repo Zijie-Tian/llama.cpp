@@ -36,6 +36,10 @@ void quantize_row_qlutattn_w1g128(const float * GGML_RESTRICT x, void * GGML_RES
 void quantize_row_qlutattn_w2g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
 void quantize_row_qlutattn_w4g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
 
+void quantize_block_qlutattn_kv1_128x128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+void quantize_block_qlutattn_kv2_128x128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+void quantize_block_qlutattn_kv4_128x128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k);
+
 // Dot product
 void ggml_vec_dot_q4_0_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);
 void ggml_vec_dot_q4_1_q8_1(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc);

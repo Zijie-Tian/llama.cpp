@@ -429,6 +429,24 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .nrows                    = 1,
     },
 #endif
+    [GGML_TYPE_QLUTATTN_KV1_128x128] = {
+        .from_float               = quantize_block_qlutattn_kv1_128x128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_QLUTATTN_KV2_128x128] = {
+        .from_float               = quantize_block_qlutattn_kv2_128x128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_QLUTATTN_KV4_128x128] = {
+        .from_float               = quantize_block_qlutattn_kv4_128x128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
     [GGML_TYPE_QLUTATTN_W1G128_PC] = {
         .from_float               = quantize_row_qlutattn_w1g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
@@ -465,7 +483,7 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    };
+};
 
 const struct ggml_type_traits_cpu * ggml_get_type_traits_cpu(enum ggml_type type) {
     return &type_traits_cpu[type];
