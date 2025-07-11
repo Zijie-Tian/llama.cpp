@@ -157,8 +157,14 @@ int main() {
     ggml_tensor * k_quantized = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_W4G128_K, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
     ggml_set_name(k_quantized, "k_quantized");
 
+    ggml_tensor * k_quantized_pt = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_W4G128_V, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
+    ggml_set_name(k_quantized_pt, "k_quantized_pt");
+
     ggml_tensor * k_dequantized = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
     ggml_set_name(k_dequantized, "k_dequantized");
+
+    ggml_tensor * k_dequantized_pt = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
+    ggml_set_name(k_dequantized_pt, "k_dequantized_pt");
 
     // Fill source tensor with test data
     printf("Generating test data...\n");
@@ -171,13 +177,17 @@ int main() {
     //> Build computation graph for quantization
     struct ggml_cgraph * gf = ggml_new_graph(ctx);
     
-    //> Quantize: k -> k_quantized
+    //> Quantize: k -> k_quantized, k_quantized_pt
     ggml_tensor * quant_op = ggml_cpy(ctx, k, k_quantized);
     ggml_build_forward_expand(gf, quant_op);
-    
-    //> Dequantize: k_quantized -> k_dequantized
+    ggml_tensor * quant_op_pt = ggml_cpy(ctx, k, k_quantized_pt);
+    ggml_build_forward_expand(gf, quant_op_pt);
+
+    //> Dequantize: k_quantized -> k_dequantized, k_dequantized_pt
     ggml_tensor * dequant_op = ggml_cpy(ctx, k_quantized, k_dequantized);
     ggml_build_forward_expand(gf, dequant_op);
+    ggml_tensor * dequant_op_pt = ggml_cpy(ctx, k_quantized_pt, k_dequantized_pt);
+    ggml_build_forward_expand(gf, dequant_op_pt);
 
     //> Do compute.
     ggml_graph_compute_with_ctx(ctx, gf, 1);
@@ -188,7 +198,11 @@ int main() {
     printf("Dequantized tensor:\n");
     ggml_print_tensor((uint8_t *)k_dequantized->data, GGML_TYPE_F32, k_dequantized->ne, k_dequantized->nb, 3);
 
+    printf("Dequantized tensor (pt):\n");
+    ggml_print_tensor((uint8_t *)k_dequantized_pt->data, GGML_TYPE_F32, k_dequantized_pt->ne, k_dequantized_pt->nb, 3);
+
     double nmse = calculate_nmse(k, k_dequantized);
+    double nmse_pt = calculate_nmse(k, k_dequantized_pt);
     printf("NMSE: %f\n", nmse);
 
     // Clean up
