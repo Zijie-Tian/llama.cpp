@@ -153,11 +153,11 @@ int main() {
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
     ggml_set_name(k, "k_source");
     
-    // Create quantized tensor with GGML_TYPE_QLUTATTN_W4G128_K
-    ggml_tensor * k_quantized = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_W4G128_K, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
+    // Create quantized tensor with GGML_TYPE_QLUTATTN_W4G128_PC
+    ggml_tensor * k_quantized = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_W4G128_PC, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
     ggml_set_name(k_quantized, "k_quantized");
 
-    ggml_tensor * k_quantized_pt = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_W4G128_V, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
+    ggml_tensor * k_quantized_pt = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_W4G128_PT, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
     ggml_set_name(k_quantized_pt, "k_quantized_pt");
 
     ggml_tensor * k_dequantized = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);

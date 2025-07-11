@@ -345,9 +345,9 @@ int main() {
     
     // Test Q4_0 quantization
     
-    // test_quantization(ctx, k, GGML_TYPE_QLUTATTN_W1G128_K, "QLUTATTN_W1G128_K");
-    test_quantization(ctx, k, GGML_TYPE_QLUTATTN_W2G128_K, "QLUTATTN_W2G128_K");
-    test_quantization(ctx, k, GGML_TYPE_QLUTATTN_W4G128_K, "QLUTATTN_W4G128_K");
+    // test_quantization(ctx, k, GGML_TYPE_QLUTATTN_W1G128_PC, "QLUTATTN_W1G128_K");
+    test_quantization(ctx, k, GGML_TYPE_QLUTATTN_W2G128_PC, "QLUTATTN_W2G128_K");
+    test_quantization(ctx, k, GGML_TYPE_QLUTATTN_W4G128_PC, "QLUTATTN_W4G128_K");
     
     // Test Q4_1 quantization if you want to compare
     // test_quantization(ctx, k, GGML_TYPE_Q4_1, "Q4_1");

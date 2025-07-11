@@ -429,37 +429,37 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .nrows                    = 1,
     },
 #endif
-    [GGML_TYPE_QLUTATTN_W1G128_K] = {
+    [GGML_TYPE_QLUTATTN_W1G128_PC] = {
         .from_float               = quantize_row_qlutattn_w1g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_W2G128_K] = {
+    [GGML_TYPE_QLUTATTN_W2G128_PC] = {
         .from_float               = quantize_row_qlutattn_w2g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_W4G128_K] = {
+    [GGML_TYPE_QLUTATTN_W4G128_PC] = {
         .from_float               = quantize_row_qlutattn_w4g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_W1G128_V] = {
+    [GGML_TYPE_QLUTATTN_W1G128_PT] = {
         .from_float               = quantize_row_qlutattn_w1g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_W2G128_V] = {
+    [GGML_TYPE_QLUTATTN_W2G128_PT] = {
         .from_float               = quantize_row_qlutattn_w2g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_W4G128_V] = {
+    [GGML_TYPE_QLUTATTN_W4G128_PT] = {
         .from_float               = quantize_row_qlutattn_w4g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,
         .vec_dot_type             = GGML_TYPE_F32,
@@ -2795,22 +2795,22 @@ struct ggml_cplan ggml_graph_plan(
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * n_tasks;
                         }
                         //> override for QLUTATTN quantization.
-                        if (node->type == GGML_TYPE_QLUTATTN_W1G128_K ||
-                            node->type == GGML_TYPE_QLUTATTN_W2G128_K ||
-                            node->type == GGML_TYPE_QLUTATTN_W4G128_K ||
-                            node->type == GGML_TYPE_QLUTATTN_W1G128_V ||
-                            node->type == GGML_TYPE_QLUTATTN_W2G128_V ||
-                            node->type == GGML_TYPE_QLUTATTN_W4G128_V) {
+                        if (node->type == GGML_TYPE_QLUTATTN_W1G128_PC ||
+                            node->type == GGML_TYPE_QLUTATTN_W2G128_PC ||
+                            node->type == GGML_TYPE_QLUTATTN_W4G128_PC ||
+                            node->type == GGML_TYPE_QLUTATTN_W1G128_PT ||
+                            node->type == GGML_TYPE_QLUTATTN_W2G128_PT ||
+                            node->type == GGML_TYPE_QLUTATTN_W4G128_PT) {
                             //> We need do block quantization.
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
                         } 
 
-                        if (node->src[0]->type == GGML_TYPE_QLUTATTN_W1G128_K ||
-                            node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_K ||
-                            node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_K ||
-                            node->src[0]->type == GGML_TYPE_QLUTATTN_W1G128_V ||
-                            node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_V ||
-                            node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_V  ) {
+                        if (node->src[0]->type == GGML_TYPE_QLUTATTN_W1G128_PC ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_PC ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_PC ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W1G128_PT ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_PT ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_PT  ) {
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
                         }
 
