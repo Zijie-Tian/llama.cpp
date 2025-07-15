@@ -408,6 +408,14 @@ static void ggml_tmac_tune_kernel_config(const struct ggml_tensor * tensor, int 
     std::vector<int> bns = {8, 16, 32, 64};
     std::vector<int> kfactors = {8, 16};
 
+    // std::vector<int> bms;
+    // if (bits == 1 || bits == 2 || bits == 4) {
+    //     bms = {256, 320};
+    // } else if (bits == 3) {
+    //     bms = {192};
+    // }
+    // std::vector<int> bns = {8};
+    // std::vector<int> kfactors = {8};
 
     double min_time = 1e9;
     struct tmac_kernel_config best_kcfg;
@@ -431,7 +439,7 @@ static void ggml_tmac_tune_kernel_config(const struct ggml_tensor * tensor, int 
                 // insert to dict for finding
                 insert_or_assign_tmac_kernel_config(M, K, bits, kernel_config);
                 struct tmac_run_single_kernel_settings settings = {
-                    /* .test_time_ms = */ 5000,
+                    /* .test_time_ms = */ 5,   //> Reduce this to 5ms for faster tuning.
                     /* .M = */ M,
                     /* .N = */ N,
                     /* .K = */ K,

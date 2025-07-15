@@ -261,3 +261,42 @@ endif()
 if (NOT GGML_BACKEND_DL)
     llama_build_and_test(test-llama-batch.cpp)
 endif()
+
+# Add T-MAC test (only if T-MAC is enabled)
+if (GGML_TMAC AND NOT GGML_BACKEND_DL)
+    llama_build_and_test(test_tmac.cpp)
+    
+    # T-MAC requires specific compiler flags and libraries
+    target_compile_definitions(test_tmac PRIVATE GGML_USE_TMAC)
+    target_include_directories(test_tmac PRIVATE 
+        ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu/tmac
+        ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu
+        ${CMAKE_SOURCE_DIR}/ggml/src
+    )
+    
+    # Link against ggml library to get T-MAC functionality
+    target_link_libraries(test_tmac PRIVATE ggml)
+    
+    # Add T-MAC specific compile flags if needed
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(test_tmac PRIVATE -march=armv8.2a+fp16)
+        target_compile_definitions(test_tmac PRIVATE __ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+    endif()
+    
+    message(STATUS "T-MAC test will be built")
+    
+    # Also build simple T-MAC test
+    llama_build_and_test(test_tmac_simple.cpp)
+    target_compile_definitions(test_tmac_simple PRIVATE GGML_USE_TMAC)
+    target_include_directories(test_tmac_simple PRIVATE 
+        ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu/tmac
+        ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu
+        ${CMAKE_SOURCE_DIR}/ggml/src
+    )
+    target_link_libraries(test_tmac_simple PRIVATE ggml)
+    
+    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
+        target_compile_options(test_tmac_simple PRIVATE -march=armv8.2a+fp16)
+        target_compile_definitions(test_tmac_simple PRIVATE __ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
+    endif()
+endif()

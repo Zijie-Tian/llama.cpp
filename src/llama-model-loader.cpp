@@ -1055,6 +1055,7 @@ bool llama_model_loader::load_all_data(
                 mmap_used.first  = std::min(mmap_used.first,  weight->offs);
                 mmap_used.second = std::max(mmap_used.second, weight->offs + n_size);
             } else {
+                // NOTE: T-MAC use this to load the tensor and do the repack in the backend.
                 ggml_backend_tensor_set(cur, data, 0, n_size);
             }
         } else {
