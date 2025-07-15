@@ -947,7 +947,13 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
 
 void ggml_backend_tmac_convert_weight(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(offset == 0 && size == ggml_tmac_get_nbytes(tensor)); // only full tensor conversion is supported for now
+    
+    auto start = std::chrono::high_resolution_clock::now();
     ggml_tmac_transform_tensor(tensor, data);
+    auto end = std::chrono::high_resolution_clock::now();
+    
+    std::chrono::duration<double, std::milli> elapsed = end - start;
+    GGML_LOG_INFO("tmac weight conversion for %s: %.2f ms\n", tensor->name, elapsed.count());
 }
 
 

@@ -84,13 +84,8 @@ static void ggml_backend_tmac_buffer_memset_tensor(ggml_backend_buffer_t buffer,
 static void ggml_backend_tmac_buffer_set_tensor(ggml_backend_buffer_t buffer, struct ggml_tensor * tensor,
                                                const void * data, size_t offset, size_t size) {
     if (is_type_supported(tensor->type)) {
-        auto start_time = std::chrono::high_resolution_clock::now();
+        //> Call convert tensor.
         ggml_backend_tmac_convert_weight(tensor, data, offset, size);
-        auto end_time = std::chrono::high_resolution_clock::now();
-        GGML_LOG_INFO("%s: tmac repack tensor %s with shape [%d, %d, %d, %d] took %lld ms\n", __func__, 
-            tensor->name, tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3], 
-            (long long)std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count()
-        );
     } else {
         memcpy((char *) tensor->data + offset, data, size);
     }
