@@ -1028,6 +1028,7 @@ void ggml_backend_tmac_mul_mat(const struct ggml_compute_params * params, struct
         act_input = (tmac_float_type *) src1->data;
     }
 
+    //> simply split along the M dim.
     for (int ine11 = ith; ine11 < ne11; ine11 += nth) {
         if (sizeof(tmac_float_type) == 2) {
             // TODO: can we reuse the src1->data memory?
@@ -1142,6 +1143,13 @@ void ggml_backend_tmac_mul_mat(const struct ggml_compute_params * params, struct
         // current_chunk = atomic_fetch_add_explicit(&params->threadpool->current_chunk, 1, memory_order_relaxed);
         current_chunk = ggml_threadpool_atomic_fetch_add_explicit(params->threadpool, 1);
     }
+
+    if (sizeof(tmac_float_type) == 2) {
+        ggml_fp16_to_fp32_row((const ggml_fp16_t *) act_output, (float *) dst->data, ne0 * ne1);
+    } else {
+        // do nothing
+    }
+
     return;
 }
 

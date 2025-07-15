@@ -38,10 +38,28 @@ static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_
     }
 }
 
+static void set_tensor_f32(ggml_tensor * dst, float value) {
+    float * data = (float *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = value;
+    }
+}
+
+static void set_tensor_f16(ggml_tensor * dst, float value) {
+    ggml_fp16_t * data = (ggml_fp16_t *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = ggml_fp32_to_fp16(value);
+    }
+}
+
+// static set_tensor_f
+
 static struct ggml_tensor * compute_graph(
     ggml_context* ctx,
     struct ggml_cgraph * gf,
-    int n_threads = 12
+    int n_threads = 1
 ) {
     ggml_graph_compute_with_ctx(ctx, gf, n_threads);
 
@@ -160,7 +178,8 @@ int main() {
 
     //> Activation must be F32 for llama.cpp ggml op.
     ggml_tensor* activation = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, N);
-    fill_tensor_f32(activation);
+    // fill_tensor_f32(activation);
+    set_tensor_f32(activation, 1.0f);
 
     //> Activation must be F16 for T-MAC op.
     ggml_tensor* activation_f16 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F16, K, N);
@@ -185,7 +204,7 @@ int main() {
     //> Repack Quantized Tensor to T-MAC Context
     //> =================================================================================================== 
 
-    ggml_tensor* tensor = ggml_new_tensor_2d(tmac_ctx, GGML_TYPE_TMAC_W4G64_0, K, M);
+    ggml_tensor* tensor = ggml_new_tensor_2d(tmac_ctx, GGML_TYPE_Q4_0, K, M);
     ggml_set_name(tensor, "tmac_tensor");
 
     // Allocate memory for T-MAC tensors
@@ -201,7 +220,14 @@ int main() {
         return 1;
     }
 
-    ggml_backend_tmac_convert_weight(tensor, quantized_tensor->data, 0, ggml_backend_buft_get_alloc_size(tmac_buft, tensor));
+    //> Quantize Tensor to Q4_0
+    struct ggml_cgraph * gf_quant_to_tmac = ggml_new_graph(tmac_ctx);
+    ggml_tensor* quant_to_tmac_op = ggml_cpy(tmac_ctx, tensor_f32, tensor);
+    ggml_build_forward_expand(gf_quant_to_tmac, quant_to_tmac_op);
+
+    ggml_tensor * quantized_tensor_tmac = compute_graph(tmac_ctx, gf_quant_to_tmac);
+
+    ggml_backend_tmac_convert_weight(quantized_tensor_tmac, quantized_tensor_tmac->data, 0, ggml_backend_buft_get_alloc_size(tmac_buft, tensor));
 
     //> ===================================================================================================
     //> Do MUL_MAT compute.
@@ -212,15 +238,22 @@ int main() {
     ggml_build_forward_expand(gf_mul_mat, mul_op);
     ggml_tensor * result = compute_graph(main_ctx, gf_mul_mat);
 
-    // struct ggml_cgraph * gf_mul_mat_tmac = ggml_new_graph(tmac_ctx);
-    // ggml_tensor* mul_op_tmac = ggml_mul_mat(tmac_ctx, tensor, quantized_activation_f16);
-    // ggml_build_forward_expand(gf_mul_mat_tmac, mul_op_tmac);
-    // ggml_tensor * result_tmac = compute_graph(tmac_ctx, gf_mul_mat_tmac);
+    struct ggml_cgraph * gf_mul_mat_tmac = ggml_new_graph(tmac_ctx);
+    ggml_tensor* mul_op_tmac = ggml_mul_mat(tmac_ctx, tensor, activation);
+    ggml_build_forward_expand(gf_mul_mat_tmac, mul_op_tmac);
+
+    ggml_backend_buffer_t tmac_buf2 = ggml_backend_alloc_ctx_tensors_from_buft(tmac_ctx, tmac_buft);
+    if (!tmac_buf2) {
+        printf("ERROR: Failed to allocate T-MAC buffer\n");
+        throw std::runtime_error("T-MAC buffer allocation failed");
+    }
+
+    ggml_tensor * result_tmac = compute_graph(tmac_ctx, gf_mul_mat_tmac);
 
     printf("Standard results :\n");
     ggml_print_tensor((uint8_t *)result->data, GGML_TYPE_F32, result->ne, result->nb, 3);
-    // printf("T-MAC results :\n");
-    // ggml_print_tensor((uint8_t *)result_tmac->data, GGML_TYPE_F32, result_tmac->ne, result_tmac->nb, 3);
+    printf("T-MAC results :\n");
+    ggml_print_tensor((uint8_t *)result_tmac->data, GGML_TYPE_F32, result_tmac->ne, result_tmac->nb, 3);
     
     return 0;
 } 
