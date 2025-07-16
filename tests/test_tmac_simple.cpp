@@ -91,8 +91,8 @@ static_assert(sizeof(block_qlutattn_w4g64) == sizeof(ggml_half) + sizeof(ggml_ha
 //> ===================================================================================================
 
 // Use fixed seed for reproducible results
-static std::mt19937 g_rng(42);
-// static std::mt19937 g_rng(std::random_device{}());
+// static std::mt19937 g_rng(42);
+static std::mt19937 g_rng(std::random_device{}());
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
     float *                         data       = (float *) dst->data;
@@ -536,6 +536,24 @@ int main() {
     ggml_print_tensor((uint8_t *)result->data, GGML_TYPE_F32, result->ne, result->nb, 4);
     printf("T-MAC results :\n");
     ggml_print_tensor((uint8_t *)result_tmac->data, GGML_TYPE_F32, result_tmac->ne, result_tmac->nb, 4);
+
+    //> ===================================================================================================
+    //  Compute NMSE
+    //> ===================================================================================================
+
+    float nmse_tmac = 0.0f;
+    float norm_sq_tmac = 0.0f;
+    float * result_f32 = (float *) result->data;
+    float * result_tmac_f32 = (float *) result_tmac->data;
+
+    for (int i = 0; i < M * N; i++) {
+        float diff = result_tmac_f32[i] - result_f32[i];
+        nmse_tmac += diff * diff;
+        norm_sq_tmac += result_f32[i] * result_f32[i];
+    }
+
+    nmse_tmac /= norm_sq_tmac;
+    printf("NMSE (T-MAC) = %.8f\n", nmse_tmac);
 
     return 0;
 }

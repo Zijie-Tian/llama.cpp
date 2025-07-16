@@ -83,16 +83,16 @@ static double calculate_nmse(ggml_tensor * original, ggml_tensor * quantized) {
     if (ggml_nelements(original) != ggml_nelements(quantized) || ggml_nelements(original) == 0) {
         return -1.0;
     }
-    
+
     size_t n_elements = ggml_nelements(original);
     double mse = 0.0;
     double signal_power = 0.0;
-    
+
     // Extract values from tensors
     for (size_t i = 0; i < n_elements; i++) {
         float orig_val = 0.0f;
         float quant_val = 0.0f;
-        
+
         // Get original value
         if (original->type == GGML_TYPE_F32) {
             orig_val = ((float*)original->data)[i];
@@ -104,7 +104,7 @@ static double calculate_nmse(ggml_tensor * original, ggml_tensor * quantized) {
                 tt->to_float(original->data, &orig_val, 1);
             }
         }
-        
+
         // Get quantized value
         if (quantized->type == GGML_TYPE_F32) {
             quant_val = ((float*)quantized->data)[i];
@@ -116,19 +116,19 @@ static double calculate_nmse(ggml_tensor * original, ggml_tensor * quantized) {
                 tt->to_float(quantized->data, &quant_val, 1);
             }
         }
-        
+
         double diff = orig_val - quant_val;
         mse += diff * diff;
         signal_power += orig_val * orig_val;
     }
-    
+
     mse /= n_elements;
     signal_power /= n_elements;
-    
+
     if (signal_power == 0.0) {
         return -1.0;
     }
-    
+
     return mse / signal_power;
 }
 
@@ -138,7 +138,7 @@ int main() {
         .mem_buffer = NULL,
         .no_alloc   = false,
     };
-    
+
     struct ggml_context * ctx = ggml_init(params);
     if (!ctx) {
         fprintf(stderr, "Failed to initialize GGML context\n");
@@ -152,7 +152,7 @@ int main() {
     // Create source tensor (FP16)
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
     ggml_set_name(k, "k_source");
-    
+
     // Create quantized tensor with GGML_TYPE_QLUTATTN_W4G128_PC
     ggml_tensor * k_quantized = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_W4G128_PC, k->ne[0], k->ne[1], k->ne[2], k->ne[3]);
     ggml_set_name(k_quantized, "k_quantized");
@@ -176,7 +176,7 @@ int main() {
 
     //> Build computation graph for quantization
     struct ggml_cgraph * gf = ggml_new_graph(ctx);
-    
+
     //> Quantize: k -> k_quantized, k_quantized_pt
     ggml_tensor * quant_op = ggml_cpy(ctx, k, k_quantized);
     ggml_build_forward_expand(gf, quant_op);
@@ -191,7 +191,7 @@ int main() {
 
     //> Do compute.
     ggml_graph_compute_with_ctx(ctx, gf, 1);
-    
+
     printf("K (source):\n");
     ggml_print_tensor((uint8_t *)k->data, GGML_TYPE_F16, k->ne, k->nb, 3);
 
@@ -207,6 +207,6 @@ int main() {
 
     // Clean up
     ggml_free(ctx);
-    
+
     return 0;
 }
