@@ -220,7 +220,7 @@ static void * aligned_malloc(size_t size) {
     return ptr;
 #endif
 }
-    
+
 static void aligned_free(void * ptr) {
 #if defined(_WIN32)
     _aligned_free(ptr);
@@ -330,7 +330,7 @@ static inline void ggml_tmac_forward_mul_mat(
             tmac_float_type *act_output = (tmac_float_type *)C + dst_offset;
 
             qgemm_lut_int8_g4(a, lut, scales, lut_scales, lut_biases, act_output, bm, K, N, kernel_config);
-        }  
+        }
         /* One Block */
     }
 }
@@ -423,7 +423,7 @@ static void ggml_tmac_tune_kernel_config(const struct ggml_tensor * tensor, int 
         if (M % (bm/bits) != 0 || bm % bits != 0) {
             continue;
         }
-        
+
         kernel_config.bm = bm;
         for (int n: bns) {
             if ((N >= n && N % n != 0) || (N < n && n != bns[0])) {
@@ -509,7 +509,7 @@ size_t ggml_tmac_get_nbytes(const struct ggml_tensor * tensor) {
     return nbytes;
 }
 
-    
+
 
 
 /****** T-MAC convert tensor ******/
@@ -910,12 +910,12 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
                         }
                     }
 
-                    idx = idx / group_size;
-                    int nb1 = k / group_size;
-                    int nb0 = bm / bits * nb1;
-                    int new_im = idx / nb0;
+                    idx         = idx / group_size;
+                    int nb1     = k / group_size;
+                    int nb0     = bm / bits * nb1;
+                    int new_im  = idx / nb0;
                     int new_ibm = (idx % nb0) / nb1;
-                    int new_ik = (idx % nb1);
+                    int new_ik  = (idx % nb1);
 
                     if (get_type_has_zero_point(tensor->type)) {
                         int new_isimd = new_ibm % simd_n_out;
@@ -947,18 +947,16 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
 
 void ggml_backend_tmac_convert_weight(struct ggml_tensor * tensor, const void * data, size_t offset, size_t size) {
     GGML_ASSERT(offset == 0 && size == ggml_tmac_get_nbytes(tensor)); // only full tensor conversion is supported for now
-    
+
     auto start = std::chrono::high_resolution_clock::now();
     ggml_tmac_transform_tensor(tensor, data);
     auto end = std::chrono::high_resolution_clock::now();
-    
+
     std::chrono::duration<double, std::milli> elapsed = end - start;
     GGML_LOG_INFO("tmac weight conversion for %s: %.2f ms\n", tensor->name, elapsed.count());
 }
 
-
 /****** T-MAC compute ******/
-
 
 // m = batch_size
 // n = output_dim
@@ -1028,7 +1026,7 @@ void ggml_backend_tmac_mul_mat(const struct ggml_compute_params * params, struct
         act_input = (tmac_float_type *) src1->data;
     }
 
-    //> simply split along the M dim.
+    //> simply split along the M dim. NOTE : one thread will handle one row of weights.
     for (int ine11 = ith; ine11 < ne11; ine11 += nth) {
         if (sizeof(tmac_float_type) == 2) {
             // TODO: can we reuse the src1->data memory?
