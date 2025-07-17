@@ -1,3 +1,4 @@
+#define GGML_USE_TMAC 1
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -14,8 +15,8 @@
 #include "ggml-cpu.h"
 #include "ggml-backend.h"
 
-#include "tmac.h"
-#include "lut_mul_mat.h"
+#include "ggml-cpu/tmac/tmac.h"
+#include "ggml-cpu/tmac/lut_mul_mat.h"
 
 #ifdef __ARM_NEON
 #include <arm_neon.h>

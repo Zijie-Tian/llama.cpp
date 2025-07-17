@@ -286,17 +286,17 @@ if (GGML_TMAC AND NOT GGML_BACKEND_DL)
     message(STATUS "T-MAC test will be built")
     
     # Also build simple T-MAC test
-    llama_build_and_test(test_tmac_simple.cpp)
-    target_compile_definitions(test_tmac_simple PRIVATE GGML_USE_TMAC)
-    target_include_directories(test_tmac_simple PRIVATE 
-        ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu/tmac
-        ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu
-        ${CMAKE_SOURCE_DIR}/ggml/src
-    )
-    target_link_libraries(test_tmac_simple PRIVATE ggml)
+    #llama_build_and_test(test_tmac_simple.cpp) # This line is removed
+    #target_compile_definitions(test_tmac_simple PRIVATE GGML_USE_TMAC) # This line is removed
+    #target_include_directories(test_tmac_simple PRIVATE  # This line is removed
+    #    ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu/tmac # This line is removed
+    #    ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu # This line is removed
+    #    ${CMAKE_SOURCE_DIR}/ggml/src # This line is removed
+    #) # This line is removed
+    #target_link_libraries(test_tmac_simple PRIVATE ggml) # This line is removed
     
-    if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        target_compile_options(test_tmac_simple PRIVATE -march=armv8.2a+fp16)
-        target_compile_definitions(test_tmac_simple PRIVATE __ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
-    endif()
+    #if (CMAKE_CXX_COMPILER_ID MATCHES "Clang") # This line is removed
+    #    target_compile_options(test_tmac_simple PRIVATE -march=armv8.2a+fp16) # This line is removed
+    #    target_compile_definitions(test_tmac_simple PRIVATE __ARM_FEATURE_FP16_VECTOR_ARITHMETIC) # This line is removed
+    #endif() # This line is removed
 endif()

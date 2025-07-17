@@ -22,3 +22,14 @@ set(TARGET test-tmac-quant)
 add_executable(${TARGET} test_tmac_quant.cpp)
 target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(${TARGET} PRIVATE cxx_std_11)
+
+set(TARGET test_tmac_simple)
+add_executable(${TARGET} test_tmac_simple.cpp)
+target_include_directories(
+    ${TARGET} PRIVATE  # This line is removed
+    ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu/tmac # This line is removed
+    ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu # This line is removed
+    ${CMAKE_SOURCE_DIR}/ggml/src # This line is removed
+)
+target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
+target_compile_features(${TARGET} PRIVATE cxx_std_11)
