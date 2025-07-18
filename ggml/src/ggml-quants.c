@@ -113,14 +113,130 @@ static void pseudo_quantize_qlutattn_f32(
     }
 }
 
+/**
+ * @brief Pseudo symmetric quantization of a float array.
+ *      NOTICE : This function is GROUP quantization.
+ * @param input 
+ * @param quantized 
+ * @param scales 
+ * @param zeros 
+ * @param n 
+ * @param n_bit 
+ * @param q_group_size 
+ */
+static void pseudo_symmetric_quantize_f32(
+    int8_t* quantized,
+    const float* input,
+    float* scales,
+    float* zeros,
+    int n,
+    int n_bit,
+    int q_group_size
+) {
+    int num_groups;
+    if (q_group_size > 0) {
+        if (n % q_group_size != 0) {
+            GGML_ASSERT(0);
+        }
+        num_groups = n / q_group_size;
+    } else if (q_group_size == -1) {
+        num_groups = 1;
+        q_group_size = n;
+    } else {
+        num_groups = 1;
+        q_group_size = n;
+    }
+
+    //> [-2^(n_bit - 1) + 1, 2^(n_bit - 1) - 1]
+    const int max_int = (1 << (n_bit - 1)) - 1;
+    const int min_int = -max_int;
+
+    for (int g = 0; g < num_groups; ++g) {
+        int start_idx = g * q_group_size;
+        int end_idx = start_idx + q_group_size;
+
+        float max_abs_val = -FLT_MAX;
+
+        for (int i = start_idx; i < end_idx; ++i) {
+            float abs_val = fabsf(input[i]);
+            if (abs_val > max_abs_val) max_abs_val = abs_val;
+        }
+
+        scales[g] = max_abs_val / max_int;
+        zeros[g]  = 0.0f;    // NOTE : zero point is 0 for symmetric quantization.
+
+        for (int i = start_idx; i < end_idx; ++i) {
+            int quantized_val = (int)roundf(input[i] / scales[g]);
+            quantized_val = quantized_val < min_int ? min_int : (quantized_val > max_int ? max_int : quantized_val);
+            quantized[i] = (int8_t)quantized_val;
+        }
+    }
+}
+
 //> ===================================================================================================
 //> Following are QLUTATTN quantization functions.
 //> ===================================================================================================
 
+/**
+ * @brief Pseudo symmetric quantization of a float array.
+ *      NOTICE : This function is per-CHANNEL quantization.
+ * @param input
+ * @param quantized
+ * @param scales
+ * @param zeros
+ * @param n
+ * @param n_bit
+ * @param q_group_size
+ */
+static void pseudo_symmetric_quantize_128x128_f32(
+    int8_t* quantized,
+    const float* input,
+    float* scales,
+    float* zeros,
+    int n,
+    int n_bit
+) {
+    const int64_t group_size = 128;
+    GGML_ASSERT(n % QKLUTATTN_KV4_128x128 == 0);
 
+    const int64_t n_groups = n / group_size;
+
+    float group_max_abs[n_groups];
+    memset(group_max_abs, -FLT_MAX, n_groups * sizeof(float));
+
+    //> [-2^(n_bit - 1) + 1, 2^(n_bit - 1) - 1]
+    const int max_int = (1 << (n_bit - 1)) - 1;
+    const int min_int = -max_int;
+
+    for (int g = 0; g < n_groups; ++g) {
+        for (int i = g * group_size; i < (g + 1) * group_size; ++i) {
+            float abs_val = fabsf(input[i]);
+            // if (std::isnan(abs_val)) {
+            //     abs_val = 0.0f; // Handle NaN values
+            // }
+
+            if (abs_val > group_max_abs[i % group_size]) {
+                group_max_abs[i % group_size] = abs_val;
+            }
+        }
+    }
+
+    int g_idx = 0;
+    for (int idx = 0; idx < n; ++idx) {
+        g_idx = idx % group_size;
+
+        scales[g_idx] = group_max_abs[g_idx] / max_int;
+        zeros[g_idx]  = 0.0f;
+
+        quantized[idx] = (int8_t)roundf(input[idx] / scales[g_idx]);
+        quantized[idx] < min_int ? quantized[idx] = min_int : quantized[idx] > max_int ? quantized[idx] = max_int : quantized[idx];
+    }
+}
 
 void quantize_block_qlutattn_kv1_128x128_ref(const float *restrict x, block_qlutattn_kv1_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV1_128x128 == 0);
+
+    const int nb = k / QKLUTATTN_KV1_128x128;
 }
 
 void quantize_block_qlutattn_kv2_128x128_ref(const float *restrict x, block_qlutattn_kv2_128x128 *restrict y, int64_t k) {
@@ -129,8 +245,35 @@ void quantize_block_qlutattn_kv2_128x128_ref(const float *restrict x, block_qlut
 
 void quantize_block_qlutattn_kv4_128x128_ref(const float *restrict x, block_qlutattn_kv4_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV4_128x128 == 0);
-}
+    
+    const int nb = k / QKLUTATTN_KV4_128x128;
 
+    int8_t pseudo_quant_buf[QKLUTATTN_KV4_128x128];
+    memset(pseudo_quant_buf, 0, sizeof(pseudo_quant_buf));
+
+    float * scale_ptr = (float *)((uint8_t *)y -> qs + QKLUTATTN_KV4_128x128 / 2);
+    float * zero_ptr  = (float *)((uint8_t *)y -> qs + QKLUTATTN_KV4_128x128 / 2 + 128 * sizeof(float));
+
+    pseudo_symmetric_quantize_f32(
+        (int8_t *) pseudo_quant_buf,
+        x,
+        scale_ptr,
+        zero_ptr,
+        k,
+        4,
+        128
+    );
+    
+    for (int i = 0; i < nb; i++) {
+        for (int j = 0; j < QKLUTATTN_KV4_128x128 / 2; j++) {
+            const uint8_t x0 = (pseudo_quant_buf[i * QKLUTATTN_KV4_128x128 + j * 2 + 0] + (1 << (4 - 1)));
+            const uint8_t x1 = (pseudo_quant_buf[i * QKLUTATTN_KV4_128x128 + j * 2 + 1] + (1 << (4 - 1)));
+
+            //> 4-bits pack.
+            y[i].qs[j] = (x0 << 4) | (x1 << 0);
+        }
+    }
+}
 
 // TODO: Currently these QLUTATTN quantization functions are JUST Q4_0 quantization.
 void quantize_row_qlutattn_w1g128_pg_ref(const float * GGML_RESTRICT x, block_qlutattn_w1g128 * GGML_RESTRICT y, int64_t k) {

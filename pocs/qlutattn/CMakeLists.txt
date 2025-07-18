@@ -8,6 +8,11 @@ add_executable(${TARGET} test_qlutattn_w4g128k.cpp)
 target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(${TARGET} PRIVATE cxx_std_11)
 
+set(TARGET test_qlutattn_128x128)
+add_executable(${TARGET} test_qlutattn_128x128.cpp)
+target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
+target_compile_features(${TARGET} PRIVATE cxx_std_11)
+
 set(TARGET test_channel_quant)
 add_executable(${TARGET} test_channel_quant.cpp)
 target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})

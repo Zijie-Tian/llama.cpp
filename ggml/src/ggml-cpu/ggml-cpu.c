@@ -2812,6 +2812,7 @@ struct ggml_cplan ggml_graph_plan(
                             (node->src[0]->type == GGML_TYPE_BF16 && node->src[1] && node->src[1]->type == GGML_TYPE_F16)) {
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * n_tasks;
                         }
+
                         //> override for QLUTATTN quantization.
                         if (node->type == GGML_TYPE_QLUTATTN_W1G128_PC ||
                             node->type == GGML_TYPE_QLUTATTN_W2G128_PC ||
@@ -2830,6 +2831,14 @@ struct ggml_cplan ggml_graph_plan(
                             node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_PT ||
                             node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_PT  ) {
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
+                        }
+                        
+                        if (node->src[0]->type == GGML_TYPE_QLUTATTN_KV1_128x128 || 
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
+                            node->src[0]->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
+                            //> We need do block quantization.
+                            cur  = node->ne[0] * node->ne[1] * sizeof(uint8_t) + node->ne[0] * node->ne[1] / 128 * sizeof(float) * 2;
+                            cur += ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
                         }
 
                     } break;

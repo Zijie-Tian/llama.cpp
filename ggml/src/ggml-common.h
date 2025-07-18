@@ -251,32 +251,28 @@ typedef struct {
 } block_qlutattn_w4g128;
 static_assert(sizeof(block_qlutattn_w4g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G128 / 2, "wrong qlutattn_w4g128 block size/padding");
 
-
 //> Added QLUTATTN block quantization.
-#define QKLUTATTN_KV1_128x128 128 * 128
+#define QKLUTATTN_KV1_128x128 (128 * 128)
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
+    ggml_half d[128];                // scale
+    ggml_half m[128];                // min
     uint8_t   qs[QKLUTATTN_KV1_128x128 / 8];    // 8-bit quants
 } block_qlutattn_kv1_128x128;
-static_assert(sizeof(block_qlutattn_kv1_128x128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_KV1_128x128 / 8, "wrong qlutattn_w1_128x128 block size/padding");
+static_assert(sizeof(block_qlutattn_kv1_128x128) == (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV1_128x128 / 8, "wrong qlutattn_w1_128x128 block size/padding");
 
-#define QKLUTATTN_KV2_128x128 128 * 128
+#define QKLUTATTN_KV2_128x128 (128 * 128)
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
+    ggml_half d[128];                // scale
+    ggml_half m[128];                // min
     uint8_t   qs[QKLUTATTN_KV2_128x128 / 4];    // 8-bit quants
 } block_qlutattn_kv2_128x128;
-static_assert(sizeof(block_qlutattn_kv2_128x128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_KV2_128x128 / 4, "wrong qlutattn_w2_128x128 block size/padding");
+static_assert(sizeof(block_qlutattn_kv2_128x128) == (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV2_128x128 / 4, "wrong qlutattn_w2_128x128 block size/padding");
 
-#define QKLUTATTN_KV4_128x128 128 * 128
+#define QKLUTATTN_KV4_128x128 (128 * 128)
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_KV4_128x128 / 2];    // 8-bit quants
+    uint8_t   qs[QKLUTATTN_KV4_128x128 / 2 + 128 * sizeof(ggml_half) * 2];    // 4-bit quants
 } block_qlutattn_kv4_128x128;
-static_assert(sizeof(block_qlutattn_kv4_128x128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_KV4_128x128 / 2, "wrong qlutattn_w4_128x128 block size/padding");
-
+static_assert(sizeof(block_qlutattn_kv4_128x128) == (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV4_128x128 / 2, "wrong qlutattn_w4_128x128 block size/padding");
 
 //
 // Ternary quantization

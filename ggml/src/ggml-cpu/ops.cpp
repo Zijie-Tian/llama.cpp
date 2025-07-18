@@ -46,13 +46,35 @@ static bool is_qlutattn_type(ggml_type type) {
            type == GGML_TYPE_QLUTATTN_W4G128_PC ||
            type == GGML_TYPE_QLUTATTN_W1G128_PT ||
            type == GGML_TYPE_QLUTATTN_W2G128_PT ||
-           type == GGML_TYPE_QLUTATTN_W4G128_PT;
+           type == GGML_TYPE_QLUTATTN_W4G128_PT ||
+           type == GGML_TYPE_QLUTATTN_KV1_128x128 ||
+           type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
+           type == GGML_TYPE_QLUTATTN_KV4_128x128;
 }
 
 static bool is_qlutattn_kv_type(ggml_type type) {
     return type == GGML_TYPE_QLUTATTN_KV1_128x128 ||
            type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
            type == GGML_TYPE_QLUTATTN_KV4_128x128;
+}
+
+static int get_quant_nbits(ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_QLUTATTN_KV1_128x128:
+        case GGML_TYPE_QLUTATTN_W1G128_PC:
+        case GGML_TYPE_QLUTATTN_W1G128_PT:
+            return 1;
+        case GGML_TYPE_QLUTATTN_KV2_128x128:
+        case GGML_TYPE_QLUTATTN_W2G128_PC:
+        case GGML_TYPE_QLUTATTN_W2G128_PT:
+            return 2;
+        case GGML_TYPE_QLUTATTN_KV4_128x128:
+        case GGML_TYPE_QLUTATTN_W4G128_PC:
+        case GGML_TYPE_QLUTATTN_W4G128_PT:
+            return 4;
+        default:
+            return 0; // Not a quantized type
+    }
 }
 
 static void ggml_compute_forward_dup_f16(
@@ -348,6 +370,9 @@ static void ggml_compute_forward_dup_f16(
     }
 }
 
+
+
+
 static void ggml_compute_forward_dup_f16_qlutattn(
     const ggml_compute_params * params,
     ggml_tensor * dst) {
@@ -369,59 +394,110 @@ static void ggml_compute_forward_dup_f16_qlutattn(
         // NOTICE : Currently, this function is only for the first thread.
         return;
     }
-
-    // GGML_ASSERT(ne01 % ggml_blck_size(dst->type) == 0);
-
-    // NOTE : Do per-channel quantization.
-
-    int group_size  = ggml_blck_size(dst->type);
-    int n_steps     = ne01 / group_size;    // kv_len / group_size
+    
+    const int nbits = get_quant_nbits(dst->type);
+    GGML_ASSERT(nbits > 0 && "Invalid quantization type");
+    const int nelem_per_byte = 8 / nbits;
 
     // NOTICE: This is QLUTATTN quantization.
     ggml_from_float_t const quantize_block_q = ggml_get_type_traits_cpu(dst->type)->from_float;
-    float * src0_f32 = (float *) params->wdata + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith; // NOTICE : Too large.
+    int64_t blck_size = ggml_blck_size(dst->type);
+
+    const int n_elements = ggml_nelements(src0);
     
-    size_t rs = ggml_row_size(dst->type, group_size * ne00);   // Size of one quantized block
-    char * dst_ptr = (char *) dst->data;
+    uint8_t * qweight_ptr   = (uint8_t * ) params -> wdata;
+    float * scale_ptr = (float *)((char *) params -> wdata + n_elements / nelem_per_byte);
+    float * zero_ptr  = (float *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float));
 
-    for (int i03 = 0; i03 < ne03; i03++) {
-        for (int i02 = 0; i02 < ne02; i02++) {
-            for (int ig = 0; ig < n_steps; ig++) {
-                const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03); 
+    uint8_t * workspace = (uint8_t *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2);
 
-                if (dst->type == GGML_TYPE_QLUTATTN_KV1_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV2_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
-                    // Transpose data for per-channel quantization
-                    for (int i00 = 0; i00 < ne00; i00++) {
-                        for (int g_iter = 0; g_iter < group_size; g_iter++) {
-                            src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
-                        }
+    float * src0_f32 = (float *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
+    
+    GGML_ASSERT(n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2 + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith <= params->wsize);
+    
+    switch (dst->type) {
+        case GGML_TYPE_QLUTATTN_KV1_128x128:
+        case GGML_TYPE_QLUTATTN_KV2_128x128:
+        case GGML_TYPE_QLUTATTN_KV4_128x128:
+        {
+            GGML_ASSERT(ne00 * ne01 % (128 * 128) == 0 && "Must align to the 128 * 128.");
+            
+            for (int i03 = 0; i03 < ne03; i03++) {
+                for (int i02 = 0; i02 < ne02; i02++) {
+                    const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i02*nb02 + i03*nb03);
+                    
+                    for (int i = 0; i < ne00 * ne01; i++) {
+                        src0_f32[i] = GGML_FP16_TO_FP32(src0_ptr[i]);
                     }
-
-                } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PC || dst->type == GGML_TYPE_QLUTATTN_W2G128_PC || dst->type == GGML_TYPE_QLUTATTN_W1G128_PC) {
-                    // Transpose data for per-channel quantization
-                    for (int i00 = 0; i00 < ne00; i00++) {
-                        for (int g_iter = 0; g_iter < group_size; g_iter++) {
-                            src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
-                        }
-                    }
-
-                    // Calculate destination offset
-                    size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
-                    quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
-                } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PT || dst->type == GGML_TYPE_QLUTATTN_W2G128_PT || dst->type == GGML_TYPE_QLUTATTN_W1G128_PT) {
-                    // Transpose data for per-channel quantization
-                    for (int i00 = 0; i00 < ne00 * group_size; i00++) {
-                        src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
-                    }
-
-                    // Calculate destination offset
-                    size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
-                    quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+                    
+                    quantize_block_q(src0_f32, (char *) qweight_ptr + i02*nb02 + i03*nb03, ne00 * ne01);
                 }
             }
+            
+            
+            
+
+            break;
         }
+        case GGML_TYPE_QLUTATTN_W1G128_PC:
+        case GGML_TYPE_QLUTATTN_W2G128_PC:
+        case GGML_TYPE_QLUTATTN_W4G128_PC:
+            // GGML_ASSERT(ne00 == 128 && ne01 % group_size == 0);
+            break;
+        case GGML_TYPE_QLUTATTN_W1G128_PT:
+        case GGML_TYPE_QLUTATTN_W2G128_PT:
+        case GGML_TYPE_QLUTATTN_W4G128_PT:
+            // GGML_ASSERT(ne00 * group_size == 128 && ne01 % group_size == 0);
+            break;
+        default:
+            GGML_ABORT("fatal error");
     }
-    // GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
+    
+    // size_t rs = ggml_row_size(dst->type, group_size * ne00);   // Size of one quantized block
+    // char * dst_ptr = (char *) dst->data;
+
+    // for (int i03 = 0; i03 < ne03; i03++) {
+    //     for (int i02 = 0; i02 < ne02; i02++) {
+    //         for (int ig = 0; ig < n_steps; ig++) {
+    //             const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03); 
+
+    //             if (dst->type == GGML_TYPE_QLUTATTN_KV1_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV2_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
+    //                 // Transpose data for per-channel quantization
+    //                 for (int i00 = 0; i00 < ne00; i00++) {
+    //                     for (int g_iter = 0; g_iter < group_size; g_iter++) {
+    //                         src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
+    //                     }
+    //                 }
+
+    //                 // Calculate destination offset and quantize
+    //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+    //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+
+    //             } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PC || dst->type == GGML_TYPE_QLUTATTN_W2G128_PC || dst->type == GGML_TYPE_QLUTATTN_W1G128_PC) {
+    //                 // Transpose data for per-channel quantization
+    //                 for (int i00 = 0; i00 < ne00; i00++) {
+    //                     for (int g_iter = 0; g_iter < group_size; g_iter++) {
+    //                         src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
+    //                     }
+    //                 }
+
+    //                 // Calculate destination offset
+    //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+    //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+    //             } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PT || dst->type == GGML_TYPE_QLUTATTN_W2G128_PT || dst->type == GGML_TYPE_QLUTATTN_W1G128_PT) {
+    //                 // Transpose data for per-channel quantization
+    //                 for (int i00 = 0; i00 < ne00 * group_size; i00++) {
+    //                     src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
+    //                 }
+
+    //                 // Calculate destination offset
+    //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+    //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+    //             }
+    //         }
+    //     }
+    // }
+    // // GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
 }
 
 static void ggml_compute_forward_dup_bf16(
@@ -1348,6 +1424,17 @@ static void ggml_compute_forward_dup_qlutattn(
                     for (int i00 = 0; i00 < ne00 * qk; i00++) {
                         const int64_t dst_offset = i00*nb0 + i02*nb2 + i03*nb3;
                         ((float *) dst->data)[dst_offset / sizeof(float)] = src0_f32[i00];
+                    }
+                } else if (src0->type == GGML_TYPE_QLUTATTN_KV1_128x128 || src0->type == GGML_TYPE_QLUTATTN_KV2_128x128 || src0->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
+                    // Transpose back from per-channel layout to original layout for KV types
+                    for (int i00 = 0; i00 < ne00; i00++) {
+                        for (int g_iter = 0; g_iter < qk; g_iter++) {
+                            int64_t kv_idx = ig * qk + g_iter;
+                            if (kv_idx < ne01) {
+                                const int64_t dst_offset = i00*nb0 + kv_idx*nb1 + i02*nb2 + i03*nb3;
+                                ((float *) dst->data)[dst_offset / sizeof(float)] = src0_f32[i00 * qk + g_iter];
+                            }
+                        }
                     }
                 }
             }
@@ -7570,6 +7657,7 @@ static void ggml_flash_attn_ext_f16_segment(
             float s; // KQ value
 
             //> k_data: [head_dim, kv_len, n_kv_head, n_kv_batch]
+            // NOTE: For quantized data, This will pick one block.
             const char * k_data = (const char *) k->data + ( ic*nbk1 + ik2*nbk2 + ik3*nbk3);
             kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
 
