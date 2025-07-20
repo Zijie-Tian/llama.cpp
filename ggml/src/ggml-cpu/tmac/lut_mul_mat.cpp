@@ -462,8 +462,6 @@ static void ggml_tmac_tune_kernel_config(const struct ggml_tensor * tensor, int 
     insert_or_assign_tmac_kernel_config(M, K, bits, best_kcfg);
 }
 
-
-
 size_t ggml_backend_tmac_desired_wsize(const struct ggml_tensor * dst) {
     struct ggml_tensor * src0 = dst->src[0];
     struct ggml_tensor * src1 = dst->src[1];
@@ -508,9 +506,6 @@ size_t ggml_tmac_get_nbytes(const struct ggml_tensor * tensor) {
     // printf("ggml_tmac_get_nbytes: %s --- k=%d, m=%d, w=%d, sc=%d, nbytes: %zu\n", tensor->name, k, m, k * m / 8 * bits, scales_size, nbytes);
     return nbytes;
 }
-
-
-
 
 /****** T-MAC convert tensor ******/
 static bool do_permutate(enum ggml_type type) {

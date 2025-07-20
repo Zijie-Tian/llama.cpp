@@ -2772,6 +2772,26 @@ int ggml_threadpool_atomic_fetch_add_explicit(struct ggml_threadpool * threadpoo
     return (int)atomic_fetch_add_explicit(&threadpool->current_chunk, value, memory_order_relaxed);
 }
 
+int ggml_qlutattn_type_bits(enum ggml_type type) {
+    switch (type) {
+        case GGML_TYPE_QLUTATTN_W1G128_PC:
+        case GGML_TYPE_QLUTATTN_W1G128_PT:
+        case GGML_TYPE_QLUTATTN_KV1_128x128:
+            return 1;
+        case GGML_TYPE_QLUTATTN_W2G128_PC:
+        case GGML_TYPE_QLUTATTN_W2G128_PT:
+        case GGML_TYPE_QLUTATTN_KV2_128x128:
+            return 2;
+        case GGML_TYPE_QLUTATTN_W4G128_PC:
+        case GGML_TYPE_QLUTATTN_W4G128_PT:
+        case GGML_TYPE_QLUTATTN_KV4_128x128:
+            return 4;
+        default:
+            return 0; // Unreachable, but avoids compiler warnings
+    }
+}
+//> This function is used to estimate the work size for the graph plan.
+
 struct ggml_cplan ggml_graph_plan(
           const struct ggml_cgraph * cgraph,
                                int   n_threads,
@@ -2822,7 +2842,7 @@ struct ggml_cplan ggml_graph_plan(
                             node->type == GGML_TYPE_QLUTATTN_W4G128_PT) {
                             //> We need do block quantization.
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
-                        } 
+                        }
 
                         if (node->src[0]->type == GGML_TYPE_QLUTATTN_W1G128_PC ||
                             node->src[0]->type == GGML_TYPE_QLUTATTN_W2G128_PC ||
@@ -2832,13 +2852,13 @@ struct ggml_cplan ggml_graph_plan(
                             node->src[0]->type == GGML_TYPE_QLUTATTN_W4G128_PT  ) {
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
                         }
-                        
-                        if (node->src[0]->type == GGML_TYPE_QLUTATTN_KV1_128x128 || 
+
+                        if (node->src[0]->type == GGML_TYPE_QLUTATTN_KV1_128x128 ||
                             node->src[0]->type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
                             node->src[0]->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
                             //> We need do block quantization.
                             cur  = node->ne[0] * node->ne[1] * sizeof(uint8_t) + node->ne[0] * node->ne[1] / 128 * sizeof(float) * 2;
-                            cur += ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
+                            cur += ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] /  4 * ggml_qlutattn_type_bits(node->type) * n_tasks;
                         }
 
                     } break;
@@ -2956,7 +2976,7 @@ struct ggml_cplan ggml_graph_plan(
                             const size_t output_size = N_Q_HEADS * Q_LEN * DV * sizeof(float);
                             const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + 2 * DV + DK + 16) * sizeof(float);
                             const size_t scratch_total  = scratch_per_th * n_tasks;
-                            
+
                             // Total: 2 output buffers + 2 sets of scratch space + 2 sets of state
                             cur = 2 * output_size + 2 * scratch_total;
 
@@ -2966,7 +2986,7 @@ struct ggml_cplan ggml_graph_plan(
                             const int64_t KV_LEN    = node->src[1]->ne[1];  // KV length
                             const int64_t DK        = node->src[0]->ne[0];  // DK
                             const int64_t DV        = node->src[2]->ne[0];  // DV
-                            
+
                             const size_t OUTPUT_SIZE    = N_Q_HEADS * SEQ_LEN * DV;
                             const size_t LOCAL_MAX_SIZE = N_Q_HEADS * SEQ_LEN;
 
@@ -3023,17 +3043,17 @@ struct ggml_cplan ggml_graph_plan(
                     //     const int64_t N_Q_HEADS = node->src[0]->ne[2]; // n_q_heads
                     //     const int64_t N_K_HEADS = node->src[1]->ne[2]; // n_k_heads
                     //     const int64_t N_BATCHES = node->src[0]->ne[3]; // n_batches
-                        
+
                     //     // GGML_LOG_DEBUG("[ggml-cpu] src[0]->ne[0]: %zu, src[0]->ne[1]: %zu, src[0]->ne[2]: %zu, src[0]->ne[3]: %zu\n", node->src[0]->ne[0], node->src[0]->ne[1], node->src[0]->ne[2], node->src[0]->ne[3]);
                     //     // GGML_LOG_DEBUG("[ggml-cpu] src[1]->ne[0]: %zu, src[1]->ne[1]: %zu, src[1]->ne[2]: %zu, src[1]->ne[3]: %zu\n", node->src[1]->ne[0], node->src[1]->ne[1], node->src[1]->ne[2], node->src[1]->ne[3]);
                     //     // GGML_LOG_DEBUG("[ggml-cpu] src[2]->ne[0]: %zu, src[2]->ne[1]: %zu, src[2]->ne[2]: %zu, src[2]->ne[3]: %zu\n", node->src[2]->ne[0], node->src[2]->ne[1], node->src[2]->ne[2], node->src[2]->ne[3]);
                     //     // GGML_LOG_DEBUG("[ggml-cpu] ne[0]: %zu, ne[1]: %zu, ne[2]: %zu, ne[3]: %zu\n", node->ne[0], node->ne[1], node->ne[2], node->ne[3]);
-                        
+
                     //     // Follow the mixed KV cache flash attention workspace layout:
                     //     // OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 2 * DV + 1 * DK + 1 + CACHE_LINE_SIZE_F32
                     //     const size_t OUTPUT_SIZE    = DV * N_Q_HEADS * SEQ_LEN;
                     //     const size_t LOCAL_MAX_SIZE = N_Q_HEADS * SEQ_LEN;
-                        
+
                     //     cur = sizeof(float)*(OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 2 * DV + 1 * DK + 1 + 16)*n_tasks;
                     //     // GGML_LOG_DEBUG("[ggml-cpu] OUTPUT_SIZE: %zu, LOCAL_MAX_SIZE: %zu, DV: %zu, DK: %zu, N_Q_HEADS: %zu, SEQ_LEN: %zu, N_BATCHES: %zu\n", OUTPUT_SIZE, LOCAL_MAX_SIZE, DV, DK, N_Q_HEADS, SEQ_LEN, N_BATCHES);
                     //     // GGML_LOG_DEBUG("[ggml-cpu] Allocate %zu bytes for custom op.\n", cur);

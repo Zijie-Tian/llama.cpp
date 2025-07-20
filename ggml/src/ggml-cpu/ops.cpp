@@ -7,6 +7,8 @@
 #include "vec.h"
 
 #include <float.h>
+#include <string>
+#include <unordered_map>
 #include <unistd.h>  // for usleep
 
 // ggml_compute_forward_dup
@@ -77,6 +79,12 @@ static int get_quant_nbits(ggml_type type) {
     }
 }
 
+/**
+ * @brief This function just for PC and PT.
+ *
+ * @param params
+ * @param dst
+ */
 static void ggml_compute_forward_dup_f16(
         const ggml_compute_params * params,
         ggml_tensor * dst) {
@@ -157,7 +165,7 @@ static void ggml_compute_forward_dup_f16(
                 // NOTICE: This is QLUTATTN quantization.
                 ggml_from_float_t const quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
                 float * src0_f32 = (float *) params->wdata + (ne00 + CACHE_LINE_SIZE_F32) * ith;
-                
+
                 size_t id = 0;
                 size_t rs = nb0 * (ne00 / ggml_blck_size(dst->type));   //> dst -> dtype_size * n_qgroup
                 char * dst_ptr = (char *) dst->data;
@@ -205,7 +213,7 @@ static void ggml_compute_forward_dup_f16(
                         id += rs * (ne01 - ir1);
                     }
                 }
-                GGML_LOG_INFO("DO QUANT: id=%u, rs=%u, ne00=%u, ne01=%u, ne02=%u, ne03=%u\n", id, rs, ne00, ne01, ne02, ne03);
+                GGML_LOG_INFO("DO QUANT: id=%ld, rs=%ld, ne00=%ld, ne01=%ld, ne02=%ld, ne03=%ld\n", id, rs, ne00, ne01, ne02, ne03);
             } else {
                 GGML_ABORT("fatal error"); // TODO: implement
             }
@@ -370,8 +378,55 @@ static void ggml_compute_forward_dup_f16(
     }
 }
 
+struct BlockI4TypeAccessor {
+    static constexpr int BITS = 4;
+    static constexpr int n_elem = 8 / BITS;
 
+    static uint8_t get_q(const void * data, int idx) {
+        const uint8_t * qs = (const uint8_t *) data;
+        int elem_idx = idx % n_elem;
+        return qs[idx / n_elem] >> ((n_elem - 1 - elem_idx) * BITS);
+    }
 
+    static float get_scale(const void * data, int idx, int group_size) {
+        const float * ss = (const float *) data;
+        float s = ss[idx / group_size];
+        return (float) s;
+    }
+
+    static float get_zero_point(const void * data, int idx, int group_size) {
+        const float * zs = (const float *) data;
+        float z = zs[idx / group_size];
+        return (float) z;
+    }
+};
+
+static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
+struct qlutattn_kernel_config * find_qlutattn_kernel_config(int M, int K, int bits)
+{
+    if (qlutattn_kernel_config.count("test") == 0) {
+        struct qlutattn_kernel_config kernel_config {
+            .g = 4,
+            .ngroups_per_elem = 1,
+            .q_group_size = 128,
+            .act_group_size = 128,
+            .has_scale = false,
+            .kfactor = 1,
+            .bits = bits,
+            .actk = 1, // should be equal to (act_group_size / g).
+            .has_zero_point = false,
+            .one_scale = false,
+            .bm = 16,
+            .simd_n_in = 16,
+            .simd_n_out = 8,
+            .chunk_n = 8
+        };
+
+        qlutattn_kernel_config["test"] = kernel_config;
+    }
+
+    return &qlutattn_kernel_config["test"];
+}
 
 static void ggml_compute_forward_dup_f16_qlutattn(
     const ggml_compute_params * params,
@@ -394,17 +449,21 @@ static void ggml_compute_forward_dup_f16_qlutattn(
         // NOTICE : Currently, this function is only for the first thread.
         return;
     }
-    
+
     const int nbits = get_quant_nbits(dst->type);
     GGML_ASSERT(nbits > 0 && "Invalid quantization type");
     const int nelem_per_byte = 8 / nbits;
+
+    struct qlutattn_kernel_config * kernel_config = find_qlutattn_kernel_config(ne01, ne00, nbits);
+
+    const int g = kernel_config->g; // Group size
 
     // NOTICE: This is QLUTATTN quantization.
     ggml_from_float_t const quantize_block_q = ggml_get_type_traits_cpu(dst->type)->from_float;
     int64_t blck_size = ggml_blck_size(dst->type);
 
     const int n_elements = ggml_nelements(src0);
-    
+
     uint8_t * qweight_ptr   = (uint8_t * ) params -> wdata;
     float * scale_ptr = (float *)((char *) params -> wdata + n_elements / nelem_per_byte);
     float * zero_ptr  = (float *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float));
@@ -412,30 +471,56 @@ static void ggml_compute_forward_dup_f16_qlutattn(
     uint8_t * workspace = (uint8_t *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2);
 
     float * src0_f32 = (float *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
-    
+    uint8_t * repack_ws = (uint8_t *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
+
     GGML_ASSERT(n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2 + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith <= params->wsize);
-    
+
     switch (dst->type) {
         case GGML_TYPE_QLUTATTN_KV1_128x128:
         case GGML_TYPE_QLUTATTN_KV2_128x128:
         case GGML_TYPE_QLUTATTN_KV4_128x128:
         {
             GGML_ASSERT(ne00 * ne01 % (128 * 128) == 0 && "Must align to the 128 * 128.");
-            
+
             for (int i03 = 0; i03 < ne03; i03++) {
                 for (int i02 = 0; i02 < ne02; i02++) {
                     const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i02*nb02 + i03*nb03);
-                    
+
                     for (int i = 0; i < ne00 * ne01; i++) {
                         src0_f32[i] = GGML_FP16_TO_FP32(src0_ptr[i]);
                     }
-                    
+
+                    // NOTE: This function we can set scale_ptr and zero_ptr.
+                    //> Per-token quantization.
                     quantize_block_q(src0_f32, (char *) qweight_ptr + i02*nb02 + i03*nb03, ne00 * ne01);
                 }
             }
-            
-            
-            
+
+            memset(repack_ws, 0, ne00 * ne01 * nbits * sizeof(uint8_t));
+
+            for (int im = 0; im < ne01; im++) {
+                for (int ik = 0; ik < ne00; ik++) {
+                    int idx = ik + im * ne00; // NOTE: idx in raw matrix.
+                    int q_idx = idx / nelem_per_byte;
+                    int bit_idx = idx % nelem_per_byte;
+
+                    uint8_t q_val = BlockI4TypeAccessor::get_q(qweight_ptr, idx);
+
+                    for (int ib = 0; ib < nbits; ib++) {
+                        int shft_left = ik % g;
+                        repack_ws[im * nbits * ne00 / g + ib * ne00 / g + ik] += ((q_val >> ib) & 0x1) << shft_left; // Scale to 0-255 range
+                    }
+                }
+            }
+
+
+
+
+
+
+
+
+
 
             break;
         }
@@ -452,14 +537,14 @@ static void ggml_compute_forward_dup_f16_qlutattn(
         default:
             GGML_ABORT("fatal error");
     }
-    
+
     // size_t rs = ggml_row_size(dst->type, group_size * ne00);   // Size of one quantized block
     // char * dst_ptr = (char *) dst->data;
 
     // for (int i03 = 0; i03 < ne03; i03++) {
     //     for (int i02 = 0; i02 < ne02; i02++) {
     //         for (int ig = 0; ig < n_steps; ig++) {
-    //             const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03); 
+    //             const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03);
 
     //             if (dst->type == GGML_TYPE_QLUTATTN_KV1_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV2_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
     //                 // Transpose data for per-channel quantization
@@ -1346,7 +1431,7 @@ static void ggml_compute_forward_dup_q(
         uint32_t i = ir * qk;
 
         const int64_t i03 = i/(ne00 * ne01 * ne02);                                  //> Batch idx
-        const int64_t i02 = (i - i03*ne00*ne01*ne02 ) / (ne00*ne01);                 //> Head idx   
+        const int64_t i02 = (i - i03*ne00*ne01*ne02 ) / (ne00*ne01);                 //> Head idx
         const int64_t i01 = (i - i03*ne00*ne01*ne02  -  i02*ne01*ne00) / ne00;       //> KV idx
         const int64_t i00 = i - i03*ne00*ne01*ne02 - i02*ne01*ne00 - i01*ne00;       //> head_dim idx
         const int64_t x_offset = (i00/qk)*nb00 + i01*nb01 + i02*nb02 + i03 * nb03;   //> Offset into source tensor
@@ -1394,14 +1479,14 @@ static void ggml_compute_forward_dup_qlutattn(
 
     // Process per head and per KV position
     int n_steps = ne01 / qk;  // Number of quantization groups per KV sequence
-    
+
     for (int i03 = 0; i03 < ne03; i03++) {      // batch
         for (int i02 = 0; i02 < ne02; i02++) {  // head
             for (int ig = 0; ig < n_steps; ig++) {  // quantization group
                 // Calculate source offset for this quantization group
                 size_t rs = ggml_row_size(type, qk * ne00);
                 const int64_t src_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
-                
+
                 // Dequantize the block
                 dequantize_row_q(
                     (const void *) ((char *) src0->data + src_offset),
