@@ -74,6 +74,22 @@ static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_
     }
 }
 
+static void set_tensor_f32(ggml_tensor * dst, float value) {
+    float * data = (float *) dst->data;
+    size_t n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = value;
+    }
+}
+
+static void set_tensor_f16(ggml_tensor * dst, float value) {
+    ggml_fp16_t * data = (ggml_fp16_t *) dst->data;
+    size_t n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = ggml_fp32_to_fp16(value);
+    }
+}
+
 //> Added QLUTATTN block quantization.
 #define QKLUTATTN_KV1_128x128 (128 * 128)
 typedef struct {
@@ -93,9 +109,9 @@ static_assert(sizeof(block_qlutattn_kv2_128x128) == (sizeof(ggml_half) + sizeof(
 
 #define QKLUTATTN_KV4_128x128 (128 * 128)
 typedef struct {
-    uint8_t   qs[QKLUTATTN_KV4_128x128 / 2 + 128 * sizeof(ggml_half) * 2];    // 2-bit quants
+    uint8_t   qs[QKLUTATTN_KV4_128x128 / 2 + 128 * sizeof(float) * 2];    // 2-bit quants
 } block_qlutattn_kv4_128x128;
-static_assert(sizeof(block_qlutattn_kv4_128x128) == (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV4_128x128 / 2, "wrong qlutattn_w4_128x128 block size/padding");
+static_assert(sizeof(block_qlutattn_kv4_128x128) == (sizeof(float) + sizeof(float)) * 128 + QKLUTATTN_KV4_128x128 / 2, "wrong qlutattn_w4_128x128 block size/padding");
 
 /**
  * @brief Pseudo symmetric quantization of a float array.
@@ -254,25 +270,27 @@ int main() {
 
     const int64_t head_dim      = 128;
     const int64_t kv_len        = 128;
-    const int64_t n_kv_heads    = 4;
-    const int nbits             = 2;    //> nbits >= 2
+    const int64_t n_kv_heads    = 1;
+    const int nbits             = 4;    //> nbits >= 2
 
     ggml_tensor * k             = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k, "k_source");
 
     ggml_tensor * k_quantized = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k_quantized, "k_quantized");
-    
+
     ggml_tensor * k_dequantized = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k_dequantized, "k_dequantized");
 
-    fill_tensor_f16(k, -0.6f, 0.6f);
+    // fill_tensor_f16(k, -0.6f, 0.6f);
+
+    set_tensor_f16(k, 1.0f);
 
     ggml_print_tensor((uint8_t * )k->data, GGML_TYPE_F16, k->ne, k->nb, 3);
 
     int8_t * q_vals  = (int8_t * )aligned_malloc(head_dim * kv_len * sizeof(int8_t));
-    float * k_scales = (float * )aligned_malloc(head_dim * sizeof(float));
-    float * k_zeros  = (float * )aligned_malloc(head_dim * sizeof(float));
+    float * k_scales = (float *  )aligned_malloc(head_dim * sizeof(float));
+    float * k_zeros  = (float *  )aligned_malloc(head_dim * sizeof(float));
 
     pseudo_symmetric_quantize_128x128_simd_f32(
         (int8_t *)q_vals,
@@ -302,10 +320,10 @@ int main() {
     struct ggml_cgraph * gf = ggml_new_graph(ctx);
     ggml_tensor * quant_op = ggml_cpy(ctx, k, k_quantized); //> k -> k_quantized
     ggml_build_forward_expand(gf, quant_op);
-    
+
     ggml_tensor * dequant_op = ggml_cpy(ctx, k_quantized, k_dequantized); //> k_quantized -> k_dequantized
     ggml_build_forward_expand(gf, dequant_op);
-    
+
     ggml_graph_compute_with_ctx(ctx, gf, 1);
 
     // ggml_graph_node(gf, -1);

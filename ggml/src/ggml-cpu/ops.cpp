@@ -7,6 +7,7 @@
 #include "vec.h"
 
 #include <float.h>
+#include <cstdint>
 #include <string>
 #include <unordered_map>
 #include <unistd.h>  // for usleep
@@ -402,24 +403,24 @@ struct BlockI4TypeAccessor {
 };
 
 static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
-struct qlutattn_kernel_config * find_qlutattn_kernel_config(int M, int K, int bits)
+struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K, int bits)
 {
     if (qlutattn_kernel_config.count("test") == 0) {
         struct qlutattn_kernel_config kernel_config {
             .g = 4,
             .ngroups_per_elem = 1,
             .q_group_size = 128,
-            .act_group_size = 128,
+            .act_group_size = 4,
             .has_scale = false,
-            .kfactor = 1,
+            .kfactor = 16,
             .bits = bits,
-            .actk = 1, // should be equal to (act_group_size / g).
+            .actk =  4, // should be equal to (act_group_size / g).
             .has_zero_point = false,
             .one_scale = false,
-            .bm = 16,
+            .bm = 128 * bits,
             .simd_n_in = 16,
             .simd_n_out = 8,
-            .chunk_n = 8
+            .chunk_n = 1    // useless for QLUTATTN.
         };
 
         qlutattn_kernel_config["test"] = kernel_config;
@@ -450,37 +451,65 @@ static void ggml_compute_forward_dup_f16_qlutattn(
         return;
     }
 
-    const int nbits = get_quant_nbits(dst->type);
-    GGML_ASSERT(nbits > 0 && "Invalid quantization type");
-    const int nelem_per_byte = 8 / nbits;
-
-    struct qlutattn_kernel_config * kernel_config = find_qlutattn_kernel_config(ne01, ne00, nbits);
-
-    const int g = kernel_config->g; // Group size
-
-    // NOTICE: This is QLUTATTN quantization.
-    ggml_from_float_t const quantize_block_q = ggml_get_type_traits_cpu(dst->type)->from_float;
-    int64_t blck_size = ggml_blck_size(dst->type);
-
-    const int n_elements = ggml_nelements(src0);
-
-    uint8_t * qweight_ptr   = (uint8_t * ) params -> wdata;
-    float * scale_ptr = (float *)((char *) params -> wdata + n_elements / nelem_per_byte);
-    float * zero_ptr  = (float *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float));
-
-    uint8_t * workspace = (uint8_t *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2);
-
-    float * src0_f32 = (float *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
-    uint8_t * repack_ws = (uint8_t *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
-
-    GGML_ASSERT(n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2 + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith <= params->wsize);
+    const int bits = get_quant_nbits(dst->type);
+    GGML_ASSERT(bits > 0 && "Invalid quantization type");
+    const int nelem_per_byte = 8 / bits;
 
     switch (dst->type) {
         case GGML_TYPE_QLUTATTN_KV1_128x128:
         case GGML_TYPE_QLUTATTN_KV2_128x128:
         case GGML_TYPE_QLUTATTN_KV4_128x128:
         {
-            GGML_ASSERT(ne00 * ne01 % (128 * 128) == 0 && "Must align to the 128 * 128.");
+            int k = 128;
+            int m = ggml_nelements(src0) / k; // m = n_heads * head_dim
+
+            GGML_ASSERT(m % 128 == 0 && "m must be a multiple of 128");
+
+            struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(ne01, ne00, bits);
+
+            GGML_ASSERT(kernel_config != nullptr && "Kernel config not found");
+
+            // NOTE: load kernel configs.
+            const int g                 = kernel_config->g;
+            const int ngroups_per_elem  = kernel_config->ngroups_per_elem;
+            const int bm                = kernel_config->bm;
+            const int simd_n_in         = kernel_config->simd_n_in;
+            const int simd_n_out        = kernel_config->simd_n_out;
+            const int kfactor           = kernel_config->kfactor;
+            const int group_size        = kernel_config->q_group_size;
+
+            const int act_group_size    = kernel_config->act_group_size;
+            const int lut_scales_size   = k / act_group_size;
+            const int scales_size       = 1 * m * k / act_group_size;
+            const int n_tile_num        = m * bits / bm;
+
+            const int mgroup = ngroups_per_elem * simd_n_in;
+            m = m * bits;
+
+            // NOTICE: This is QLUTATTN quantization.
+            ggml_from_float_t const quantize_block_q = ggml_get_type_traits_cpu(dst->type)->from_float;
+            int64_t blck_size = ggml_blck_size(dst->type);
+
+            const int n_elements = ggml_nelements(src0);
+
+            uint8_t * qweight_ptr   = (uint8_t *) params -> wdata;
+            float * scale_ptr       = (float *)((char *) params -> wdata + n_elements / nelem_per_byte);
+            float * zero_ptr        = (float *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float));
+
+            uint8_t * workspace     = (uint8_t *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2);
+
+            float * src0_f32        = (float *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
+            uint8_t * repack_ws     = (uint8_t *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
+
+            // NOTE: Final out buffer.
+            uint8_t * qweights      = (uint8_t *)(dst -> data);    // final buffer.
+            float * scales          = (float *)(qweights + m / bits * k / nelem_per_byte);
+
+            GGML_ASSERT(n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2 + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith <= params->wsize);
+            GGML_ASSERT(m * k % (128 * 128) == 0 && "Must align to the 128 * 128.");
+
+// #define EMPTY_WEIGHTS
+#ifndef EMPTY_WEIGHTS
 
             for (int i03 = 0; i03 < ne03; i03++) {
                 for (int i02 = 0; i02 < ne02; i02++) {
@@ -496,31 +525,127 @@ static void ggml_compute_forward_dup_f16_qlutattn(
                 }
             }
 
-            memset(repack_ws, 0, ne00 * ne01 * nbits * sizeof(uint8_t));
+            // for (int i = 0; i < m * k / nelem_per_byte; i++) {
+            //     qweight_ptr[i] = 0x11;
+            // }
 
-            for (int im = 0; im < ne01; im++) {
-                for (int ik = 0; ik < ne00; ik++) {
-                    int idx = ik + im * ne00; // NOTE: idx in raw matrix.
-                    int q_idx = idx / nelem_per_byte;
-                    int bit_idx = idx % nelem_per_byte;
+            memset(repack_ws, 0, ne00 * ne01 * bits * sizeof(uint8_t));
 
-                    uint8_t q_val = BlockI4TypeAccessor::get_q(qweight_ptr, idx);
+            for (int im = 0; im < m / bits; im++) {
+                for (int ik = 0; ik < k; ik++) {
+                    uint8_t v;
+                    v = BlockI4TypeAccessor::get_q(qweight_ptr, im * k + ik);
 
-                    for (int ib = 0; ib < nbits; ib++) {
+                    for (int ib = 0; ib < bits; ib++) {
+                        int new_im = im;
+                        int new_ib = ib;
+                        int new_ik = ik / g;
                         int shft_left = ik % g;
-                        repack_ws[im * nbits * ne00 / g + ib * ne00 / g + ik] += ((q_val >> ib) & 0x1) << shft_left; // Scale to 0-255 range
+                        repack_ws[new_im * bits * k / g + new_ib * k / g + new_ik] += ((v >> ib) & 1) << shft_left;
                     }
                 }
             }
 
+            // # 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23, 8, 24, 9, 25, 10, 26, 11, 27, 12, 28, 13, 29, 14, 30, 15, 31
+            // # for bits=3
+            // # bit0: [0, 8), bit1: [8, 16), bit2: [16, 24), bit0: [24, 32)
+            // # (M // bits // simd_n_float16, bits, simd_n_float16, K // g)
+            // w = w.reshape(M // bits // simd_n_out, simd_n_out, bits, K // g).transpose(0, 2, 1, 3)
+            // mgroup = ngroups_per_elem * simd_n_in
+            // w = w.reshape(M // mgroup, ngroups_per_elem, simd_n_in, K // g).transpose(0, 2, 1, 3)
+            // #             0        1             2             3                 4                  5
+            // w = w.reshape(M // bm, bm // mgroup, simd_n_in, ngroups_per_elem, K // g // kfactor, kfactor).transpose(0, 4, 1, 5, 2, 3)
+            // w = sum([(w[:, :, :, :, :, ng] << (ng * g)) for ng in range(ngroups_per_elem)])
+            memset(qweights, 0, m / bits * k / nelem_per_byte);
+            for (int im = 0; im < m / bits; im++) {
+                for (int ib = 0; ib < bits; ib++) {
+                    for (int ik = 0; ik < k / g; ik++) {
+                        int new_im      = im / simd_n_out;
+                        int new_isno    = im % simd_n_out;
+                        int new_ib      = ib;
+                        int new_ik      = ik;
+                        // w = w.reshape(M // bits // simd_n_out, simd_n_out, bits, K // g).transpose(0, 2, 1, 3)
+                        int new_idx = new_im * bits * simd_n_out * k / g + new_ib * simd_n_out * k / g + new_isno * k / g + new_ik;
+                        // w = w.reshape(M // mgroup, ngroups_per_elem, simd_n_in, K // g).transpose(0, 2, 1, 3)
+                        int nb2 = k / g;
+                        int nb1 = simd_n_in * nb2;
+                        int nb0 = ngroups_per_elem * nb1;
+                        new_im = new_idx / nb0;
+                        int new_ing = (new_idx % nb0) / nb1;
+                        int new_isni = (new_idx % nb1) / nb2;
+                        new_ik = (new_idx % nb2);
+                        new_idx = new_im * ngroups_per_elem * simd_n_in * k / g + new_isni * ngroups_per_elem * k / g + new_ing * k / g + new_ik;
+                        // #             0        1             2             3                 4                  5
+                        // w = w.reshape(M // bm, bm // mgroup, simd_n_in, ngroups_per_elem, K // g // kfactor, kfactor).transpose(0, 4, 1, 5, 2, 3)
+                        // NOTE: [M // bm, K // g // kfactor, bm // mgroup, kfactor, simd_n_in, ngroups_per_elem]
+                        int nb4 = kfactor;
+                        int nb3 = k / g / kfactor * nb4;
+                        nb2 = ngroups_per_elem * nb3;
+                        nb1 = simd_n_in * nb2;
+                        nb0 = bm / mgroup * nb1;
+                        new_im = new_idx / nb0;
+                        int new_ibm = (new_idx % nb0) / nb1;
+                        new_isni = (new_idx % nb1) / nb2;
+                        new_ing = (new_idx % nb2) / nb3;
+                        new_ik = (new_idx % nb3) / nb4;
+                        int new_ikf = (new_idx % nb4);
+                        new_idx = new_im * k / g / kfactor * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
+                                new_ik * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
+                                new_ibm * kfactor * simd_n_in * ngroups_per_elem +
+                                new_ikf * simd_n_in * ngroups_per_elem +
+                                new_isni * ngroups_per_elem +
+                                new_ing;
+                        new_idx = new_idx / ngroups_per_elem;
+                        // w = sum([(w[:, :, :, :, :, ng] << (ng * g)) for ng in range(ngroups_per_elem)])
+                        qweights[new_idx] += repack_ws[im * bits * k / g + ib * k / g + ik] << (new_ing * g);
+                    }
+                }
+            }
 
+            if (scales_size < m / bits) {  // BitNet-like scale (m_groups,)
+                for (int i = 0; i < scales_size; i++) {
+                    scales[i] = (float) scale_ptr[i];
+                }
+            } else {
+                // TODO: move if-else outside the loop
+                // scales = scales.reshape(M // bm, bm // bits, K // group_size).transpose(0, 2, 1)
+                for (int im = 0; im < m / bits; im += 1) {
+                    for (int ik = 0; ik < k; ik += group_size) {    // NOTE: Step by group_size.
+                        int idx = im * k + ik;
 
+                        float scale;
+                        scale = BlockI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
 
+                        float zero_point;
+                        zero_point = BlockI4TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
 
+                        idx         = idx / group_size;
+                        int nb1     = k / group_size;
+                        int nb0     = bm / bits * nb1;
+                        int new_im  = idx / nb0;
+                        int new_ibm = (idx % nb0) / nb1;
+                        int new_ik  = (idx % nb1);
 
+                        int new_isimd = new_ibm % simd_n_out;
+                        int new_idx_outer = new_im * bm / bits * k / group_size / simd_n_out
+                                        + new_ik * bm / bits / simd_n_out
+                                        + new_ibm / simd_n_out;
+                        int new_idx_scale = new_idx_outer * (simd_n_out * 2) + new_isimd;
+                        int new_idx_zero = new_idx_outer * (simd_n_out * 2) + simd_n_out + new_isimd;
 
+                        scales[new_idx_scale] = scale;
+                        scales[new_idx_zero]  = zero_point;
+                    }
+                }
+            }
 
+#else
+        memset(qweights, 0x88, k * m / bits / nelem_per_byte);
+        for (int i = 0; i < scales_size; i++) {
+            scales[i] = 1.0f;
+        }
 
+#endif // EMPTY_WEIGHTS
 
             break;
         }

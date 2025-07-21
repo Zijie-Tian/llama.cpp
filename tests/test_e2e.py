@@ -117,7 +117,7 @@ def print_binary(array):
 
 np.random.seed(21)
 
-# 参数设置
+# # 参数设置
 # bits = 2
 # M = 4096 * bits
 # N = 1
@@ -134,17 +134,34 @@ np.random.seed(21)
 # zero_point = False
 # m_groups = -1
 
+# # 参数设置
+# bits = 4
+# M = 128 * bits
+# N = 1
+# K = 128               #> K >= g * kfactor && K >= act_group_size && K >= group_size
+# g = 4
+# bm = 128
+# simd_n_in = 16
+# simd_n_out = 8
+# kfactor = 16
+# act_group_size = 128  #> act_group_size >= g
+# group_size = 128
+# out_dtype = 'float16'
+# dtype = 'int8'
+# zero_point = False
+# m_groups = -1
+
 bits = 4
-M = 4 * bits
+M = 128 * bits
 N = 1
-K = 8               #> K >= g * kfactor && K >= act_group_size && K >= group_size
+K = 128               #> K >= g * kfactor && K >= act_group_size && K >= group_size
 g = 4
-bm = 4
-simd_n_in = 2
-simd_n_out = 1
-kfactor = 2
+bm = 128 * bits
+simd_n_in = 16
+simd_n_out = 8
+kfactor = 16
 act_group_size = 4  #> act_group_size >= g
-group_size = 2
+group_size = 128
 out_dtype = 'float16'
 dtype = 'int8'
 zero_point = False
@@ -156,7 +173,7 @@ def quantize_weight_per_tensor(weight_fp16, bits=2):
 
         scale = max(abs(weight)) / q_max
         weight = round(weight / scale) * scale
-        
+
         weight_int8 in [-q_max, q_max]
     """
     scales  = np.max(np.abs(weight_fp16))
@@ -213,13 +230,15 @@ Y_ref = weight.dot(activation.T)
 Cref = Bref.dot(Adq)
 
 A_t, Scales_t = preprocess_weights(
-    Aref, Sref, None, 
-    bits=bits, 
-    g=g, bm=bm, 
-    kfactor=kfactor, 
-    simd_n_in=simd_n_in, 
+    Aref, Sref, None,
+    bits=bits,
+    g=g, bm=bm,
+    kfactor=kfactor,
+    simd_n_in=simd_n_in,
     simd_n_out=simd_n_out
 )
+
+__import__('pdb').set_trace()
 
 #! ========================================================================================================================
 
@@ -230,7 +249,7 @@ def preprocessor_reference(B, act_group_size, g, dtype, out_dtype):
 
     b = B.reshape(N, K // g, g)
 
-    #> generate 
+    #> generate
     codes = np.array([[i] for i in range(1 << g)], dtype=np.uint8)
     codes = np.unpackbits(codes, axis=1, bitorder="little", count=g).T
 
