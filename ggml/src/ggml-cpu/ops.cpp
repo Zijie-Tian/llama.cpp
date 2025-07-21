@@ -493,12 +493,12 @@ static void ggml_compute_forward_dup_f16_qlutattn(
             const int n_elements = ggml_nelements(src0);
 
             uint8_t * qweight_ptr   = (uint8_t *) params -> wdata;
-            float * scale_ptr       = (float *)((char *) params -> wdata + n_elements / nelem_per_byte);
-            float * zero_ptr        = (float *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float));
+            float * scale_ptr       = (float *)  ((char *) params -> wdata + n_elements / nelem_per_byte);
+            float * zero_ptr        = (float *)  ((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float));
 
             uint8_t * workspace     = (uint8_t *)((char *) params -> wdata + n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2);
 
-            float * src0_f32        = (float *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
+            float * src0_f32        = (float *)  (workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
             uint8_t * repack_ws     = (uint8_t *)(workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith); // NOTICE : Too large.
 
             // NOTE: Final out buffer.
@@ -587,7 +587,7 @@ static void ggml_compute_forward_dup_f16_qlutattn(
                         int new_ibm = (new_idx % nb0) / nb1;
                         new_isni = (new_idx % nb1) / nb2;
                         new_ing = (new_idx % nb2) / nb3;
-                        new_ik = (new_idx % nb3) / nb4;
+                        new_ik  = (new_idx % nb3) / nb4;
                         int new_ikf = (new_idx % nb4);
                         new_idx = new_im * k / g / kfactor * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
                                 new_ik * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +

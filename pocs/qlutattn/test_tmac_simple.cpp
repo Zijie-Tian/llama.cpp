@@ -87,6 +87,32 @@ typedef struct {
 } block_qlutattn_w4g64;
 static_assert(sizeof(block_qlutattn_w4g64) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G64 / 2, "wrong qlutattn_w4g64 block size/padding");
 
+
+//> Added QLUTATTN block
+#define QKLUTATTN_W1G128 128
+typedef struct {
+    ggml_half d;                // scale
+    ggml_half m;                // min
+    uint8_t   qs[QKLUTATTN_W1G128 / 8];    // 8-bit quants
+} block_qlutattn_w1g128;
+static_assert(sizeof(block_qlutattn_w1g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W1G128 / 8, "wrong qlutattn_w1g128 block size/padding");
+
+#define QKLUTATTN_W2G128 128
+typedef struct {
+    ggml_half d;                // scale
+    ggml_half m;                // min
+    uint8_t   qs[QKLUTATTN_W2G128 / 4];    // 8-bit quants
+} block_qlutattn_w2g128;
+static_assert(sizeof(block_qlutattn_w2g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W2G128 / 4, "wrong qlutattn_w2g128 block size/padding");
+
+#define QKLUTATTN_W4G128 128
+typedef struct {
+    ggml_half d;                // scale
+    ggml_half m;                // min
+    uint8_t   qs[QKLUTATTN_W4G128 / 2];    // 8-bit quants
+} block_qlutattn_w4g128;
+static_assert(sizeof(block_qlutattn_w4g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G128 / 2, "wrong qlutattn_w4g128 block size/padding");
+
 //> ===================================================================================================
 //> Above are copy from llama.cpp.
 //> ===================================================================================================
@@ -277,6 +303,57 @@ void dequantize_row_qlutattn_w4g64_pg_ref(float * GGML_RESTRICT y, const block_q
     }
 }
 
+void quantize_row_qlutattn_w4g128_pg_ref(block_qlutattn_w4g128 * GGML_RESTRICT y, const float * GGML_RESTRICT x, int64_t k) {
+    const int qk = QKLUTATTN_W4G128 / 2;
+    const int nelem_per_byte = 128 / qk;
+    assert(k % QKLUTATTN_W4G128 == 0);
+    const int nb = k / 128;
+
+    float scale[nb];
+    float zero[nb];
+    int8_t quantized[nb * 128];    //> pesudo quantize results.
+    //> Per-channel quantization. for head_dim = 128.
+    pseudo_symmetric_quantize_f32(x, quantized, scale, zero, k, 4, 128);
+
+    for (int i = 0; i < nb; i++) {
+        for (int j = 0; j < qk; j++) {
+            //> [-2^(n_bit - 1) + 1, 2^(n_bit - 1) - 1] -> [1, 2^n_bit - 1]
+            const uint8_t x0 = (uint8_t) (quantized[i * 128 + j * nelem_per_byte + 0] + (1 << (4 - 1)));
+            const uint8_t x1 = (uint8_t) (quantized[i * 128 + j * nelem_per_byte + 1] + (1 << (4 - 1)));
+
+            y[i].qs[j] = (x0 << 4) | (x1 << 0);
+        }
+
+        y[i].d = GGML_FP32_TO_FP16(scale[i]);
+        y[i].m = GGML_FP32_TO_FP16(zero[i]);
+    }
+}
+
+void dequantize_row_qlutattn_w4g128_pg_ref(float * GGML_RESTRICT y, const block_qlutattn_w4g128 * GGML_RESTRICT x, int64_t k) {
+    const int qk = QKLUTATTN_W4G128 / 2;
+    const int nelem_per_byte = 128 / qk;
+    assert(k % QKLUTATTN_W4G128 == 0);
+    const int nb = k / 128;
+
+    for (int i = 0; i < nb; i++) {
+        for (int j = 0; j < qk; j++) {
+            const uint8_t x0 = (uint8_t) (x[i].qs[j] >> 4);
+            const uint8_t x1 = (uint8_t) (x[i].qs[j] & 0x0F);
+
+            y[i * 128 + j * nelem_per_byte + 0] = (float) (x0 - (1 << (4 - 1)));
+            y[i * 128 + j * nelem_per_byte + 1] = (float) (x1 - (1 << (4 - 1)));
+        }
+
+        float scale = GGML_FP16_TO_FP32(x[i].d);
+        float zero  = GGML_FP16_TO_FP32(x[i].m);
+
+        for (int j = 0; j < 128; j++) {
+            y[i * 128 + j] = (float) (y[i * 128 + j] - zero) * scale;
+        }
+    }
+}
+
+
 
 static struct ggml_tensor * compute_graph(
     ggml_context* ctx,
@@ -392,8 +469,8 @@ int main() {
     //> ===================================================================================================
 
     // Create a simple 2D tensor
-    const int M = 256, K = 256, N = 1;
-    const int nbits = 2;
+    const int M = 128, K = 128, N = 1;
+    const int nbits = 4;
 
     ggml_tensor* tensor_f32 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, M);
     fill_tensor_f32(tensor_f32);
@@ -426,19 +503,19 @@ int main() {
     //> Pesudo Quantization of FP32 Tensor NOTE: Just compute the quantized NMSE.
     //> ===================================================================================================
 
-    int64_t group_size = 64;
+    int64_t group_size = 128; //> Group size for quantization, must be 128 or 1
     float * dequantized_tensor = (float *) aligned_malloc(M * K * sizeof(float));
 
-    block_qlutattn_w4g64 * qweights_block = (block_qlutattn_w4g64 *) aligned_malloc(M * K / group_size * sizeof(block_qlutattn_w4g64));
+    block_qlutattn_w4g128 * qweights_block = (block_qlutattn_w4g128 *) aligned_malloc(M * K / group_size * sizeof(block_qlutattn_w4g128));
     float * tensor_f32_ptr = (float *) tensor_f32->data;
 
-    quantize_row_qlutattn_w4g64_pg_ref(
+    quantize_row_qlutattn_w4g128_pg_ref(
         qweights_block,
         (float *) tensor_f32->data,
         M * K
     );
 
-    dequantize_row_qlutattn_w4g64_pg_ref(
+    dequantize_row_qlutattn_w4g128_pg_ref(
         dequantized_tensor,
         qweights_block,
         M * K
@@ -458,20 +535,22 @@ int main() {
     //> Prepare the TMAC input.
     //> ===================================================================================================
 
+    int nelem_per_byte = 8 / nbits; //> 2, 4, or 8
+
     uint8_t * tmac_qs   = (uint8_t *) aligned_malloc(
-        M * K / group_size * group_size / nbits * sizeof(uint8_t) +
+        M * K / group_size * group_size / nelem_per_byte * sizeof(uint8_t) +
         M * K / group_size * sizeof(float) * 2
     );
 
     for (int i = 0; i < M * K / group_size; i++) {
-        for (int j = 0; j < group_size / nbits; j++) {
-            tmac_qs[i * (group_size / nbits) + j] = qweights_block[i].qs[j];
+        for (int j = 0; j < group_size / nelem_per_byte; j++) {
+            tmac_qs[i * (group_size / nelem_per_byte) + j] = qweights_block[i].qs[j];
             // tmac_qs[i * (QKLUTATTN_W4G64 / nbits) + j] = 1;
         }
     }
 
-    float * scale_ptr = (float *) (tmac_qs + M * K / group_size * (group_size / nbits));
-    float * zp_ptr    = (float *) (tmac_qs + M * K / group_size * (group_size / nbits) + M * K / group_size * sizeof(float));
+    float * scale_ptr = (float *) (tmac_qs + M * K / group_size * (group_size / nelem_per_byte));
+    float * zp_ptr    = (float *) (tmac_qs + M * K / group_size * (group_size / nelem_per_byte) + M * K / group_size * sizeof(float));
 
     for (int i = 0; i < M * K / group_size; i++) {
         float scale = GGML_FP16_TO_FP32(qweights_block[i].d);   // NOTE:  Scaling factor.
@@ -489,7 +568,7 @@ int main() {
     //> Repack Quantized Tensor to T-MAC Context
     //> ===================================================================================================
 
-    ggml_tensor* tensor = ggml_new_tensor_2d(tmac_ctx, GGML_TYPE_TMAC_W4G64_1, K, M);
+    ggml_tensor* tensor = ggml_new_tensor_2d(tmac_ctx, GGML_TYPE_TMAC_W4G128_1, K, M);
     ggml_set_name(tensor, "tmac_tensor");
 
     // Allocate memory for T-MAC tensors
