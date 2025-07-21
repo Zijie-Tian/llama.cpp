@@ -544,8 +544,8 @@ int main() {
 
     for (int i = 0; i < M * K / group_size; i++) {
         for (int j = 0; j < group_size / nelem_per_byte; j++) {
-            tmac_qs[i * (group_size / nelem_per_byte) + j] = qweights_block[i].qs[j];
-            // tmac_qs[i * (QKLUTATTN_W4G64 / nbits) + j] = 1;
+            // tmac_qs[i * (group_size / nelem_per_byte) + j] = qweights_block[i].qs[j];
+            tmac_qs[i * (group_size / nelem_per_byte) + j] = 0xff;
         }
     }
 
@@ -554,14 +554,14 @@ int main() {
 
     for (int i = 0; i < M * K / group_size; i++) {
         float scale = GGML_FP16_TO_FP32(qweights_block[i].d);   // NOTE:  Scaling factor.
-        scale_ptr[i] = scale; // Scale
-        // scale_ptr[i] = 1.0f; // Scale
+        // scale_ptr[i] = scale; // Scale
+        scale_ptr[i] = 1.0f; // Scale
     }
 
     for (int i = 0; i < M * K / group_size; i++) {
         float zero = GGML_FP16_TO_FP32(qweights_block[i].m);    // NOTE: Zero point.
-        zp_ptr[i] = zero;
-        // zp_ptr[i] = 0.0f;
+        // zp_ptr[i] = zero;
+        zp_ptr[i] = 0.0f;
     }
 
     //> ===================================================================================================

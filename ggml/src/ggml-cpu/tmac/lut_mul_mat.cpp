@@ -3,6 +3,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include "lut_ctor.h"
 
 #define GGML_COMMON_IMPL_CPP
 #define GGML_COMMON_DECL_CPP
@@ -584,7 +585,12 @@ struct BlockI4TypeAccessor {
     static tmac_float_type get_scale(const void * data, int idx, int group_size) {
         const float * ss = (const float *) data;
         float s = ss[idx / group_size];
-        return (tmac_float_type) s;
+
+        tmac_float_type ret = (tmac_float_type) s;
+        return ret;
+
+        // TODO: This may cause inefficiency because compiler will AUTO do round.
+        // return (tmac_float_type) s;
     }
 
     static tmac_float_type get_zero_point(const void * data, int idx, int group_size) {
@@ -866,7 +872,7 @@ static inline void ggml_tmac_transform_tensor(struct ggml_tensor * tensor, const
             }
         }
 
-        const float * int_n_scales = (const float * ) ((const uint8_t *) origin_data + k * m / 8);
+        const float * int_n_scales = (const float * ) ((const uint8_t *) origin_data + k * m / 8);  // NOTE : K * M / (8 / bits)
         const float * int_n_zero_points = int_n_scales + scales_size / 2;
 
         if (scales_size < m / bits) {  // BitNet-like scale (m_groups,)
