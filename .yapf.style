@@ -1,0 +1,6 @@
+[style]
+based_on_style = pep8
+column_limit = 120
+align_assignments = true
+coalesce_brackets = true
+
