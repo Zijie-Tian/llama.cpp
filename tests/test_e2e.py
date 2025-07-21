@@ -323,7 +323,6 @@ def get_bits_alphas(bits: int):
 
 
 # 矩阵乘法部分
-#! qgemm_reference 经过验证完全没有错误
 def qgemm_reference(
     A,
     QLUT,

@@ -1,34 +1,34 @@
 #define GGML_USE_TMAC 1
-#include <cstdint>
-#include <iostream>
-#include <vector>
+#include <float.h>
+#include <stdlib.h>
+
+#include <cassert>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cassert>
+#include <iostream>
 #include <random>
-#include <stdlib.h>
-#include <float.h>
+#include <vector>
 
-#include "ggml.h"
-#include "ggml-cpu.h"
 #include "ggml-backend.h"
-
-#include "ggml-cpu/tmac/tmac.h"
+#include "ggml-cpu.h"
 #include "ggml-cpu/tmac/lut_mul_mat.h"
+#include "ggml-cpu/tmac/tmac.h"
+#include "ggml.h"
 
 #ifdef __ARM_NEON
-#include <arm_neon.h>
+#    include <arm_neon.h>
 #elif defined __AVX2__
-#include <immintrin.h>
+#    include <immintrin.h>
 #endif
 
 #ifdef __ARM_NEON
 typedef float16_t tmac_float_type;
 #else
-#include <stdbool.h>
-#include <stdint.h>
+#    include <stdbool.h>
+#    include <stdint.h>
 typedef float tmac_float_type;
 #endif
 
@@ -62,67 +62,86 @@ static void aligned_free(void * ptr) {
     free(ptr);
 #endif
 }
+
 //> Added QLUTATTN block
 #define QKLUTATTN_W1G64 64
+
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W1G64 / 8];    // 8-bit quants
+    ggml_half d;                        // scale
+    ggml_half m;                        // min
+    uint8_t   qs[QKLUTATTN_W1G64 / 8];  // 8-bit quants
 } block_qlutattn_w1g64;
-static_assert(sizeof(block_qlutattn_w1g64) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W1G64 / 8, "wrong qlutattn_w1g64 block size/padding");
+
+static_assert(sizeof(block_qlutattn_w1g64) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W1G64 / 8,
+              "wrong qlutattn_w1g64 block size/padding");
 
 #define QKLUTATTN_W2G64 64
+
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W2G64 / 4];    // 8-bit quants
+    ggml_half d;                        // scale
+    ggml_half m;                        // min
+    uint8_t   qs[QKLUTATTN_W2G64 / 4];  // 8-bit quants
 } block_qlutattn_w2g64;
-static_assert(sizeof(block_qlutattn_w2g64) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W2G64 / 4, "wrong qlutattn_w2g64 block size/padding");
+
+static_assert(sizeof(block_qlutattn_w2g64) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W2G64 / 4,
+              "wrong qlutattn_w2g64 block size/padding");
 
 #define QKLUTATTN_W4G64 64
-typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W4G64 / 2];    // 8-bit quants
-} block_qlutattn_w4g64;
-static_assert(sizeof(block_qlutattn_w4g64) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G64 / 2, "wrong qlutattn_w4g64 block size/padding");
 
+typedef struct {
+    ggml_half d;                        // scale
+    ggml_half m;                        // min
+    uint8_t   qs[QKLUTATTN_W4G64 / 2];  // 8-bit quants
+} block_qlutattn_w4g64;
+
+static_assert(sizeof(block_qlutattn_w4g64) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G64 / 2,
+              "wrong qlutattn_w4g64 block size/padding");
 
 //> Added QLUTATTN block
 #define QKLUTATTN_W1G128 128
+
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W1G128 / 8];    // 8-bit quants
+    ggml_half d;                         // scale
+    ggml_half m;                         // min
+    uint8_t   qs[QKLUTATTN_W1G128 / 8];  // 8-bit quants
 } block_qlutattn_w1g128;
-static_assert(sizeof(block_qlutattn_w1g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W1G128 / 8, "wrong qlutattn_w1g128 block size/padding");
+
+static_assert(sizeof(block_qlutattn_w1g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W1G128 / 8,
+              "wrong qlutattn_w1g128 block size/padding");
 
 #define QKLUTATTN_W2G128 128
+
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W2G128 / 4];    // 8-bit quants
+    ggml_half d;                         // scale
+    ggml_half m;                         // min
+    uint8_t   qs[QKLUTATTN_W2G128 / 4];  // 8-bit quants
 } block_qlutattn_w2g128;
-static_assert(sizeof(block_qlutattn_w2g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W2G128 / 4, "wrong qlutattn_w2g128 block size/padding");
+
+static_assert(sizeof(block_qlutattn_w2g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W2G128 / 4,
+              "wrong qlutattn_w2g128 block size/padding");
 
 #define QKLUTATTN_W4G128 128
+
 typedef struct {
-    ggml_half d;                // scale
-    ggml_half m;                // min
-    uint8_t   qs[QKLUTATTN_W4G128 / 2];    // 8-bit quants
+    ggml_half d;                         // scale
+    ggml_half m;                         // min
+    uint8_t   qs[QKLUTATTN_W4G128 / 2];  // 8-bit quants
 } block_qlutattn_w4g128;
-static_assert(sizeof(block_qlutattn_w4g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G128 / 2, "wrong qlutattn_w4g128 block size/padding");
+
+static_assert(sizeof(block_qlutattn_w4g128) == sizeof(ggml_half) + sizeof(ggml_half) + QKLUTATTN_W4G128 / 2,
+              "wrong qlutattn_w4g128 block size/padding");
 
 //> ===================================================================================================
 //> Above are copy from llama.cpp.
 //> ===================================================================================================
 
 // Use fixed seed for reproducible results
-// static std::mt19937 g_rng(42);
-static std::mt19937 g_rng(std::random_device{}());
+static std::mt19937 g_rng(42);
+
+// static std::mt19937 g_rng(std::random_device{}());
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
-    float *                         data       = (float *) dst->data;
+    float *                               data       = (float *) dst->data;
     size_t                                n_elements = ggml_nelements(dst);
     std::uniform_real_distribution<float> dis(min_val, max_val);
 
@@ -142,7 +161,7 @@ static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_
 }
 
 static void set_tensor_f32(ggml_tensor * dst, float value) {
-    float * data = (float *) dst->data;
+    float * data       = (float *) dst->data;
     size_t  n_elements = ggml_nelements(dst);
     for (size_t i = 0; i < n_elements; i++) {
         data[i] = value;
@@ -150,69 +169,61 @@ static void set_tensor_f32(ggml_tensor * dst, float value) {
 }
 
 static void set_tensor_f16(ggml_tensor * dst, float value) {
-    ggml_fp16_t * data = (ggml_fp16_t *) dst->data;
-    size_t  n_elements = ggml_nelements(dst);
+    ggml_fp16_t * data       = (ggml_fp16_t *) dst->data;
+    size_t        n_elements = ggml_nelements(dst);
     for (size_t i = 0; i < n_elements; i++) {
         data[i] = ggml_fp32_to_fp16(value);
     }
 }
 
-
 struct BlockI2TypeAccessor {
-    static constexpr int BITS = 2;
+    static constexpr int BITS   = 2;
     static constexpr int n_elem = 8 / BITS;
 
     static uint8_t get_q(const void * data, int idx) {
-        const uint8_t * qs = (const uint8_t *) data;
-        int elem_idx = idx % n_elem;
+        const uint8_t * qs       = (const uint8_t *) data;
+        int             elem_idx = idx % n_elem;
         return qs[idx / n_elem] >> ((n_elem - 1 - elem_idx) * BITS);
     }
 
     static tmac_float_type get_scale(const void * data, int idx, int group_size) {
         const float * ss = (const float *) data;
-        float s = ss[idx / group_size];
+        float         s  = ss[idx / group_size];
         return (tmac_float_type) s;
     }
 
     static tmac_float_type get_zero_point(const void * data, int idx, int group_size) {
         const float * zs = (const float *) data;
-        float z = zs[idx / group_size];
+        float         z  = zs[idx / group_size];
         return (tmac_float_type) z;
     }
 };
 
 struct BlockI4TypeAccessor {
-    static constexpr int BITS = 4;
+    static constexpr int BITS   = 4;
     static constexpr int n_elem = 8 / BITS;
 
     static uint8_t get_q(const void * data, int idx) {
-        const uint8_t * qs = (const uint8_t *) data;
-        int elem_idx = idx % n_elem;
+        const uint8_t * qs       = (const uint8_t *) data;
+        int             elem_idx = idx % n_elem;
         return qs[idx / n_elem] >> ((n_elem - 1 - elem_idx) * BITS);
     }
 
     static tmac_float_type get_scale(const void * data, int idx, int group_size) {
         const float * ss = (const float *) data;
-        float s = ss[idx / group_size];
+        float         s  = ss[idx / group_size];
         return (tmac_float_type) s;
     }
 
     static tmac_float_type get_zero_point(const void * data, int idx, int group_size) {
         const float * zs = (const float *) data;
-        float z = zs[idx / group_size];
+        float         z  = zs[idx / group_size];
         return (tmac_float_type) z;
     }
 };
 
-static void pseudo_symmetric_quantize_f32(
-    const float* input,
-    int8_t* quantized,
-    float* scales,
-    float* zeros,
-    int n,
-    int n_bit,
-    int q_group_size
-) {
+static void pseudo_symmetric_quantize_f32(const float * input, int8_t * quantized, float * scales, float * zeros, int n,
+                                          int n_bit, int q_group_size) {
     int num_groups;
     if (q_group_size > 0) {
         if (n % q_group_size != 0) {
@@ -220,10 +231,10 @@ static void pseudo_symmetric_quantize_f32(
         }
         num_groups = n / q_group_size;
     } else if (q_group_size == -1) {
-        num_groups = 1;
+        num_groups   = 1;
         q_group_size = n;
     } else {
-        num_groups = 1;
+        num_groups   = 1;
         q_group_size = n;
     }
 
@@ -233,35 +244,38 @@ static void pseudo_symmetric_quantize_f32(
 
     for (int g = 0; g < num_groups; ++g) {
         int start_idx = g * q_group_size;
-        int end_idx = start_idx + q_group_size;
+        int end_idx   = start_idx + q_group_size;
 
         float max_abs_val = -FLT_MAX;
 
         for (int i = start_idx; i < end_idx; ++i) {
             float abs_val = fabsf(input[i]);
-            if (abs_val > max_abs_val) max_abs_val = abs_val;
+            if (abs_val > max_abs_val) {
+                max_abs_val = abs_val;
+            }
         }
 
         scales[g] = max_abs_val / max_int;
-        zeros[g]  = 0.0f;    // NOTE : zero point is 0 for symmetric quantization.
+        zeros[g]  = 0.0f;  // NOTE : zero point is 0 for symmetric quantization.
 
         for (int i = start_idx; i < end_idx; ++i) {
-            int quantized_val = (int)roundf(input[i] / scales[g]);
-            quantized_val = quantized_val < min_int ? min_int : (quantized_val > max_int ? max_int : quantized_val);
-            quantized[i] = (int8_t)quantized_val;
+            int quantized_val = (int) roundf(input[i] / scales[g]);
+            quantized_val     = quantized_val < min_int ? min_int : (quantized_val > max_int ? max_int : quantized_val);
+            quantized[i]      = (int8_t) quantized_val;
         }
     }
 }
 
-void quantize_row_qlutattn_w4g64_pg_ref(block_qlutattn_w4g64 * GGML_RESTRICT y, const float * GGML_RESTRICT x, int64_t k) {
-    const int qk = QKLUTATTN_W4G64 / 2;
+void quantize_row_qlutattn_w4g64_pg_ref(block_qlutattn_w4g64 * GGML_RESTRICT y, const float * GGML_RESTRICT x,
+                                        int64_t k) {
+    const int qk             = QKLUTATTN_W4G64 / 2;
     const int nelem_per_byte = 64 / qk;
     assert(k % QKLUTATTN_W4G64 == 0);
     const int nb = k / 64;
 
-    float scale[nb];
-    float zero[nb];
-    int8_t quantized[nb * 64];    //> pesudo quantize results.
+    float  scale[nb];
+    float  zero[nb];
+    int8_t quantized[nb * 64];  //> pesudo quantize results.
     //> Per-channel quantization. for head_dim = 64.
     pseudo_symmetric_quantize_f32(x, quantized, scale, zero, k, 4, 64);
 
@@ -279,8 +293,9 @@ void quantize_row_qlutattn_w4g64_pg_ref(block_qlutattn_w4g64 * GGML_RESTRICT y, 
     }
 }
 
-void dequantize_row_qlutattn_w4g64_pg_ref(float * GGML_RESTRICT y, const block_qlutattn_w4g64 * GGML_RESTRICT x, int64_t k) {
-    const int qk = QKLUTATTN_W4G64 / 2;
+void dequantize_row_qlutattn_w4g64_pg_ref(float * GGML_RESTRICT y, const block_qlutattn_w4g64 * GGML_RESTRICT x,
+                                          int64_t k) {
+    const int qk             = QKLUTATTN_W4G64 / 2;
     const int nelem_per_byte = 64 / qk;
     assert(k % QKLUTATTN_W4G64 == 0);
     const int nb = k / 64;
@@ -303,15 +318,16 @@ void dequantize_row_qlutattn_w4g64_pg_ref(float * GGML_RESTRICT y, const block_q
     }
 }
 
-void quantize_row_qlutattn_w4g128_pg_ref(block_qlutattn_w4g128 * GGML_RESTRICT y, const float * GGML_RESTRICT x, int64_t k) {
-    const int qk = QKLUTATTN_W4G128 / 2;
+void quantize_row_qlutattn_w4g128_pg_ref(block_qlutattn_w4g128 * GGML_RESTRICT y, const float * GGML_RESTRICT x,
+                                         int64_t k) {
+    const int qk             = QKLUTATTN_W4G128 / 2;
     const int nelem_per_byte = 128 / qk;
     assert(k % QKLUTATTN_W4G128 == 0);
     const int nb = k / 128;
 
-    float scale[nb];
-    float zero[nb];
-    int8_t quantized[nb * 128];    //> pesudo quantize results.
+    float  scale[nb];
+    float  zero[nb];
+    int8_t quantized[nb * 128];  //> pesudo quantize results.
     //> Per-channel quantization. for head_dim = 128.
     pseudo_symmetric_quantize_f32(x, quantized, scale, zero, k, 4, 128);
 
@@ -329,8 +345,9 @@ void quantize_row_qlutattn_w4g128_pg_ref(block_qlutattn_w4g128 * GGML_RESTRICT y
     }
 }
 
-void dequantize_row_qlutattn_w4g128_pg_ref(float * GGML_RESTRICT y, const block_qlutattn_w4g128 * GGML_RESTRICT x, int64_t k) {
-    const int qk = QKLUTATTN_W4G128 / 2;
+void dequantize_row_qlutattn_w4g128_pg_ref(float * GGML_RESTRICT y, const block_qlutattn_w4g128 * GGML_RESTRICT x,
+                                           int64_t k) {
+    const int qk             = QKLUTATTN_W4G128 / 2;
     const int nelem_per_byte = 128 / qk;
     assert(k % QKLUTATTN_W4G128 == 0);
     const int nb = k / 128;
@@ -353,13 +370,7 @@ void dequantize_row_qlutattn_w4g128_pg_ref(float * GGML_RESTRICT y, const block_
     }
 }
 
-
-
-static struct ggml_tensor * compute_graph(
-    ggml_context* ctx,
-    struct ggml_cgraph * gf,
-    int n_threads = 1
-) {
+static struct ggml_tensor * compute_graph(ggml_context * ctx, struct ggml_cgraph * gf, int n_threads = 1) {
     ggml_graph_compute_with_ctx(ctx, gf, n_threads);
 
     return ggml_graph_node(gf, -1);
@@ -371,24 +382,24 @@ static void ggml_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne
     for (int64_t i3 = 0; i3 < ne[3]; i3++) {
         printf("                                     [\n");
         for (int64_t i2 = 0; i2 < ne[2]; i2++) {
-            if (i2 == n && ne[2] > 2*n) {
+            if (i2 == n && ne[2] > 2 * n) {
                 printf("                                      ..., \n");
                 i2 = ne[2] - n;
             }
             printf("                                      [\n");
             for (int64_t i1 = 0; i1 < ne[1]; i1++) {
-                if (i1 == n && ne[1] > 2*n) {
+                if (i1 == n && ne[1] > 2 * n) {
                     printf("                                       ..., \n");
                     i1 = ne[1] - n;
                 }
                 printf("                                       [");
                 for (int64_t i0 = 0; i0 < ne[0]; i0++) {
-                    if (i0 == n && ne[0] > 2*n) {
+                    if (i0 == n && ne[0] > 2 * n) {
                         printf("..., ");
                         i0 = ne[0] - n;
                     }
                     size_t i = i3 * nb[3] + i2 * nb[2] + i1 * nb[1] + i0 * nb[0];
-                    float v;
+                    float  v;
                     if (type == GGML_TYPE_F16) {
                         v = ggml_fp16_to_fp32(*(ggml_fp16_t *) &data[i]);
                     } else if (type == GGML_TYPE_F32) {
@@ -404,7 +415,9 @@ static void ggml_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne
                     }
                     printf("%12.4f", v);
                     sum += v;
-                    if (i0 < ne[0] - 1) printf(", ");
+                    if (i0 < ne[0] - 1) {
+                        printf(", ");
+                    }
                 }
                 printf("],\n");
             }
@@ -428,8 +441,8 @@ int main() {
     }
 
     // Allocate the buffer from tmac BUFT.
-    const size_t test_size = 1024; // 1KB test
-    ggml_backend_buffer_t test_buf = ggml_backend_buft_alloc_buffer(tmac_buft, test_size);
+    const size_t          test_size = 1024;  // 1KB test
+    ggml_backend_buffer_t test_buf  = ggml_backend_buft_alloc_buffer(tmac_buft, test_size);
     if (!test_buf) {
         printf("ERROR: Failed to allocate T-MAC buffer\n");
         return 1;
@@ -440,7 +453,7 @@ int main() {
     //> ===================================================================================================
 
     struct ggml_init_params main_params = {
-        .mem_size   = 1024 * 1024 * 1024, // 1GB
+        .mem_size   = 1024 * 1024 * 1024,  // 1GB
         .mem_buffer = NULL,
         .no_alloc   = false,
     };
@@ -457,7 +470,7 @@ int main() {
         .no_alloc   = true,
     };
 
-    ggml_context* tmac_ctx = ggml_init(params);
+    ggml_context * tmac_ctx = ggml_init(params);
     if (!tmac_ctx) {
         printf("ERROR: Failed to create GGML context\n");
         ggml_backend_buffer_free(test_buf);
@@ -472,29 +485,29 @@ int main() {
     const int M = 128, K = 128, N = 1;
     const int nbits = 4;
 
-    ggml_tensor* tensor_f32 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, M);
+    ggml_tensor * tensor_f32 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, M);
     fill_tensor_f32(tensor_f32);
 
     //> Activation must be F32 for llama.cpp ggml op.
-    ggml_tensor* activation = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, N);
+    ggml_tensor * activation = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, N);
     // fill_tensor_f32(activation);
     set_tensor_f32(activation, 1.0f);
 
     //> Activation must be F16 for T-MAC op.
-    ggml_tensor* activation_f16 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F16, K, N);
+    ggml_tensor * activation_f16 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F16, K, N);
 
-    ggml_tensor* tensor_q4_0 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_Q4_0, K, M);
+    ggml_tensor * tensor_q4_0 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_Q4_0, K, M);
 
     //> Quantize Activation to F16
-    struct ggml_cgraph * gf_f16 = ggml_new_graph(main_ctx);
-    ggml_tensor* quant_op_f16 = ggml_cpy(main_ctx, activation, activation_f16);
+    struct ggml_cgraph * gf_f16       = ggml_new_graph(main_ctx);
+    ggml_tensor *        quant_op_f16 = ggml_cpy(main_ctx, activation, activation_f16);
     ggml_build_forward_expand(gf_f16, quant_op_f16);
 
     ggml_tensor * quantized_activation_f16 = compute_graph(main_ctx, gf_f16);
 
     //> Quantize Tensor to Q4_0
-    struct ggml_cgraph * gf = ggml_new_graph(main_ctx);
-    ggml_tensor* quant_op = ggml_cpy(main_ctx, tensor_f32, tensor_q4_0);
+    struct ggml_cgraph * gf       = ggml_new_graph(main_ctx);
+    ggml_tensor *        quant_op = ggml_cpy(main_ctx, tensor_f32, tensor_q4_0);
     ggml_build_forward_expand(gf, quant_op);
 
     ggml_tensor * quantized_tensor = compute_graph(main_ctx, gf);
@@ -503,25 +516,18 @@ int main() {
     //> Pesudo Quantization of FP32 Tensor NOTE: Just compute the quantized NMSE.
     //> ===================================================================================================
 
-    int64_t group_size = 128; //> Group size for quantization, must be 128 or 1
+    int64_t group_size         = 128;  //> Group size for quantization, must be 128 or 1
     float * dequantized_tensor = (float *) aligned_malloc(M * K * sizeof(float));
 
-    block_qlutattn_w4g128 * qweights_block = (block_qlutattn_w4g128 *) aligned_malloc(M * K / group_size * sizeof(block_qlutattn_w4g128));
+    block_qlutattn_w4g128 * qweights_block =
+        (block_qlutattn_w4g128 *) aligned_malloc(M * K / group_size * sizeof(block_qlutattn_w4g128));
     float * tensor_f32_ptr = (float *) tensor_f32->data;
 
-    quantize_row_qlutattn_w4g128_pg_ref(
-        qweights_block,
-        (float *) tensor_f32->data,
-        M * K
-    );
+    quantize_row_qlutattn_w4g128_pg_ref(qweights_block, (float *) tensor_f32->data, M * K);
 
-    dequantize_row_qlutattn_w4g128_pg_ref(
-        dequantized_tensor,
-        qweights_block,
-        M * K
-    );
+    dequantize_row_qlutattn_w4g128_pg_ref(dequantized_tensor, qweights_block, M * K);
 
-    float nmse = 0.0f;
+    float nmse    = 0.0f;
     float norm_sq = 0.0f;
     for (int i = 0; i < M * K; i++) {
         float diff = dequantized_tensor[i] - tensor_f32_ptr[i];
@@ -535,40 +541,39 @@ int main() {
     //> Prepare the TMAC input.
     //> ===================================================================================================
 
-    int nelem_per_byte = 8 / nbits; //> 2, 4, or 8
+    int nelem_per_byte = 8 / nbits;  //> 2, 4, or 8
 
-    uint8_t * tmac_qs   = (uint8_t *) aligned_malloc(
-        M * K / group_size * group_size / nelem_per_byte * sizeof(uint8_t) +
-        M * K / group_size * sizeof(float) * 2
-    );
+    uint8_t * tmac_qs = (uint8_t *) aligned_malloc(M * K / group_size * group_size / nelem_per_byte * sizeof(uint8_t) +
+                                                   M * K / group_size * sizeof(float) * 2);
 
     for (int i = 0; i < M * K / group_size; i++) {
         for (int j = 0; j < group_size / nelem_per_byte; j++) {
-            // tmac_qs[i * (group_size / nelem_per_byte) + j] = qweights_block[i].qs[j];
-            tmac_qs[i * (group_size / nelem_per_byte) + j] = 0xff;
+            tmac_qs[i * (group_size / nelem_per_byte) + j] = qweights_block[i].qs[j];
+            // tmac_qs[i * (group_size / nelem_per_byte) + j] = 0xff;
         }
     }
 
     float * scale_ptr = (float *) (tmac_qs + M * K / group_size * (group_size / nelem_per_byte));
-    float * zp_ptr    = (float *) (tmac_qs + M * K / group_size * (group_size / nelem_per_byte) + M * K / group_size * sizeof(float));
+    float * zp_ptr =
+        (float *) (tmac_qs + M * K / group_size * (group_size / nelem_per_byte) + M * K / group_size * sizeof(float));
 
     for (int i = 0; i < M * K / group_size; i++) {
-        float scale = GGML_FP16_TO_FP32(qweights_block[i].d);   // NOTE:  Scaling factor.
-        // scale_ptr[i] = scale; // Scale
-        scale_ptr[i] = 1.0f; // Scale
+        float scale  = GGML_FP16_TO_FP32(qweights_block[i].d);  // NOTE:  Scaling factor.
+        scale_ptr[i] = scale;                                   // Scale
+        // scale_ptr[i] = 1.0f;  // Scale
     }
 
     for (int i = 0; i < M * K / group_size; i++) {
-        float zero = GGML_FP16_TO_FP32(qweights_block[i].m);    // NOTE: Zero point.
-        // zp_ptr[i] = zero;
-        zp_ptr[i] = 0.0f;
+        float zero = GGML_FP16_TO_FP32(qweights_block[i].m);  // NOTE: Zero point.
+        zp_ptr[i]  = zero;
+        // zp_ptr[i]  = 0.0f;
     }
 
     //> ===================================================================================================
     //> Repack Quantized Tensor to T-MAC Context
     //> ===================================================================================================
 
-    ggml_tensor* tensor = ggml_new_tensor_2d(tmac_ctx, GGML_TYPE_TMAC_W4G128_1, K, M);
+    ggml_tensor * tensor = ggml_new_tensor_2d(tmac_ctx, GGML_TYPE_TMAC_W4G128_1, K, M);
     ggml_set_name(tensor, "tmac_tensor");
 
     // Allocate memory for T-MAC tensors
@@ -587,7 +592,7 @@ int main() {
     ggml_backend_tmac_convert_weight(tensor, tmac_qs, 0, ggml_backend_buft_get_alloc_size(tmac_buft, tensor));
 
     struct ggml::cpu::tmac::tensor_traits * tensor_extra = (struct ggml::cpu::tmac::tensor_traits *) tensor->extra;
-    tmac_tensor_extra * tmac_extra = tensor_extra -> get_tmac_tensor_extra(tensor->name);
+    tmac_tensor_extra *                     tmac_extra   = tensor_extra->get_tmac_tensor_extra(tensor->name);
 
     //> ===================================================================================================
     //> Do MUL_MAT compute.
@@ -595,13 +600,13 @@ int main() {
 
     // NOTE: FP32 MUL_MAT
     struct ggml_cgraph * gf_mul_mat = ggml_new_graph(main_ctx);
-    ggml_tensor* mul_op = ggml_mul_mat(main_ctx, tensor_f32, activation);
+    ggml_tensor *        mul_op     = ggml_mul_mat(main_ctx, tensor_f32, activation);
     ggml_build_forward_expand(gf_mul_mat, mul_op);
     ggml_tensor * result = compute_graph(main_ctx, gf_mul_mat);
 
     // NOTE: TMAC MUL_MAT
     struct ggml_cgraph * gf_mul_mat_tmac = ggml_new_graph(tmac_ctx);
-    ggml_tensor* mul_op_tmac = ggml_mul_mat(tmac_ctx, tensor, activation);
+    ggml_tensor *        mul_op_tmac     = ggml_mul_mat(tmac_ctx, tensor, activation);
     ggml_build_forward_expand(gf_mul_mat_tmac, mul_op_tmac);
 
     ggml_backend_buffer_t tmac_buf2 = ggml_backend_alloc_ctx_tensors_from_buft(tmac_ctx, tmac_buft);
@@ -613,17 +618,17 @@ int main() {
     ggml_tensor * result_tmac = compute_graph(tmac_ctx, gf_mul_mat_tmac);
 
     printf("Standard results :\n");
-    ggml_print_tensor((uint8_t *)result->data, GGML_TYPE_F32, result->ne, result->nb, 4);
+    ggml_print_tensor((uint8_t *) result->data, GGML_TYPE_F32, result->ne, result->nb, 4);
     printf("T-MAC results :\n");
-    ggml_print_tensor((uint8_t *)result_tmac->data, GGML_TYPE_F32, result_tmac->ne, result_tmac->nb, 4);
+    ggml_print_tensor((uint8_t *) result_tmac->data, GGML_TYPE_F32, result_tmac->ne, result_tmac->nb, 4);
 
     //> ===================================================================================================
     //  Compute NMSE
     //> ===================================================================================================
 
-    float nmse_tmac = 0.0f;
-    float norm_sq_tmac = 0.0f;
-    float * result_f32 = (float *) result->data;
+    float   nmse_tmac       = 0.0f;
+    float   norm_sq_tmac    = 0.0f;
+    float * result_f32      = (float *) result->data;
     float * result_tmac_f32 = (float *) result_tmac->data;
 
     for (int i = 0; i < M * N; i++) {

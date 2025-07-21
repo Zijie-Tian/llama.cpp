@@ -1,29 +1,29 @@
-#include <cstdint>
-#include <ggml.h>
-#include <ggml-cpu.h>
+#include <float.h>
 #include <ggml-alloc.h>
 #include <ggml-backend.h>
+#include <ggml-cpu.h>
+#include <ggml.h>
 
+#include <cassert>
+#include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <cassert>
-#include <random>
-#include <float.h>
 #include <limits>
-#include <cmath>
+#include <random>
 
 #ifdef __ARM_NEON
-#include <arm_neon.h>
+#    include <arm_neon.h>
 #elif defined __AVX2__
-#include <immintrin.h>
+#    include <immintrin.h>
 #endif
 
 #ifdef __ARM_NEON
 typedef float16_t tmac_float_type;
 #else
-#include <stdbool.h>
-#include <stdint.h>
+#    include <stdbool.h>
+#    include <stdint.h>
 typedef float tmac_float_type;
 #endif
 
@@ -31,8 +31,8 @@ typedef uint16_t ggml_half;
 typedef uint32_t ggml_half2;
 
 // Use fixed seed for reproducible results
-// static std::mt19937 g_rng(42);
-static std::mt19937 g_rng(std::random_device{}());
+static std::mt19937 g_rng(42);
+// static std::mt19937 g_rng(std::random_device{}());
 
 constexpr size_t kAllocAlignment = 64;
 
@@ -55,7 +55,7 @@ static void aligned_free(void * ptr) {
 }
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
-    float *                         data       = (float *) dst->data;
+    float *                               data       = (float *) dst->data;
     size_t                                n_elements = ggml_nelements(dst);
     std::uniform_real_distribution<float> dis(min_val, max_val);
 
@@ -75,16 +75,16 @@ static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_
 }
 
 static void set_tensor_f32(ggml_tensor * dst, float value) {
-    float * data = (float *) dst->data;
-    size_t n_elements = ggml_nelements(dst);
+    float * data       = (float *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
     for (size_t i = 0; i < n_elements; i++) {
         data[i] = value;
     }
 }
 
 static void set_tensor_f16(ggml_tensor * dst, float value) {
-    ggml_fp16_t * data = (ggml_fp16_t *) dst->data;
-    size_t n_elements = ggml_nelements(dst);
+    ggml_fp16_t * data       = (ggml_fp16_t *) dst->data;
+    size_t        n_elements = ggml_nelements(dst);
     for (size_t i = 0; i < n_elements; i++) {
         data[i] = ggml_fp32_to_fp16(value);
     }
@@ -92,26 +92,37 @@ static void set_tensor_f16(ggml_tensor * dst, float value) {
 
 //> Added QLUTATTN block quantization.
 #define QKLUTATTN_KV1_128x128 (128 * 128)
+
 typedef struct {
-    ggml_half d[128];                // scale
-    ggml_half m[128];                // min
-    uint8_t   qs[QKLUTATTN_KV1_128x128 / 8];    // 8-bit quants
+    ggml_half d[128];                         // scale
+    ggml_half m[128];                         // min
+    uint8_t   qs[QKLUTATTN_KV1_128x128 / 8];  // 8-bit quants
 } block_qlutattn_kv1_128x128;
-static_assert(sizeof(block_qlutattn_kv1_128x128) == (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV1_128x128 / 8, "wrong qlutattn_w1_128x128 block size/padding");
+
+static_assert(sizeof(block_qlutattn_kv1_128x128) ==
+                  (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV1_128x128 / 8,
+              "wrong qlutattn_w1_128x128 block size/padding");
 
 #define QKLUTATTN_KV2_128x128 (128 * 128)
+
 typedef struct {
-    ggml_half d[128];                // scale
-    ggml_half m[128];                // min
-    uint8_t   qs[QKLUTATTN_KV2_128x128 / 4];    // 8-bit quants
+    ggml_half d[128];                         // scale
+    ggml_half m[128];                         // min
+    uint8_t   qs[QKLUTATTN_KV2_128x128 / 4];  // 8-bit quants
 } block_qlutattn_kv2_128x128;
-static_assert(sizeof(block_qlutattn_kv2_128x128) == (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV2_128x128 / 4, "wrong qlutattn_w2_128x128 block size/padding");
+
+static_assert(sizeof(block_qlutattn_kv2_128x128) ==
+                  (sizeof(ggml_half) + sizeof(ggml_half)) * 128 + QKLUTATTN_KV2_128x128 / 4,
+              "wrong qlutattn_w2_128x128 block size/padding");
 
 #define QKLUTATTN_KV4_128x128 (128 * 128)
+
 typedef struct {
-    uint8_t   qs[QKLUTATTN_KV4_128x128 / 2 + 128 * sizeof(float) * 2];    // 2-bit quants
+    uint8_t qs[QKLUTATTN_KV4_128x128 / 2 + 128 * sizeof(float) * 2];  // 2-bit quants
 } block_qlutattn_kv4_128x128;
-static_assert(sizeof(block_qlutattn_kv4_128x128) == (sizeof(float) + sizeof(float)) * 128 + QKLUTATTN_KV4_128x128 / 2, "wrong qlutattn_w4_128x128 block size/padding");
+
+static_assert(sizeof(block_qlutattn_kv4_128x128) == (sizeof(float) + sizeof(float)) * 128 + QKLUTATTN_KV4_128x128 / 2,
+              "wrong qlutattn_w4_128x128 block size/padding");
 
 /**
  * @brief Pseudo symmetric quantization of a float array.
@@ -124,14 +135,8 @@ static_assert(sizeof(block_qlutattn_kv4_128x128) == (sizeof(float) + sizeof(floa
  * @param n_bit
  * @param q_group_size
  */
-static void pseudo_symmetric_quantize_128x128_simd_f32(
-    int8_t* quantized,
-    const float* input,
-    float* scales,
-    float* zeros,
-    int n,
-    int n_bit
-) {
+static void pseudo_symmetric_quantize_128x128_simd_f32(int8_t * quantized, const float * input, float * scales,
+                                                       float * zeros, int n, int n_bit) {
     const int64_t group_size = 128;
     GGML_ASSERT(n % QKLUTATTN_KV4_128x128 == 0);
 
@@ -148,7 +153,7 @@ static void pseudo_symmetric_quantize_128x128_simd_f32(
         for (int i = g * group_size; i < (g + 1) * group_size; ++i) {
             float abs_val = fabsf(input[i]);
             if (std::isnan(abs_val)) {
-                abs_val = 0.0f; // Handle NaN values
+                abs_val = 0.0f;  // Handle NaN values
             }
 
             if (abs_val > group_max_abs[i % group_size]) {
@@ -164,33 +169,24 @@ static void pseudo_symmetric_quantize_128x128_simd_f32(
         scales[g_idx] = group_max_abs[g_idx] / max_int;
         zeros[g_idx]  = 0.0f;
 
-        quantized[idx] = (int8_t)roundf(input[idx] / scales[g_idx]);
-        quantized[idx] < min_int ? quantized[idx] = min_int : quantized[idx] > max_int ? quantized[idx] = max_int : quantized[idx];
+        quantized[idx] = (int8_t) roundf(input[idx] / scales[g_idx]);
+        quantized[idx]<min_int ? quantized[idx] = min_int : quantized[idx]> max_int ? quantized[idx] = max_int :
+                                                                                      quantized[idx];
     }
 }
 
-static void pseudo_symmetric_dequantize_128x128_simd_f32(
-    float* dequantized,
-    const int8_t* quantized,
-    const float* scales,
-    const float* zeros,
-    int n,
-    int n_bit
-) {
+static void pseudo_symmetric_dequantize_128x128_simd_f32(float * dequantized, const int8_t * quantized,
+                                                         const float * scales, const float * zeros, int n, int n_bit) {
     const int64_t group_size = 128;
     GGML_ASSERT(n % QKLUTATTN_KV4_128x128 == 0);
 
     for (int i = 0; i < n; ++i) {
-        int g_idx = i % group_size;
+        int g_idx      = i % group_size;
         dequantized[i] = quantized[i] * scales[g_idx] + zeros[g_idx];
     }
 }
 
-static struct ggml_tensor * compute_graph(
-    ggml_context* ctx,
-    struct ggml_cgraph * gf,
-    int n_threads = 1
-) {
+static struct ggml_tensor * compute_graph(ggml_context * ctx, struct ggml_cgraph * gf, int n_threads = 1) {
     ggml_graph_compute_with_ctx(ctx, gf, n_threads);
 
     return ggml_graph_node(gf, -1);
@@ -202,24 +198,24 @@ static void ggml_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne
     for (int64_t i3 = 0; i3 < ne[3]; i3++) {
         printf("                                     [\n");
         for (int64_t i2 = 0; i2 < ne[2]; i2++) {
-            if (i2 == n && ne[2] > 2*n) {
+            if (i2 == n && ne[2] > 2 * n) {
                 printf("                                      ..., \n");
                 i2 = ne[2] - n;
             }
             printf("                                      [\n");
             for (int64_t i1 = 0; i1 < ne[1]; i1++) {
-                if (i1 == n && ne[1] > 2*n) {
+                if (i1 == n && ne[1] > 2 * n) {
                     printf("                                       ..., \n");
                     i1 = ne[1] - n;
                 }
                 printf("                                       [");
                 for (int64_t i0 = 0; i0 < ne[0]; i0++) {
-                    if (i0 == n && ne[0] > 2*n) {
+                    if (i0 == n && ne[0] > 2 * n) {
                         printf("..., ");
                         i0 = ne[0] - n;
                     }
                     size_t i = i3 * nb[3] + i2 * nb[2] + i1 * nb[1] + i0 * nb[0];
-                    float v;
+                    float  v;
                     if (type == GGML_TYPE_F16) {
                         v = ggml_fp16_to_fp32(*(ggml_fp16_t *) &data[i]);
                     } else if (type == GGML_TYPE_F32) {
@@ -235,7 +231,9 @@ static void ggml_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne
                     }
                     printf("%12.4f", v);
                     sum += v;
-                    if (i0 < ne[0] - 1) printf(", ");
+                    if (i0 < ne[0] - 1) {
+                        printf(", ");
+                    }
                 }
                 printf("],\n");
             }
@@ -247,13 +245,12 @@ static void ggml_print_tensor(uint8_t * data, ggml_type type, const int64_t * ne
 }
 
 int main() {
-
     //> ===================================================================================================
     //> Allocate GGML context
     //> ===================================================================================================
 
     struct ggml_init_params params = {
-        .mem_size   = 1024*1024*1024,
+        .mem_size   = 1024 * 1024 * 1024,
         .mem_buffer = NULL,
         .no_alloc   = false,
     };
@@ -268,12 +265,12 @@ int main() {
     //> Init Tensors
     //> ===================================================================================================
 
-    const int64_t head_dim      = 128;
-    const int64_t kv_len        = 128;
-    const int64_t n_kv_heads    = 1;
-    const int nbits             = 4;    //> nbits >= 2
+    const int64_t head_dim   = 128;
+    const int64_t kv_len     = 128;
+    const int64_t n_kv_heads = 1;
+    const int     nbits      = 4;  //> nbits >= 2
 
-    ggml_tensor * k             = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * kv_len, 1, 1, 1);
+    ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k, "k_source");
 
     ggml_tensor * k_quantized = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * kv_len, 1, 1, 1);
@@ -282,24 +279,18 @@ int main() {
     ggml_tensor * k_dequantized = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k_dequantized, "k_dequantized");
 
-    // fill_tensor_f16(k, -0.6f, 0.6f);
+    fill_tensor_f16(k);
 
-    set_tensor_f16(k, 1.0f);
+    // set_tensor_f16(k, 1.0f);
 
-    ggml_print_tensor((uint8_t * )k->data, GGML_TYPE_F16, k->ne, k->nb, 3);
+    ggml_print_tensor((uint8_t *) k->data, GGML_TYPE_F16, k->ne, k->nb, 3);
 
-    int8_t * q_vals  = (int8_t * )aligned_malloc(head_dim * kv_len * sizeof(int8_t));
-    float * k_scales = (float *  )aligned_malloc(head_dim * sizeof(float));
-    float * k_zeros  = (float *  )aligned_malloc(head_dim * sizeof(float));
+    int8_t * q_vals   = (int8_t *) aligned_malloc(head_dim * kv_len * sizeof(int8_t));
+    float *  k_scales = (float *) aligned_malloc(head_dim * sizeof(float));
+    float *  k_zeros  = (float *) aligned_malloc(head_dim * sizeof(float));
 
-    pseudo_symmetric_quantize_128x128_simd_f32(
-        (int8_t *)q_vals,
-        (float *)k->data,
-        k_scales,
-        k_zeros,
-        head_dim * kv_len,
-        nbits
-    );
+    pseudo_symmetric_quantize_128x128_simd_f32((int8_t *) q_vals, (float *) k->data, k_scales, k_zeros,
+                                               head_dim * kv_len, nbits);
 
     // float * k_dequantized = (float * )aligned_malloc(head_dim * kv_len * sizeof(float));
 
@@ -317,11 +308,11 @@ int main() {
     //> ===================================================================================================
 
     // NOTE: FP32 MUL_MAT
-    struct ggml_cgraph * gf = ggml_new_graph(ctx);
-    ggml_tensor * quant_op = ggml_cpy(ctx, k, k_quantized); //> k -> k_quantized
+    struct ggml_cgraph * gf       = ggml_new_graph(ctx);
+    ggml_tensor *        quant_op = ggml_cpy(ctx, k, k_quantized);  //> k -> k_quantized
     ggml_build_forward_expand(gf, quant_op);
 
-    ggml_tensor * dequant_op = ggml_cpy(ctx, k_quantized, k_dequantized); //> k_quantized -> k_dequantized
+    ggml_tensor * dequant_op = ggml_cpy(ctx, k_quantized, k_dequantized);  //> k_quantized -> k_dequantized
     ggml_build_forward_expand(gf, dequant_op);
 
     ggml_graph_compute_with_ctx(ctx, gf, 1);
@@ -329,20 +320,19 @@ int main() {
     // ggml_graph_node(gf, -1);
 
     printf("Quantized results :\n");
-    ggml_print_tensor((uint8_t *)k_dequantized->data, GGML_TYPE_F32, k_dequantized->ne, k_dequantized->nb, 4);
+    ggml_print_tensor((uint8_t *) k_dequantized->data, GGML_TYPE_F32, k_dequantized->ne, k_dequantized->nb, 4);
 
     //> ===================================================================================================
     //> Results.
     //> ===================================================================================================
 
     printf("K (source):\n");
-    ggml_print_tensor((uint8_t *)k->data, GGML_TYPE_F16, k->ne, k->nb, 4);
+    ggml_print_tensor((uint8_t *) k->data, GGML_TYPE_F16, k->ne, k->nb, 4);
 
     printf("Dequantized tensor:\n");
-    ggml_print_tensor((uint8_t *)k_dequantized, GGML_TYPE_F16, k->ne, k->nb, 4);
+    ggml_print_tensor((uint8_t *) k_dequantized, GGML_TYPE_F16, k->ne, k->nb, 4);
 
     ggml_free(ctx);
 
     return 0;
 }
-

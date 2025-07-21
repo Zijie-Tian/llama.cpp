@@ -75,7 +75,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
     if (GGML_TMAC)
         target_compile_definitions(${GGML_CPU_NAME} PUBLIC GGML_USE_TMAC)
         target_include_directories(${GGML_CPU_NAME} PUBLIC ggml-cpu/tmac)
-        
+
         # Add TMAC source files only when GGML_TMAC is enabled
         list(APPEND GGML_CPU_SOURCES
             ggml-cpu/tmac/tmac.cpp
@@ -87,7 +87,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
             ggml-cpu/tmac/tbl.cpp
             ggml-cpu/tmac/tbl.h
         )
-        
+
         get_target_property(cdefs ${GGML_CPU_NAME} COMPILE_DEFINITIONS)
         message(STATUS "GGML_CPU_NAME: ${GGML_CPU_NAME} COMPILE_DEFINITIONS: ${cdefs}")
 
@@ -100,10 +100,31 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
             target_compile_definitions(${GGML_CPU_NAME} PRIVATE TMAC_RECHUNK)
         endif()
     endif()
-    
+
     if (GGML_QLUTATTN)
         target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_QLUTATTN)
         target_include_directories(${GGML_CPU_NAME} PRIVATE ggml-cpu/qlutattn)
+
+        # Add qlutattn source files only when GGML_qlutattn is enabled
+        list(APPEND GGML_CPU_SOURCES
+            ggml-cpu/qlutattn/qlutattn.cpp
+            ggml-cpu/qlutattn/qlutattn.h
+            ggml-cpu/qlutattn/lut_mul_mat.cpp
+            ggml-cpu/qlutattn/lut_mul_mat.h
+            ggml-cpu/qlutattn/lut_ctor.cpp
+            ggml-cpu/qlutattn/lut_ctor.h
+            ggml-cpu/qlutattn/tbl.cpp
+            ggml-cpu/qlutattn/tbl.h
+        )
+
+        get_target_property(cdefs ${GGML_CPU_NAME} COMPILE_DEFINITIONS)
+        message(STATUS "GGML_CPU_NAME: ${GGML_CPU_NAME} COMPILE_DEFINITIONS: ${cdefs}")
+
+        if ((NOT ${CMAKE_C_COMPILER_ID} MATCHES "Clang") OR
+            (NOT ${CMAKE_CXX_COMPILER_ID} MATCHES "Clang"))
+            message(FATAL_ERROR "Clang is required for QLUTATTN compilation")
+        endif()
+
     endif()
 
     if (GGML_CPU_HBM)

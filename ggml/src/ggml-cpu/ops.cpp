@@ -400,7 +400,7 @@ struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K
     if (qlutattn_kernel_config.count("test") == 0) {
         struct qlutattn_kernel_config kernel_config{
             .g                = 4,
-            .ngroups_per_elem = 1,
+            .ngroups_per_elem = 2,  // NOTE: Must 8 // g, in tmac Kernel g is set to 4.
             .q_group_size     = 128,
             .act_group_size   = 4,
             .has_scale        = false,
@@ -409,7 +409,7 @@ struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K
             .actk             = 4,  // should be equal to (act_group_size / g).
             .has_zero_point   = false,
             .one_scale        = false,
-            .bm               = 128 * bits,
+            .bm               = 64 * bits,
             .simd_n_in        = 16,
             .simd_n_out       = 8,
             .chunk_n          = 1  // useless for QLUTATTN.
@@ -435,8 +435,8 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
     const int ith = params->ith;  // thread index
     const int nth = params->nth;  // number of threads
 
+    // NOTICE : Currently, this function is only for the first thread.
     if (ith != 0) {
-        // NOTICE : Currently, this function is only for the first thread.
         return;
     }
 
@@ -515,7 +515,6 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                         }
 
                         // NOTE: This function we can set scale_ptr and zero_ptr.
-                        //> Per-token quantization.
                         quantize_block_q(src0_f32, (char *) qweight_ptr + i02 * nb02 + i03 * nb03, ne00 * ne01);
                     }
                 }
@@ -551,7 +550,7 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 // #             0        1             2             3                 4                  5
                 // w = w.reshape(M // bm, bm // mgroup, simd_n_in, ngroups_per_elem, K // g // kfactor, kfactor).transpose(0, 4, 1, 5, 2, 3)
                 // w = sum([(w[:, :, :, :, :, ng] << (ng * g)) for ng in range(ngroups_per_elem)])
-                memset(qweights, 0, m / bits * k / nelem_per_byte);
+                memset(qweights, 0, m * k / g / nelem_per_byte);
                 for (int im = 0; im < m / bits; im++) {
                     for (int ib = 0; ib < bits; ib++) {
                         for (int ik = 0; ik < k / g; ik++) {
