@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+namespace ggml::cpu::qlutattn {
+
 #if defined __AVX2__
 static inline float _mm256_addv_ps(const __m256 v) {
     __m128 res = _mm256_extractf128_ps(v, 1);
@@ -202,12 +204,11 @@ inline int32_t lut_ctor_g4_int8_impl(int32_t act_k, int8_t* qlut, tmac_float_typ
     return 0;
 }
 
-
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-int32_t partial_max_g4_int8_k8(void* lut_scales_, void* b_) {
+int32_t qlutattn_partial_max_g4_int8_k8(void* lut_scales_, void* b_) {
     tmac_float_type* lut_scales = (tmac_float_type*)lut_scales_;
     tmac_float_type* b = (tmac_float_type*)b_;
 #ifdef __ARM_NEON
@@ -237,18 +238,13 @@ int32_t partial_max_g4_int8_k8(void* lut_scales_, void* b_) {
     return 0;
 }
 
-int32_t partial_max_reset(void* lut_scales_) {
+int32_t qlutattn_partial_max_reset(void* lut_scales_) {
     tmac_float_type* lut_scales = (tmac_float_type*)lut_scales_;
     *lut_scales = 0.0;
     return 0;
 }
 
-#ifdef __cplusplus
-}
-#endif
-
-
-void lut_ctor_int8_g4(void* B, void* LUT_Scales, void* LUT_Biases, void* QLUT, int K, const struct tmac_kernel_config * const kernel_config) {
+void qlutattn_lut_ctor_int8_g4(void* B, void* LUT_Scales, void* LUT_Biases, void* QLUT, int K, const struct qlutattn_kernel_config * const kernel_config) {
     // TODO: handle bitnet here
 
     int act_group_size = kernel_config->act_group_size;
@@ -256,9 +252,9 @@ void lut_ctor_int8_g4(void* B, void* LUT_Scales, void* LUT_Biases, void* QLUT, i
 
     int kk_outer_max = K / act_group_size;
     for (int32_t kk_outer = 0; kk_outer < kk_outer_max; ++kk_outer) {
-        partial_max_reset((&(((tmac_float_type*)LUT_Scales)[kk_outer])));
+        qlutattn_partial_max_reset((&(((tmac_float_type*)LUT_Scales)[kk_outer])));
         for (int32_t k_outer = 0; k_outer < act_group_size / 32; ++k_outer) {
-            partial_max_g4_int8_k8((&(((tmac_float_type*)LUT_Scales)[kk_outer])), (&(((tmac_float_type*)B)[((kk_outer * act_group_size) + (k_outer * 32))])));
+            qlutattn_partial_max_g4_int8_k8((&(((tmac_float_type*)LUT_Scales)[kk_outer])), (&(((tmac_float_type*)B)[((kk_outer * act_group_size) + (k_outer * 32))])));
         }
     }
     for (int32_t k_outer_1 = 0; k_outer_1 < kk_outer_max; ++k_outer_1) {
@@ -270,3 +266,8 @@ void lut_ctor_int8_g4(void* B, void* LUT_Scales, void* LUT_Biases, void* QLUT, i
     }
 }
 
+#ifdef __cplusplus
+}
+#endif
+
+} //> namespace ggml::cpu::qlutattn

@@ -16,6 +16,8 @@
 #include "ops.h"
 #include "ggml.h"
 
+#include "qlutattn/qlutattn.h"
+
 #if defined(_MSC_VER) || defined(__MINGW32__)
 #include <malloc.h> // using malloc.h with MSC/MINGW
 #elif !defined(__FreeBSD__) && !defined(__NetBSD__) && !defined(__OpenBSD__)
@@ -443,7 +445,7 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     },
     [GGML_TYPE_QLUTATTN_KV4_128x128] = {
         .from_float               = quantize_block_qlutattn_kv4_128x128,
-        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_qlutattn_kv4_128x128,  //> Fake
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },

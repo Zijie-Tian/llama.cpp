@@ -32,10 +32,7 @@ typedef _Float16 half;
 
 #include "lut_ctor.h"
 
-
-#ifdef __cplusplus
-extern "C" {
-#endif
+namespace ggml::cpu::qlutattn {
 
 int32_t tbl_int8_reset(int32_t m, int8_t* c);
 
@@ -48,11 +45,9 @@ int32_t tbl_int16_reset(int32_t m, int16_t* c);
 
 void qgemm_lut_int8_g4(
         void* A, void* LUT, void* Scales, void* LUT_Scales, void* LUT_Biases, void* C,
-        int bm, int K, int N, const struct tmac_kernel_config * const kernel_config);
+        int bm, int K, int N, const struct qlutattn_kernel_config * const kernel_config);
 
-#ifdef __cplusplus
 }
-#endif
 
 
 

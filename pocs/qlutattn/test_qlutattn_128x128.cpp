@@ -270,6 +270,10 @@ int main() {
     const int64_t n_kv_heads = 1;
     const int     nbits      = 4;  //> nbits >= 2
 
+    ggml_tensor * activaion = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim * kv_len, n_kv_heads, 1, 1);
+    ggml_set_name(activaion, "activation");
+    set_tensor_f32(activaion, 1.0f);
+
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k, "k_source");
 
@@ -321,6 +325,20 @@ int main() {
 
     printf("Quantized results :\n");
     ggml_print_tensor((uint8_t *) k_dequantized->data, GGML_TYPE_F32, k_dequantized->ne, k_dequantized->nb, 4);
+
+    //> ===================================================================================================
+    //> Do MUL_MAT with quantized tensor.
+    //> ===================================================================================================
+
+    // NOTE: QLUTATTN_KV4_128x128 MUL_MAT
+    struct ggml_cgraph * gf_mul = ggml_new_graph(ctx);
+    ggml_tensor *        mul_op = ggml_mul_mat(ctx, k_dequantized, activaion);  //> k_quantized * k_dequantized
+    ggml_build_forward_expand(gf_mul, mul_op);
+
+        ggml_graph_compute_with_ctx(ctx, gf_mul, 1);
+    // ggml_graph_node(gf_mul, -1);
+    printf("MUL_MAT results:\n");
+    ggml_print_tensor((uint8_t *) mul_op->data, GGML_TYPE_F32, mul_op->ne, mul_op->nb, 4);
 
     //> ===================================================================================================
     //> Results.

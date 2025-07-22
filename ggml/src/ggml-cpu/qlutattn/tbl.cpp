@@ -11,6 +11,7 @@
 #include <algorithm>
 #include <stdexcept>
 
+namespace ggml::cpu::qlutattn {
 
 #ifdef __ARM_NEON
 template <int N>
@@ -778,12 +779,6 @@ inline void tbl_g4_int8_float_gather_bit4_impl(int32_t m, tmac_float_type* C_glo
 }
 
 
-
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
 int32_t tbl_int8_reset(int32_t m, int8_t* c) {
     memset(c, 0, m);
     return 0;
@@ -804,14 +799,9 @@ int32_t tbl_int16_reset(int32_t m, int16_t* c) {
     return 0;
 }
 
-#ifdef __cplusplus
-}
-#endif
-
-
 void qgemm_lut_int8_g4(
             void* A, void* LUT, void* Scales, void* LUT_Scales, void* LUT_Biases, void* C,
-            int bm, int K, int N, const struct tmac_kernel_config * const kernel_config) {
+            int bm, int K, int N, const struct qlutattn_kernel_config * const kernel_config) {
     // TODO: support N > 1
     if (N != 1) {
         throw std::runtime_error("N > 1 is not supported yet");
@@ -908,3 +898,4 @@ void qgemm_lut_int8_g4(
     delete[] CBits;
 }
 
+} //> namespace ggml::cpu::qlutattn

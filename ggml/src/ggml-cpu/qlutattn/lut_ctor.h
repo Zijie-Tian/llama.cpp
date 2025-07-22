@@ -33,7 +33,13 @@ static inline float _mm256_addv_ps(const __m256 v);
 #define my_fputsf(buf, s, ...) snprintf(buf, sizeof(buf), s, __VA_ARGS__); my_fputs(buf);
 
 
-struct tmac_kernel_config {
+namespace ggml::cpu::qlutattn {
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+struct qlutattn_kernel_config {
     int32_t g;
     int32_t ngroups_per_elem;
     int32_t q_group_size;
@@ -53,20 +59,14 @@ struct tmac_kernel_config {
     int32_t chunk_n;
 };
 
+int32_t qlutattn_partial_max_g4_int8_k8(void* lut_scales_, void* b_);
 
+int32_t qlutattn_partial_max_reset(void* lut_scales_);
 
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-int32_t partial_max_g4_int8_k8(void* lut_scales_, void* b_);
-
-int32_t partial_max_reset(void* lut_scales_);
-
-void lut_ctor_int8_g4(void* B, void* LUT_Scales, void* LUT_Biases, void* QLUT, int K, const struct tmac_kernel_config * const kernel_config);
+void qlutattn_lut_ctor_int8_g4(void* B, void* LUT_Scales, void* LUT_Biases, void* QLUT, int K, const struct qlutattn_kernel_config * const kernel_config);
 
 #ifdef __cplusplus
 }
 #endif
 
-
+} //> namespace ggml::cpu::qlutattn
