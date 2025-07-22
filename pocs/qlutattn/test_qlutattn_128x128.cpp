@@ -270,9 +270,9 @@ int main() {
     const int64_t n_kv_heads = 1;
     const int     nbits      = 4;  //> nbits >= 2
 
-    ggml_tensor * activaion = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim * kv_len, n_kv_heads, 1, 1);
+    ggml_tensor * activaion = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, 1, 1, 1);
     ggml_set_name(activaion, "activation");
-    set_tensor_f32(activaion, 1.0f);
+    set_tensor_f16(activaion, 1.0f);
 
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k, "k_source");
@@ -308,47 +308,49 @@ int main() {
     // );
 
     //> ===================================================================================================
-    //> Comopute of the compute graph.
+    //> Call quantization.
     //> ===================================================================================================
 
-    // NOTE: FP32 MUL_MAT
-    struct ggml_cgraph * gf       = ggml_new_graph(ctx);
+    // NOTE: Quantization operation
     ggml_tensor *        quant_op = ggml_cpy(ctx, k, k_quantized);  //> k -> k_quantized
+    struct ggml_cgraph * gf       = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, quant_op);
 
-    ggml_tensor * dequant_op = ggml_cpy(ctx, k_quantized, k_dequantized);  //> k_quantized -> k_dequantized
-    ggml_build_forward_expand(gf, dequant_op);
-
-    ggml_graph_compute_with_ctx(ctx, gf, 1);
-
-    // ggml_graph_node(gf, -1);
+    ggml_graph_compute_with_ctx(ctx, gf, 4);
 
     printf("Quantized results :\n");
-    ggml_print_tensor((uint8_t *) k_dequantized->data, GGML_TYPE_F32, k_dequantized->ne, k_dequantized->nb, 4);
+
+    //> ===================================================================================================
+    //> Reshape the k into 128x128
+    //> ===================================================================================================
+
+    ggml_tensor *        k_reshaped = ggml_reshape_4d(ctx, k, head_dim, kv_len, 1, 1);
+    struct ggml_cgraph * gf_reshape = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf_reshape, k_reshaped);
+    ggml_graph_compute_with_ctx(ctx, gf_reshape, 4);
 
     //> ===================================================================================================
     //> Do MUL_MAT with quantized tensor.
     //> ===================================================================================================
 
-    // NOTE: QLUTATTN_KV4_128x128 MUL_MAT
+    // NOTE: FP32 MUL_MAT
     struct ggml_cgraph * gf_mul = ggml_new_graph(ctx);
-    ggml_tensor *        mul_op = ggml_mul_mat(ctx, k_dequantized, activaion);  //> k_quantized * k_dequantized
+    ggml_tensor *        mul_op = ggml_mul_mat(ctx, k_reshaped, activaion);  //> k_quantized * k_dequantized
     ggml_build_forward_expand(gf_mul, mul_op);
 
-        ggml_graph_compute_with_ctx(ctx, gf_mul, 1);
-    // ggml_graph_node(gf_mul, -1);
+    // NOTE: Mixed precision MUL_MAT
+    float * ret = (float *) aligned_malloc(head_dim * sizeof(float));
+
+    ggml_vec_dot_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot;
+    qlutattn_vec_dot(head_dim, ret, head_dim, (float *) activaion->data, head_dim, (ggml_fp16_t *) activaion->data,
+                     head_dim, head_dim);
+
+    //> ===================================================================================================
+    //> Print results
+    //> ===================================================================================================
+
     printf("MUL_MAT results:\n");
     ggml_print_tensor((uint8_t *) mul_op->data, GGML_TYPE_F32, mul_op->ne, mul_op->nb, 4);
-
-    //> ===================================================================================================
-    //> Results.
-    //> ===================================================================================================
-
-    printf("K (source):\n");
-    ggml_print_tensor((uint8_t *) k->data, GGML_TYPE_F16, k->ne, k->nb, 4);
-
-    printf("Dequantized tensor:\n");
-    ggml_print_tensor((uint8_t *) k_dequantized, GGML_TYPE_F16, k->ne, k->nb, 4);
 
     ggml_free(ctx);
 
