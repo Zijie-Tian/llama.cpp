@@ -109,8 +109,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
         list(APPEND GGML_CPU_SOURCES
             ggml-cpu/qlutattn/qlutattn.cpp
             ggml-cpu/qlutattn/qlutattn.h
-            ggml-cpu/qlutattn/lut_ctor.cpp
-            ggml-cpu/qlutattn/lut_ctor.h
+            ggml-cpu/qlutattn/qlut_ctor.cpp
+            ggml-cpu/qlutattn/qlut_ctor.h
             ggml-cpu/qlutattn/tbl.cpp
             ggml-cpu/qlutattn/tbl.h
         )

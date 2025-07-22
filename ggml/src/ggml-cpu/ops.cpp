@@ -10,6 +10,7 @@
 #include "binary-ops.h"
 #include "ggml-cpu.h"
 #include "ggml-impl.h"
+#include "qlutattn/qlutattn.h"  // NOTICE: This include should not be here.
 #include "unary-ops.h"
 #include "vec.h"
 
@@ -394,9 +395,29 @@ struct QlutattnI4TypeAccessor {
     }
 };
 
+struct qlutattn_kernel_config {
+    int32_t g;
+    int32_t ngroups_per_elem;
+    int32_t q_group_size;
+    int32_t act_group_size;
+
+    bool has_scale;
+    int  kfactor;
+    int  bits;
+    int  actk;  // should be equal to (act_group_size / g).
+    bool has_zero_point;
+    bool one_scale;
+
+    int32_t  bm;
+    uint32_t simd_n_in;
+    uint32_t simd_n_out;
+
+    int32_t chunk_n;
+};
+
 static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
 
-struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K, int bits) {
+static struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K, int bits) {
     if (qlutattn_kernel_config.count("test") == 0) {
         struct qlutattn_kernel_config kernel_config{
             .g                = 4,

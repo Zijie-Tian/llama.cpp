@@ -13,6 +13,9 @@
 #include <limits>
 #include <random>
 
+#include "lut_ctor.h"
+#include "tbl.h"
+
 #ifdef __ARM_NEON
 #    include <arm_neon.h>
 #elif defined __AVX2__
@@ -342,7 +345,7 @@ int main() {
     float * ret = (float *) aligned_malloc(head_dim * sizeof(float));
 
     ggml_vec_dot_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot;
-    qlutattn_vec_dot(head_dim, ret, head_dim, (float *) activaion->data, head_dim, (ggml_fp16_t *) activaion->data,
+    qlutattn_vec_dot(head_dim, ret, head_dim, (uint8_t *) k_quantized->data, head_dim, (ggml_fp16_t *) activaion->data,
                      head_dim, head_dim);
 
     //> ===================================================================================================

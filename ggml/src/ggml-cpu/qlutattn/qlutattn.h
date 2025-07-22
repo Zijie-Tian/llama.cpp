@@ -2,13 +2,6 @@
 
 #include "ggml-backend.h"  // 建议恢复，如果里面定义 ggml_fp16_t
 
-// #include "ggml-backend.h"
-// #include "ggml-cpu-impl.h"
-
-// GGML internal header
-
-// #define GGML_USE_TMAC
-
 #ifdef __cplusplus
 extern "C" {
 #endif
