@@ -482,8 +482,9 @@ int main() {
     //> ===================================================================================================
 
     // Create a simple 2D tensor
-    const int M = 128 * 128, K = 128, N = 1;
-    const int nbits = 4;
+    const int M = 128, K = 128, N = 1;
+    const int nbits     = 4;
+    const int n_threads = 12;
 
     ggml_tensor * tensor_f32 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, M);
     fill_tensor_f32(tensor_f32);
@@ -618,9 +619,9 @@ int main() {
     ggml_tensor * result_tmac = compute_graph(tmac_ctx, gf_mul_mat_tmac);
 
     printf("Standard results :\n");
-    ggml_print_tensor((uint8_t *) result->data, GGML_TYPE_F32, result->ne, result->nb, 4);
+    ggml_print_tensor((uint8_t *) result->data, GGML_TYPE_F32, result->ne, result->nb, n_threads);
     printf("T-MAC results :\n");
-    ggml_print_tensor((uint8_t *) result_tmac->data, GGML_TYPE_F32, result_tmac->ne, result_tmac->nb, 4);
+    ggml_print_tensor((uint8_t *) result_tmac->data, GGML_TYPE_F32, result_tmac->ne, result_tmac->nb, n_threads);
 
     //> ===================================================================================================
     //  Compute NMSE

@@ -376,7 +376,9 @@ int main() {
     ggml_print_tensor((uint8_t *) mul_op->data, GGML_TYPE_F32, mul_op->ne, mul_op->nb, 8);
 
     printf("Quantized results:\n");
-    ggml_print_tensor((uint8_t *) ret, GGML_TYPE_F16, mul_op->ne, mul_op->nb, 8);
+    size_t nb[4] = { sizeof(tmac_float_type), sizeof(tmac_float_type) * mul_op->ne[0], sizeof(int8_t) * mul_op->ne[1],
+                     sizeof(int8_t) * mul_op->ne[2] };
+    ggml_print_tensor((uint8_t *) ret, GGML_TYPE_F16, mul_op->ne, nb, 8);
 
     ggml_free(ctx);
 

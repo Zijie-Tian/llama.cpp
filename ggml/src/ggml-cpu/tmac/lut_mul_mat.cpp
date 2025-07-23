@@ -1080,8 +1080,9 @@ void ggml_backend_tmac_mul_mat(const struct ggml_compute_params * params, struct
     int64_t nchunk0 = (nr0 + chunk_size0 - 1) / chunk_size0;
     int64_t nchunk1 = (nr1 + chunk_size1 - 1) / chunk_size1;
 
-    int64_t dr0 = chunk_size0;
-    int64_t dr1 = chunk_size1;
+    int64_t dr0 = chunk_size0;  // NOTE: chunk size along the M (or kv_len).
+    int64_t dr1 = chunk_size1;  // NOTE: chunk size along the N (or q_len).
+
 #    if defined(TMAC_RECHUNK)
     // Rechunk
     if ((nchunk1 == 1) && (nchunk0 > nth * 4)) {
