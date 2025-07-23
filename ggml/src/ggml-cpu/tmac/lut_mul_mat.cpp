@@ -1,4 +1,5 @@
 #include <chrono>
+#include <cstdint>
 #include <fstream>
 #include <stdexcept>
 #include <string>
@@ -17,6 +18,8 @@
 // #define GGML_USE_TMAC
 #if defined(GGML_USE_TMAC)
 
+const static int64_t TESTS = 1;
+
 namespace ggml::cpu::tmac {
 bool tensor_traits::work_size(int /* n_threads */, const struct ggml_tensor * op, size_t & size) {
     if (ggml_tmac_can_mul_mat(op)) {
@@ -27,8 +30,15 @@ bool tensor_traits::work_size(int /* n_threads */, const struct ggml_tensor * op
 }
 
 bool tensor_traits::compute_forward(struct ggml_compute_params * params, struct ggml_tensor * op) {
+    auto start = std::chrono::high_resolution_clock::now();
+
     if (ggml_tmac_can_mul_mat(op)) {
         ggml_backend_tmac_mul_mat(params, op);
+
+        auto                                      end     = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double, std::milli> elapsed = end - start;
+        GGML_LOG_INFO("tmac MUL_MAT for %s: %.6f ms\n", op->name, elapsed.count() / static_cast<double>(TESTS));
+
         return true;
     };
     return false;
@@ -938,11 +948,15 @@ void ggml_backend_tmac_convert_weight(struct ggml_tensor * tensor, const void * 
                 size == ggml_tmac_get_nbytes(tensor));  // only full tensor conversion is supported for now
 
     auto start = std::chrono::high_resolution_clock::now();
-    ggml_tmac_transform_tensor(tensor, data);
-    auto end = std::chrono::high_resolution_clock::now();
 
+    // int64_t i = 0;
+    // while (++i < TESTS) {
+    ggml_tmac_transform_tensor(tensor, data);
+    // }
+
+    auto                                      end     = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double, std::milli> elapsed = end - start;
-    GGML_LOG_INFO("tmac weight conversion for %s: %.2f ms\n", tensor->name, elapsed.count());
+    GGML_LOG_INFO("tmac weight conversion for %s: %.6f ms\n", tensor->name, elapsed.count());
 }
 
 /****** T-MAC compute ******/
