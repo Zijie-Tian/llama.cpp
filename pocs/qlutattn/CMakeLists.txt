@@ -10,7 +10,13 @@ target_compile_features(${TARGET} PRIVATE cxx_std_11)
 
 set(TARGET test_qlutattn_128x128)
 add_executable(${TARGET} test_qlutattn_128x128.cpp)
-target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
+target_link_libraries(
+    ${TARGET} PRIVATE
+    common llama
+    ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu/qlutattn # This line is removed
+    ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu # This line is removed
+    ${CMAKE_SOURCE_DIR}/ggml/src # This line is removed
+)
 target_compile_features(${TARGET} PRIVATE cxx_std_11)
 
 set(TARGET test_channel_quant)

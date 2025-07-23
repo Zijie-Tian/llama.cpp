@@ -116,13 +116,13 @@ static void pseudo_quantize_qlutattn_f32(
 /**
  * @brief Pseudo symmetric quantization of a float array.
  *      NOTICE : This function is GROUP quantization.
- * @param input 
- * @param quantized 
- * @param scales 
- * @param zeros 
- * @param n 
- * @param n_bit 
- * @param q_group_size 
+ * @param input
+ * @param quantized
+ * @param scales
+ * @param zeros
+ * @param n
+ * @param n_bit
+ * @param q_group_size
  */
 static void pseudo_symmetric_quantize_f32(
     int8_t* quantized,
@@ -245,7 +245,7 @@ void quantize_block_qlutattn_kv2_128x128_ref(const float *restrict x, block_qlut
 
 void quantize_block_qlutattn_kv4_128x128_ref(const float *restrict x, block_qlutattn_kv4_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV4_128x128 == 0);
-    
+
     const int nb = k / QKLUTATTN_KV4_128x128;
 
     int8_t pseudo_quant_buf[QKLUTATTN_KV4_128x128];
@@ -263,7 +263,7 @@ void quantize_block_qlutattn_kv4_128x128_ref(const float *restrict x, block_qlut
         4,
         128
     );
-    
+
     for (int i = 0; i < nb; i++) {
         for (int j = 0; j < QKLUTATTN_KV4_128x128 / 2; j++) {
             const uint8_t x0 = (pseudo_quant_buf[i * QKLUTATTN_KV4_128x128 + j * 2 + 0] + (1 << (4 - 1)));

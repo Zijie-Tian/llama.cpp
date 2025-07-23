@@ -3,6 +3,7 @@
 #include <ggml-backend.h>
 #include <ggml-cpu.h>
 #include <ggml.h>
+#include <sys/types.h>
 
 #include <cassert>
 #include <cmath>
@@ -13,7 +14,8 @@
 #include <limits>
 #include <random>
 
-#include "lut_ctor.h"
+#include "qlut_ctor.h"
+#include "qlutattn.h"
 #include "tbl.h"
 
 #ifdef __ARM_NEON
@@ -273,9 +275,9 @@ int main() {
     const int64_t n_kv_heads = 1;
     const int     nbits      = 4;  //> nbits >= 2
 
-    ggml_tensor * activaion = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, 1, 1, 1);
-    ggml_set_name(activaion, "activation");
-    set_tensor_f16(activaion, 1.0f);
+    ggml_tensor * activation = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, 1, 1, 1);
+    ggml_set_name(activation, "activation");
+    set_tensor_f16(activation, 1.0f);
 
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k, "k_source");
@@ -287,7 +289,6 @@ int main() {
     ggml_set_name(k_dequantized, "k_dequantized");
 
     fill_tensor_f16(k);
-
     // set_tensor_f16(k, 1.0f);
 
     ggml_print_tensor((uint8_t *) k->data, GGML_TYPE_F16, k->ne, k->nb, 3);
@@ -338,22 +339,44 @@ int main() {
 
     // NOTE: FP32 MUL_MAT
     struct ggml_cgraph * gf_mul = ggml_new_graph(ctx);
-    ggml_tensor *        mul_op = ggml_mul_mat(ctx, k_reshaped, activaion);  //> k_quantized * k_dequantized
+    ggml_tensor *        mul_op = ggml_mul_mat(ctx, k_reshaped, activation);  //> k_quantized * k_dequantized
     ggml_build_forward_expand(gf_mul, mul_op);
+    ggml_graph_compute_with_ctx(ctx, gf_mul, 4);
 
     // NOTE: Mixed precision MUL_MAT
-    float * ret = (float *) aligned_malloc(head_dim * sizeof(float));
+    struct qlutattn_kernel_config * kernel_config =
+        find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
+    if (kernel_config == nullptr) {
+        fprintf(stderr, "Failed to find qlutattn kernel config for %d x %d x %d\n", head_dim, head_dim, nbits);
+        return 1;
+    }
+    float *   ret        = (float *) aligned_malloc(head_dim * sizeof(float));
+    uint8_t * LUT_buffer = (uint8_t *) aligned_malloc(
+        head_dim / 4 * 16 * sizeof(uint8_t) + head_dim / kernel_config->act_group_size * sizeof(tmac_float_type) * 2);
 
+    int8_t *          qlut       = (int8_t *) LUT_buffer;
+    tmac_float_type * lut_scales = (tmac_float_type *) ((uint8_t *) LUT_buffer + head_dim / 4 * 16 * sizeof(uint8_t));
+    tmac_float_type * lut_biases =
+        (tmac_float_type *) ((uint8_t *) LUT_buffer + head_dim / 4 * 16 * sizeof(uint8_t) +
+                             head_dim / kernel_config->act_group_size * sizeof(tmac_float_type));
+
+    // NOTE: Call QLUT build & quantization.
+    ggml::cpu::qlutattn::qlutattn_lut_ctor_int8_g4(activation->data, lut_scales, lut_biases, qlut, head_dim,
+                                                   kernel_config);
+
+    // NOTE: Do lut_gemv
     ggml_vec_dot_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot;
-    qlutattn_vec_dot(head_dim, ret, head_dim, (uint8_t *) k_quantized->data, head_dim, (ggml_fp16_t *) activaion->data,
-                     head_dim, head_dim);
+    qlutattn_vec_dot(head_dim, ret, head_dim, (uint8_t *) k_quantized->data, head_dim, LUT_buffer, head_dim, head_dim);
 
     //> ===================================================================================================
     //> Print results
     //> ===================================================================================================
 
     printf("MUL_MAT results:\n");
-    ggml_print_tensor((uint8_t *) mul_op->data, GGML_TYPE_F32, mul_op->ne, mul_op->nb, 4);
+    ggml_print_tensor((uint8_t *) mul_op->data, GGML_TYPE_F32, mul_op->ne, mul_op->nb, 8);
+
+    printf("Quantized results:\n");
+    ggml_print_tensor((uint8_t *) ret, GGML_TYPE_F16, mul_op->ne, mul_op->nb, 8);
 
     ggml_free(ctx);
 

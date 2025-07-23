@@ -482,7 +482,7 @@ int main() {
     //> ===================================================================================================
 
     // Create a simple 2D tensor
-    const int M = 128, K = 128, N = 1;
+    const int M = 128 * 2, K = 128, N = 1;
     const int nbits = 4;
 
     ggml_tensor * tensor_f32 = ggml_new_tensor_2d(main_ctx, GGML_TYPE_F32, K, M);

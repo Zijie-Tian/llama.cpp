@@ -1,5 +1,6 @@
 #include "ops.h"
 
+#include <CoreFoundation/CFByteOrder.h>
 #include <float.h>
 #include <unistd.h>  // for usleep
 
@@ -8,8 +9,10 @@
 #include <unordered_map>
 
 #include "binary-ops.h"
+#include "common.h"
 #include "ggml-cpu.h"
 #include "ggml-impl.h"
+#include "ggml.h"
 #include "qlutattn/qlutattn.h"  // NOTICE: This include should not be here.
 #include "unary-ops.h"
 #include "vec.h"
@@ -382,16 +385,16 @@ struct QlutattnI4TypeAccessor {
         return qs[idx / n_elem] >> ((n_elem - 1 - elem_idx) * BITS);
     }
 
-    static float get_scale(const void * data, int idx, int group_size) {
+    static ggml_fp16_t get_scale(const void * data, int idx, int group_size) {
         const float * ss = (const float *) data;
         float         s  = ss[idx / group_size];
-        return (float) s;
+        return f32_to_f16(s);
     }
 
-    static float get_zero_point(const void * data, int idx, int group_size) {
+    static ggml_fp16_t get_zero_point(const void * data, int idx, int group_size) {
         const float * zs = (const float *) data;
         float         z  = zs[idx / group_size];
-        return (float) z;
+        return f32_to_f16(z);
     }
 };
 
@@ -415,32 +418,32 @@ struct qlutattn_kernel_config {
     int32_t chunk_n;
 };
 
-static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
-
-static struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K, int bits) {
-    if (qlutattn_kernel_config.count("test") == 0) {
-        struct qlutattn_kernel_config kernel_config{
-            .g                = 4,
-            .ngroups_per_elem = 2,  // NOTE: Must 8 // g, in tmac Kernel g is set to 4.
-            .q_group_size     = 128,
-            .act_group_size   = 4,
-            .has_scale        = false,
-            .kfactor          = 16,
-            .bits             = bits,
-            .actk             = 4,  // should be equal to (act_group_size / g).
-            .has_zero_point   = false,
-            .one_scale        = false,
-            .bm               = 64 * bits,
-            .simd_n_in        = 16,
-            .simd_n_out       = 8,
-            .chunk_n          = 1  // useless for QLUTATTN.
-        };
-
-        qlutattn_kernel_config["test"] = kernel_config;
-    }
-
-    return &qlutattn_kernel_config["test"];
-}
+// static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
+//
+// static struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K, int bits) {
+//     if (qlutattn_kernel_config.count("test") == 0) {
+//         struct qlutattn_kernel_config kernel_config{
+//             .g                = 4,
+//             .ngroups_per_elem = 2,  // NOTE: Must 8 // g, in tmac Kernel g is set to 4.
+//             .q_group_size     = 128,
+//             .act_group_size   = 4,
+//             .has_scale        = false,
+//             .kfactor          = 16,
+//             .bits             = bits,
+//             .actk             = 4,  // should be equal to (act_group_size / g).
+//             .has_zero_point   = false,
+//             .one_scale        = false,
+//             .bm               = 64 * bits,
+//             .simd_n_in        = 16,
+//             .simd_n_out       = 8,
+//             .chunk_n          = 1  // useless for QLUTATTN.
+//         };
+//
+//         qlutattn_kernel_config["test"] = kernel_config;
+//     }
+//
+//     return &qlutattn_kernel_config["test"];
+// }
 
 static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * params, ggml_tensor * dst) {
     GGML_LOG_INFO("ggml_compute_forward_dup_f16_qlutattn");
@@ -516,8 +519,8 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                     (uint8_t *) (workspace + (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith);  // NOTICE : Too large.
 
                 // NOTE: Final out buffer.
-                uint8_t * qweights = (uint8_t *) (dst->data);  // final buffer.
-                float *   scales   = (float *) (qweights + m / bits * k / nelem_per_byte);
+                uint8_t *     qweights = (uint8_t *) (dst->data);  // final buffer.
+                ggml_fp16_t * scales   = (ggml_fp16_t *) (qweights + m / bits * k / nelem_per_byte);
 
                 GGML_ASSERT(n_elements / nelem_per_byte + n_elements / 128 * sizeof(float) * 2 +
                                 (ne00 * ne01 + CACHE_LINE_SIZE_F32) * ith <=
@@ -628,10 +631,9 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                         for (int ik = 0; ik < k; ik += group_size) {  // NOTE: Step by group_size.
                             int idx = im * k + ik;
 
-                            float scale;
-                            scale = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
-
-                            float zero_point;
+                            ggml_fp16_t scale;
+                            ggml_fp16_t zero_point;
+                            scale      = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
                             zero_point = QlutattnI4TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
 
                             idx         = idx / group_size;
