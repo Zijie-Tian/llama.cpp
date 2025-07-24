@@ -271,7 +271,7 @@ int main() {
     //> ===================================================================================================
 
     const int64_t head_dim   = 128;
-    const int64_t kv_len     = 128;
+    const int64_t kv_len     = 128 * 2;
     const int64_t n_kv_heads = 1;
     const int     nbits      = 4;  //> nbits >= 2
 

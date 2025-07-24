@@ -502,6 +502,7 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 // NOTICE: This is QLUTATTN quantization.
                 const ggml_from_float_t quantize_block_q = ggml_get_type_traits_cpu(dst->type)->from_float;
                 int64_t                 blck_size        = ggml_blck_size(dst->type);
+                int64_t                 type_size        = ggml_type_size(dst->type);
 
                 const int n_elements = ggml_nelements(src0);
 
@@ -533,7 +534,6 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + i02 * nb02 + i03 * nb03);
-
                         for (int i = 0; i < ne00 * ne01; i++) {
                             src0_f32[i] = GGML_FP16_TO_FP32(src0_ptr[i]);
                         }
