@@ -39,6 +39,103 @@ static void fill_tensor_f16(ggml_tensor * tensor, float min_val = -1.0f, float m
     }
 }
 
+/**
+ * Print a visualization of the KQV attention mask.
+ * Shows which tokens can attend to which other tokens.
+ * x = can attend (0 or greater)
+ * - = cannot attend (-INFINITY)
+ * For large n_kv, only prints first and last few columns with ellipsis
+ */
+static void ggml_print_mask(const ggml_tensor * mask, int64_t n_kv, int64_t n_tokens) {
+    printf("\n=== KQV Attention Mask ===\n");
+    printf("KV tokens →\n");
+
+    const int  preview_size  = 8;  // Number of columns to show at start/end
+    // const bool truncate = n_kv > 3 * preview_size;
+    const bool truncate      = false;
+    const int  display_width = truncate ? 2 * preview_size + 3 : n_kv;
+
+    // Print column numbers
+    printf("     ");
+    for (int i = 0; i < display_width; i++) {
+        if (truncate && i == preview_size) {
+            printf("...");
+        } else if (truncate && i > preview_size) {
+            printf("%d", (n_kv - (2 * preview_size - i)) % 10);
+        } else {
+            printf("%d", i % 10);
+        }
+    }
+    printf("\n");
+
+    // Print separator
+    printf("     ");
+    for (int i = 0; i < display_width; i++) {
+        if (truncate && i == preview_size) {
+            printf("...");
+        } else {
+            printf("=");
+        }
+    }
+    printf("\n");
+
+    const int  row_preview   = 5;  // Number of rows to show at start/end
+    // const bool truncate_rows = n_tokens > 2 * row_preview + 1;
+    const bool truncate_rows = false;
+
+    // printf("mask type : %s", ggml_type_name(mask->type));
+
+    if (mask->type == GGML_TYPE_F32) {
+        float * mask_data = (float *) mask->data;
+
+        // Print each row of the mask
+        for (int j = 0; j < n_tokens; j++) {
+            // Skip middle rows if truncating
+            if (truncate_rows && j == row_preview) {
+                printf("... |\n");
+                j = n_tokens - row_preview - 1;
+                continue;
+            }
+
+            printf("%3d |", j);  // Row number
+            for (int i = 0; i < display_width; i++) {
+                if (truncate && i == preview_size) {
+                    printf("...");
+                } else {
+                    int   idx = truncate && i > preview_size ? n_kv - (2 * preview_size - i) : i;
+                    float val = mask_data[j * n_kv + idx];
+                    printf("%c", (val == 0.0f) ? 'x' : '-');
+                }
+            }
+            printf("\n");
+        }
+    } else {
+        ggml_fp16_t * mask_data = (ggml_fp16_t *) mask->data;
+
+        for (int j = 0; j < n_tokens; j++) {
+            // Skip middle rows if truncating
+            if (truncate_rows && j == row_preview) {
+                printf("... |\n");
+                j = n_tokens - row_preview - 1;
+                continue;
+            }
+
+            printf("%3d |", j);  // Row number
+            for (int i = 0; i < display_width; i++) {
+                if (truncate && i == preview_size) {
+                    printf("...");
+                } else {
+                    int   idx = truncate && i > preview_size ? n_kv - (2 * preview_size - i) : i;
+                    float val = ggml_fp16_to_fp32(mask_data[j * n_kv + idx]);
+                    printf("%c", (val == 0) ? 'x' : '-');
+                }
+            }
+            printf("\n");
+        }
+    }
+    printf("\n");
+}
+
 // Initialize attention mask (causal mask)
 static void init_attention_mask(ggml_tensor * mask, int64_t actual_q_len) {
     GGML_ASSERT(mask->type == GGML_TYPE_F32);
@@ -188,7 +285,8 @@ int main() {
     fill_tensor_f16(V);
 
     // Initialize mask
-    init_attention_mask(mask, cfg.q_len);
+    init_attention_mask(mask, 64);
+    ggml_print_mask(mask, cfg.kv_len, q_len_padded);
 
     // Copy data to split tensors
     printf("Splitting KV tensors...\n");
@@ -226,8 +324,9 @@ int main() {
             for (int64_t kv = 0; kv < kv_split; kv++) {
                 size_t src_idx = b * (mask->nb[3] / sizeof(float)) + q * (mask->nb[1] / sizeof(float)) +
                                  kv * (mask->nb[0] / sizeof(float));
-                size_t dst_idx = b * (mask_part1->nb[3] / sizeof(float)) + kv * (mask_part1->nb[0] / sizeof(float));
-                q *(mask_part1->nb[1] / sizeof(float)) + mask_part1_data[dst_idx] = mask_data[src_idx];
+                size_t dst_idx = b * (mask_part1->nb[3] / sizeof(float)) + q * (mask_part1->nb[1] / sizeof(float)) +
+                                 kv * (mask_part1->nb[0] / sizeof(float));
+                mask_part1_data[dst_idx] = mask_data[src_idx];
             }
             // Copy second part
             for (int64_t kv = 0; kv < kv_split; kv++) {

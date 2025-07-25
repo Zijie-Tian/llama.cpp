@@ -7424,6 +7424,93 @@ static void ggml_compute_forward_flash_attn_ext_f16(const ggml_compute_params * 
     }
 }
 
+static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * params, const ggml_tensor * q,
+                                                 const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
+                                                 float * dst_data, void * workspace, const float scale,
+                                                 const float max_bias, const float logit_softcap) {
+    //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
+    //> K:      [head_dim, kv_len,   n_q_head, n_q_batch]
+    //> V:      [head_dim, kv_len,   n_q_head, n_q_batch]
+    //> Mask:   [q_len,    n_q_head, 1,        n_q_batch]
+
+    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
+    GGML_TENSOR_LOCALS(size_t, nbq, q, nb)
+    GGML_TENSOR_LOCALS(int64_t, nek, k, ne)
+    GGML_TENSOR_LOCALS(size_t, nbk, k, nb)
+    GGML_TENSOR_LOCALS(int64_t, nev, v, ne)
+    GGML_TENSOR_LOCALS(size_t, nbv, v, nb)
+
+    //> Output dimensions are derived from Q tensor
+    const int64_t ne0 = nev0;  // DV (head_dim)
+    const int64_t ne1 = neq2;  // N_Q_HEADS
+    const int64_t ne2 = neq1;  // Q_LEN
+    const int64_t ne3 = neq3;  // batch
+
+    //> Reconstruct the nb
+    const int64_t nb0 = sizeof(float);
+    const int64_t nb1 = ne0 * nb0;
+    const int64_t nb2 = ne1 * nb1;
+    const int64_t nb3 = ne2 * nb2;
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t DK = nek0;         //> head_dim * seq_len
+    const int64_t DV = nev0;         //> head_dim * seq_len
+    const int64_t N  = neq1;         //> 1
+
+    const int64_t Q_LEN     = neq1;  //> q_len
+    const int64_t N_Q_HEADS = neq2;  //> n_q_head
+
+    GGML_ASSERT(ne0 == DV);          //> head_dim
+    GGML_ASSERT(ne2 == N);           //> q_len
+
+    // input tensor rows must be contiguous
+    //> QKV cannot do transpose.
+    GGML_ASSERT(nbq0 == ggml_type_size(q->type));
+    GGML_ASSERT(nbk0 == ggml_type_size(k->type));
+    GGML_ASSERT(nbv0 == ggml_type_size(v->type));
+
+    GGML_ASSERT(neq1 == N);  //> q -> ne[1] == q_len
+
+    // broadcast factors
+    const int64_t rk2 = neq2 / nek2;  //> n_q_head / n_kv_head
+    const int64_t rk3 = neq3 / nek3;  //> n_q_batch / n_kv_batch
+
+    const int64_t rv2 = neq2 / nev2;  //> n_q_head / n_v_head
+    const int64_t rv3 = neq3 / nev3;  //> n_q_batch / n_v_batch
+
+    // parallelize by q rows using ggml_vec_dot_f32
+    const int nr = neq1 * neq2 * neq3;  //> number of rows, one row is one head_dim.
+
+    // NOTE: Parallelize by q rows.
+    const int dr = (nr + nth - 1) / nth;
+
+    const int ir0 = dr * ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    float scale_adjusted = scale;
+    if (logit_softcap != 0) {
+        scale_adjusted /= logit_softcap;
+    }
+
+    const uint32_t n_head      = neq2;
+    const uint32_t n_head_log2 = 1u << (uint32_t) floor(log2(n_head));
+
+    const float m0 = powf(2.0f, -(max_bias) / n_head_log2);
+    const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+
+    const ggml_type      k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
+    const ggml_vec_dot_t kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
+
+    for (int ir = ir0; ir < ir1; ++ir) {
+        // q indices
+        const int iq3 = ir / (neq2 * neq1);
+        const int iq2 = (ir - iq3 * neq2 * neq1) / neq1;
+        const int iq1 = (ir - iq3 * neq2 * neq1 - iq2 * neq1);
+    }
+}
+
 static void ggml_flash_attn_ext_f16_segment(const ggml_compute_params * params, const ggml_tensor * q,
                                             const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
                                             float * dst_data, void * workspace, const float scale, const float max_bias,
@@ -7824,368 +7911,121 @@ static void ggml_compute_forward_flash_attn_ext_f16_with_state(const ggml_comput
 }
 
 void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * params, const ggml_tensor * q,
-                                               const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
-                                               const ggml_tensor * k_quant, const ggml_tensor * v_quant,
+                                               const ggml_tensor * k_fp16, const ggml_tensor * v_fp16,
+                                               const ggml_tensor * mask_fp16, const ggml_tensor * k_quant,
+                                               const ggml_tensor * v_quant, const ggml_tensor * mask_quant,
                                                ggml_tensor * dst) {
     GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
     GGML_TENSOR_LOCALS(size_t, nbq, q, nb)
-
-    // Check Q tensor at mixed KV cache entry point
-    if (params->ith == 0) {
-        const float * q_data      = (const float *) q->data;
-        int           q_nan_count = 0;
-        for (int64_t i = 0; i < ggml_nelements(q); ++i) {
-            if (isnan(q_data[i])) {
-                q_nan_count++;
-                if (q_nan_count == 1) {
-                    fprintf(stderr, "[MIXED-KV-ERROR] Q tensor in flash_attn_ext_mixed contains NaN at index %ld\n", i);
-                }
-            }
-        }
-        if (q_nan_count > 0) {
-            fprintf(stderr, "[MIXED-KV-ERROR] Total NaN in Q (flash_attn_ext_mixed): %d/%ld\n", q_nan_count,
-                    ggml_nelements(q));
-            // Try to trace where the NaN comes from
-            fprintf(stderr, "[MIXED-KV-ERROR] Q tensor shape: [%ld, %ld, %ld, %ld]\n", neq0, neq1, neq2, neq3);
-
-            // NOTE: The real issue is that Q contains NaN before flash attention
-            // This needs to be investigated at the model level
-        }
-    }
-
-    //> FP16 KV cache.
-    GGML_TENSOR_LOCALS(int64_t, nek, k, ne)
-    GGML_TENSOR_LOCALS(size_t, nbk, k, nb)
-    GGML_TENSOR_LOCALS(int64_t, nev, v, ne)
-    GGML_TENSOR_LOCALS(size_t, nbv, v, nb)
-
-    GGML_TENSOR_LOCALS(int64_t, nek_quant, k_quant, ne)
-    GGML_TENSOR_LOCALS(size_t, nbk_quant, k_quant, nb)
-    GGML_TENSOR_LOCALS(int64_t, nev_quant, v_quant, ne)
-    GGML_TENSOR_LOCALS(size_t, nbv_quant, v_quant, nb)
-
     GGML_TENSOR_LOCALS(int64_t, ne, dst, ne)
     GGML_TENSOR_LOCALS(size_t, nb, dst, nb)
 
-    const int ith = params->ith;
-    const int nth = params->nth;
+    const int64_t DK        = q->ne[0];
+    const int64_t Q_LEN     = q->ne[1];
+    const int64_t N_Q_HEADS = q->ne[2];
+    const int64_t DV        = dst->ne[0];
 
-    const int64_t DK           = nek0;                        //> head_dim for keys
-    const int64_t DV           = nev0;                        //> head_dim for values
-    const int64_t SEQ_LEN      = neq1;                        //> q_len
-    const int64_t KV_LEN_FP16  = nek1;                        //> fp16 kv sequence length
-    const int64_t KV_LEN_QUANT = nek_quant1;                  //> quantized kv sequence length
-    const int64_t KV_LEN       = KV_LEN_FP16 + KV_LEN_QUANT;  //> total kv sequence length
-    const int64_t N_KV_HEAD    = nek2;                        //> number of kv heads
-    const int64_t N_Q_HEADS    = neq2;                        //> number of query heads
+    // Calculate workspace layout for two independent segments
+    const size_t output_size    = N_Q_HEADS * Q_LEN * DV;
+    const size_t scratch_per_th = (2 * Q_LEN * N_Q_HEADS + 2 * DV + DK + CACHE_LINE_SIZE_F32);
+    const size_t scratch_total  = scratch_per_th * params->nth;
+    const size_t state_elems    = 2 * neq2 * neq1;  // M and S for each head/position
 
-    //> ret shape : [head_dim, q_len, N_Q_HEADS, n_batch]
-    GGML_ASSERT(ne0 == DV);         //> dst -> ne[0] == head_dim
-    GGML_ASSERT(ne2 == SEQ_LEN);    //> dst -> ne[1] == q_len
-    GGML_ASSERT(ne1 == N_Q_HEADS);  //> dst -> ne[2] == N_Q_HEADS
+    // Workspace:
+    char * workspace      = (char *) params->wdata;  //> wsize is bytes
+    size_t workspace_size = params->wsize;
 
-    // input tensor rows must be contiguous
-    GGML_ASSERT(nbq0 == ggml_type_size(q->type));
-    GGML_ASSERT(nbk0 == ggml_type_size(k->type));
-    GGML_ASSERT(nbv0 == ggml_type_size(v->type));
+    char * imm_buffer_fp16  = workspace;
+    char * imm_buffer_quant = imm_buffer_fp16 + output_size * sizeof(float);
 
-    GGML_ASSERT(neq0 == DK);       //> q -> ne[0] == head_dim
-    GGML_ASSERT(nek0 == DK);       //> k -> ne[0] == head_dim
-    GGML_ASSERT(nev0 == DV);       //> v -> ne[0] == head_dim
+    char * ws_thread_fp16  = workspace + 2 * output_size * sizeof(float) + params->ith * scratch_per_th * sizeof(float);
+    char * ws_thread_quant = workspace + 2 * output_size * sizeof(float) + scratch_total * sizeof(float) +
+                             params->ith * scratch_per_th * sizeof(float);
 
-    GGML_ASSERT(neq1 == SEQ_LEN);  //> q -> ne[1] == q_len
+    // memset(imm_buffer_fp16,  0, output_size * sizeof(float));     //> initialize imm_buffer_fp16 to zero
+    // memset(imm_buffer_quant, 0, output_size * sizeof(float));     //> initialize imm_buffer_quant to zero
 
-    // dst cannot be transposed or permuted
-    GGML_ASSERT(nb0 == sizeof(float));
-    GGML_ASSERT(nb0 <= nb1);
-    GGML_ASSERT(nb1 <= nb2);
-    GGML_ASSERT(nb2 <= nb3);
+    float * ws_state_thread_fp16  = (float *) ws_thread_fp16;
+    float * ws_state_thread_quant = (float *) ws_thread_quant;
 
-    // Flash-decoding: split KV sequence across threads
-    const int64_t kv_chunk_size = (KV_LEN + nth - 1) / nth;                  //> split KV sequence into nth chunks
-    const int64_t chunk_start   = ith * kv_chunk_size;                       //> start of this thread's chunk
-    const int64_t chunk_end     = MIN(chunk_start + kv_chunk_size, KV_LEN);  //> end of this thread's chunk
-    const int64_t chunk_len     = chunk_end - chunk_start;                   //> length of this thread's chunk
-
-    // Workspace layout per thread:
-    //> K_vec = DK, V_vec = DV, result = OUTPUT_SIZE
-    const size_t OUTPUT_SIZE    = N_Q_HEADS * SEQ_LEN * DV;
-    const size_t LOCAL_MAX_SIZE = N_Q_HEADS * SEQ_LEN;
-    const size_t Q_Q_SIZE_FLOATS =
-        (DK * sizeof(ggml_fp16_t) + sizeof(float) - 1) / sizeof(float);  // Round up to float units
-    float * thread_workspace = (float *) params->wdata + ith * (OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV +
-                                                                Q_Q_SIZE_FLOATS + 1 + CACHE_LINE_SIZE_F32);
-
-    const int64_t rk2 = neq2 / nek2;                                                    //> n_q_heads / n_kv_heads
-    const int64_t rv2 = neq2 / nev2;                                                    //> n_q_heads / n_kv_heads
-
-    float *       chunk_output  = thread_workspace;                                     // [N_Q_HEADS * SEQ_LEN * DV]
-    float *       local_max     = thread_workspace + OUTPUT_SIZE;                       // [N_Q_HEADS * SEQ_LEN]
-    float *       local_exp_sum = thread_workspace + OUTPUT_SIZE + LOCAL_MAX_SIZE;      // [N_Q_HEADS * SEQ_LEN]
-    float *       temp_buffer   = thread_workspace + OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE;  // [DV]
-    ggml_fp16_t * Q_q = (ggml_fp16_t *) (thread_workspace + OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV);  // [DK]
-    float *       sync_buffer =
-        (float *) (thread_workspace + OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV + Q_Q_SIZE_FLOATS);      // [1]
-
-    // Initialize chunk outputs and log_sum_exp for all queries
-    memset(chunk_output, 0, OUTPUT_SIZE * sizeof(float));
-    memset(local_exp_sum, 0, LOCAL_MAX_SIZE * sizeof(float));  // FIX: Initialize exp_sum to 0
-    memset(temp_buffer, 0, DV * sizeof(float));
-    memset(Q_q, 0, DK * sizeof(ggml_fp16_t));
-    memset(sync_buffer, 0, sizeof(float));
-    for (int64_t i = 0; i < LOCAL_MAX_SIZE; i++) {
-        local_max[i] = -INFINITY;
+    for (int64_t i = 0; i < neq2 * neq1; ++i) {
+        ws_state_thread_fp16[2 * i + 0]  = -INFINITY;
+        ws_state_thread_fp16[2 * i + 1]  = 0.0f;
+        ws_state_thread_quant[2 * i + 0] = -INFINITY;
+        ws_state_thread_quant[2 * i + 1] = 0.0f;
     }
 
-    // Flash attention parameters (use default values for now)
-    const float scale         = 1.0f / sqrtf((float) DK);
-    const float max_bias      = 0.0f;
-    const float logit_softcap = 0.0f;
+    // Wait for thread 0 to finish initialization
+    ggml_barrier(params->threadpool);
 
-    const uint32_t n_head_log2 = 1u << (uint32_t) floor(log2(N_Q_HEADS));
+    // Extract scale parameters from dst
+    float scale         = 1.0f;
+    float max_bias      = 0.0f;
+    float logit_softcap = 0.0f;
 
-    const float m0 = powf(2.0f, -(max_bias) / n_head_log2);
-    const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
+    memcpy(&scale, (float *) dst->op_params + 0, sizeof(float));
+    memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));
+    memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
 
-    // Handle quantization for K/V tensor
-    const ggml_type         k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
-    const ggml_from_float_t q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;
-    const ggml_vec_dot_t    kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
-
-    const ggml_type         k_quant_vec_dot_type = ggml_get_type_traits_cpu(k_quant->type)->vec_dot_type;
-    const ggml_from_float_t k_quant_q_to_vec_dot = ggml_get_type_traits_cpu(k_quant_vec_dot_type)->from_float;
-    const ggml_vec_dot_t    kq_vec_dot_quant     = ggml_get_type_traits_cpu(k_quant->type)->vec_dot;
-
-    const ggml_to_float_t k_to_float       = ggml_get_type_traits(k->type)->to_float;
-    const ggml_to_float_t k_quant_to_float = ggml_get_type_traits(k_quant->type)->to_float;
-    const ggml_to_float_t v_to_float       = ggml_get_type_traits(v->type)->to_float;
-    const ggml_to_float_t v_quant_to_float = ggml_get_type_traits(v_quant->type)->to_float;
-
-    //> Process this chunk of KV tokens - handle both FP16 and QUANT parts
-    for (int64_t kv_pos = chunk_start; kv_pos < chunk_end; ++kv_pos) {
-        for (int64_t kv_head = 0; kv_head < N_KV_HEAD; ++kv_head) {
-            const char * k_data = nullptr;
-            const char * v_data = nullptr;
-
-            // Determine which tensor to use based on kv_pos
-            if (kv_pos < KV_LEN_FP16) {
-                // Use FP16 tensors
-                k_data = (const char *) ((char *) k->data + (kv_pos * nbk1 + kv_head * nbk2));
-                v_data = (const char *) ((char *) v->data + (kv_pos * nbv1 + kv_head * nbv2));
-            } else {
-                // Use quantized tensors - adjust position offset
-                const int64_t quant_pos = kv_pos - KV_LEN_FP16;
-                k_data = (const char *) ((char *) k_quant->data + (quant_pos * nbk_quant1 + kv_head * nbk_quant2));
-                v_data = (const char *) ((char *) v_quant->data + (quant_pos * nbv_quant1 + kv_head * nbv_quant2));
-            }
-
-            GGML_ASSERT(k_data != nullptr);
-            GGML_ASSERT(v_data != nullptr);
-
-            const int64_t q_head_start = kv_head * rk2;
-            const int64_t q_head_end   = q_head_start + rk2;
-
-            for (int64_t q_head = q_head_start; q_head < q_head_end; ++q_head) {
-                for (int64_t q_pos = 0; q_pos < SEQ_LEN; ++q_pos) {
-                    float * mp = (float *) ((char *) mask->data + q_pos * mask->nb[1]);
-                    if (mp[kv_pos] == -INFINITY) {
-                        continue;
-                    }
-
-                    const int64_t output_offset = q_pos * N_Q_HEADS * DV + q_head * DV;
-                    const int64_t local_max_idx = q_pos * N_Q_HEADS + q_head;
-                    float *       output_ptr    = chunk_output + output_offset;
-
-                    // NOTE: Q MUST be F32
-                    const float * pq = (const float *) ((char *) q->data + q_pos * nbq1 + q_head * nbq2);
-                    float         s  = 0.0f;
-
-                    // TODO: Support more q_to_vec_dot types, Currently only F16.
-                    q_to_vec_dot(pq, Q_q, DK);
-
-                    if (kv_pos < KV_LEN_FP16) {
-                        kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
-                    } else {
-                        kq_vec_dot_quant(DK, &s, 0, k_data, 0, Q_q, 0, 1);
-                    }
-
-                    s = s * scale;  // scale KQ value
-
-                    // Compute exponential for softmax
-                    float Mold = local_max[local_max_idx];
-
-                    float ms = 1.0f;
-                    float vs = 1.0f;
-
-                    if (s > Mold) {
-                        local_max[local_max_idx] = s;
-
-                        if (Mold == -INFINITY) {
-                            ms = 1.0f;
-                        } else {
-                            ms = expf(Mold - s);
-                        }
-                    } else {
-                        vs = expf(s - Mold);
-                    }
-
-                    local_exp_sum[local_max_idx] = local_exp_sum[local_max_idx] * ms + vs;
-
-                    if (ms != 1.0f) {
-                        ggml_vec_scale_f32(DV, (float *) output_ptr, ms);
-                    }
-
-                    // Handle different tensor types for v_data
-                    if (kv_pos < KV_LEN_FP16) {
-                        // FP16 tensor
-                        if (v->type == GGML_TYPE_F32) {
-                            ggml_vec_mad_f32(DV, (float *) output_ptr, (const float *) v_data, vs);
-                        } else if (v_to_float) {
-                            v_to_float(v_data, temp_buffer, DV);
-                            ggml_vec_mad_f32(DV, (float *) output_ptr, temp_buffer, vs);
-                        }
-                    } else {
-                        // Quantized tensor - need to get appropriate conversion function
-                        if (v_quant->type == GGML_TYPE_F32) {
-                            ggml_vec_mad_f32(DV, (float *) output_ptr, (const float *) v_data, vs);
-                        } else if (v_quant_to_float) {
-                            v_quant_to_float(v_data, temp_buffer, DV);
-                            ggml_vec_mad_f32(DV, (float *) output_ptr, temp_buffer, vs);
-                        }
-                    }
-                }
-            }
-        }
+    // Process FP16 segment first
+    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
+        ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16, ws_thread_fp16,
+                                        scale, max_bias, logit_softcap);
     }
 
-    // Set sync flag with memory barrier
-    // Ensure all previous memory writes are completed before setting sync flag
-#if defined(__GNUC__) || defined(__clang__)
-    __sync_synchronize();  // Full memory barrier
-#endif
-    sync_buffer[0] = 1.0f;
-    __sync_synchronize();
+    ggml_barrier(params->threadpool);
 
-    // Thread 0 waits for all other threads and performs reduction
-    if (ith == 0 && nth > 1) {
-        // Wait for all threads to complete
-        bool      all_threads_ready = false;
-        int       wait_cycles       = 0;
-        const int max_wait_cycles   = 1000000;
-
-        while (!all_threads_ready && wait_cycles < max_wait_cycles) {
-            all_threads_ready = true;
-            for (int t = 1; t < nth; ++t) {
-                float * t_workspace = (float *) params->wdata + t * (OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV +
-                                                                     Q_Q_SIZE_FLOATS + 1 + CACHE_LINE_SIZE_F32);
-                volatile float * t_sync_buffer =
-                    (volatile float *) (t_workspace + OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV + Q_Q_SIZE_FLOATS);
-
-                // Add memory barrier before reading
-#if defined(__GNUC__) || defined(__clang__)
-                __sync_synchronize();
-#endif
-                if (t_sync_buffer[0] != 1.0f) {
-                    all_threads_ready = false;
-                    break;
-                }
-            }
-
-            // Add a small delay to avoid busy-waiting too aggressively
-            if (!all_threads_ready) {
-                usleep(1);  // Sleep for 1 microsecond
-            }
-
-            wait_cycles++;
-        }
-
-        // Perform log-sum-exp reduction across all threads
-        for (int64_t q_head = 0; q_head < N_Q_HEADS; ++q_head) {
-            for (int64_t q_pos = 0; q_pos < SEQ_LEN; ++q_pos) {
-                const int64_t output_offset = q_pos * N_Q_HEADS * DV + q_head * DV;
-                const int64_t local_max_idx = q_pos * N_Q_HEADS + q_head;
-
-                // Find global maximum across all threads
-                float global_max = -INFINITY;
-                for (int t = 0; t < nth; ++t) {
-                    float * t_workspace = (float *) params->wdata + t * (OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV +
-                                                                         Q_Q_SIZE_FLOATS + 1 + CACHE_LINE_SIZE_F32);
-                    float * t_local_max = t_workspace + OUTPUT_SIZE;
-
-                    if (t_local_max[local_max_idx] > global_max) {
-                        global_max = t_local_max[local_max_idx];
-                    }
-                }
-
-                if (global_max == -INFINITY) {
-                    float * final_output = (float *) dst->data + output_offset;
-                    memset(final_output, 0, DV * sizeof(float));
-                    continue;
-                }
-
-                // Compute global sum
-                float global_sum = 0.0f;
-                for (int t = 0; t < nth; ++t) {
-                    float * t_workspace     = (float *) params->wdata + t * (OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV +
-                                                                         Q_Q_SIZE_FLOATS + 1 + CACHE_LINE_SIZE_F32);
-                    float * t_local_max     = t_workspace + OUTPUT_SIZE;
-                    float * t_local_exp_sum = t_workspace + OUTPUT_SIZE + LOCAL_MAX_SIZE;
-
-                    if (t_local_max[local_max_idx] != -INFINITY) {
-                        const float max_diff           = t_local_max[local_max_idx] - global_max;
-                        const float clamped_diff       = fmaxf(-50.0f, fminf(50.0f, max_diff));
-                        const float exp_sum_adjustment = expf(clamped_diff);
-                        if (std::isfinite(exp_sum_adjustment) && exp_sum_adjustment > 0.0f) {
-                            global_sum += t_local_exp_sum[local_max_idx] * exp_sum_adjustment;
-                        }
-                    }
-                }
-
-                const float norm_factor = (global_sum > 0.0f) ? (1.0f / global_sum) : 0.0f;
-
-                // Combine weighted outputs from all threads
-                float * final_output = (float *) dst->data + output_offset;
-                memset(final_output, 0, DV * sizeof(float));
-
-                for (int t = 0; t < nth; ++t) {
-                    float * t_workspace    = (float *) params->wdata + t * (OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 1 * DV +
-                                                                         Q_Q_SIZE_FLOATS + 1 + CACHE_LINE_SIZE_F32);
-                    float * t_chunk_output = t_workspace;
-                    float * t_local_max    = t_workspace + OUTPUT_SIZE;
-
-                    if (t_local_max[local_max_idx] != -INFINITY) {
-                        const float max_diff       = t_local_max[local_max_idx] - global_max;
-                        const float clamped_diff   = fmaxf(-50.0f, fminf(50.0f, max_diff));
-                        const float max_adjustment = expf(clamped_diff);
-                        const float thread_weight  = max_adjustment * norm_factor;
-
-                        const float * thread_output = t_chunk_output + output_offset;
-                        ggml_vec_mad_f32(DV, final_output, thread_output, thread_weight);
-                    }
-                }
-            }
-        }
-    } else if (nth == 1) {
-        // Single-threaded execution
-        for (int64_t q_head = 0; q_head < N_Q_HEADS; ++q_head) {
-            for (int64_t q_pos = 0; q_pos < SEQ_LEN; ++q_pos) {
-                const int64_t output_offset = q_pos * N_Q_HEADS * DV + q_head * DV;
-                const int64_t local_max_idx = q_pos * N_Q_HEADS + q_head;
-
-                float * final_output  = (float *) dst->data + output_offset;
-                float * thread_output = thread_workspace + output_offset;
-
-                if (local_exp_sum[local_max_idx] > 0.0f) {
-                    const float norm_factor = 1.0f / local_exp_sum[local_max_idx];
-                    for (int64_t d = 0; d < DV; ++d) {
-                        final_output[d] = thread_output[d] * norm_factor;
-                    }
-                } else {
-                    memset(final_output, 0, DV * sizeof(float));
-                }
-            }
-        }
+    if (k_quant && v_quant && k_quant->ne[1] > 0) {
+        // TODO: Integrate TMAC GeMV here.
+        ggml_flash_attn_ext_qlutattn_segment(params, q, k_quant, v_quant, mask_quant, (float *) imm_buffer_quant,
+                                             ws_thread_quant, scale, max_bias, logit_softcap);
     }
+
+    ggml_barrier(params->threadpool);
+
+    //> Merge the two segments
+    const int64_t nr  = neq1 * neq2 * neq3;  //> number of rows, one row is one head_dim.
+    const int64_t dr  = (nr + params->nth - 1) / params->nth;
+    const int64_t ir0 = dr * params->ith;
+    const int64_t ir1 = MIN(ir0 + dr, nr);
+
+    float * dst_data = (float *) dst->data;
+
+    for (int64_t ir = ir0; ir < ir1; ++ir) {
+        const int64_t iq3 = ir / (neq2 * neq1);     //>  ir / (n_q_head * seq_len)                      => Batch idx.
+        const int64_t iq2 =
+            (ir - iq3 * neq2 * neq1) / neq1;        //> (ir - iq3 * n_q_head * seq_len) / seq_len       => Head idx.
+        const int64_t iq1 =
+            (ir - iq3 * neq2 * neq1 - iq2 * neq1);  //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   => Sequence idx.
+
+        int64_t state_idx = iq1 * neq2 + iq2;
+        float   M_fp16    = ws_state_thread_fp16[2 * state_idx + 0];
+        float   S_fp16    = ws_state_thread_fp16[2 * state_idx + 1];
+
+        float M_quant = ws_state_thread_quant[2 * state_idx + 0];
+        float S_quant = ws_state_thread_quant[2 * state_idx + 1];
+
+        float M = MAX(M_fp16, M_quant);
+        float S = S_fp16 * expf(M_fp16 - M) + S_quant * expf(M_quant - M);
+
+        float * imm_fp16_vec  = (float *) ((char *) imm_buffer_fp16 + (iq3 * ne2 * ne1 + iq2 + iq1 * ne1) * nb1);
+        float * imm_quant_vec = (float *) ((char *) imm_buffer_quant + (iq3 * ne2 * ne1 + iq2 + iq1 * ne1) * nb1);
+
+        float scale_fp16  = expf(M_fp16 - M) * S_fp16 / S;
+        float scale_quant = expf(M_quant - M) * S_quant / S;
+
+        ggml_vec_scale_f32(DV, imm_fp16_vec, scale_fp16);
+        ggml_vec_scale_f32(DV, imm_quant_vec, scale_quant);
+
+        float * dst_vec = (float *) ((char *) dst->data + (iq3 * ne2 * ne1 + iq2 + iq1 * ne1) * nb1);
+        for (int64_t i = 0; i < DV; ++i) {
+            dst_vec[i] = imm_fp16_vec[i] + imm_quant_vec[i];
+        }
+
+        // ggml_vec_add_f32(DV, dst_data, imm_fp16_vec, imm_quant_vec);
+    }
+
+    ggml_barrier(params->threadpool);
 }
 
 void ggml_compute_forward_flash_attn_ext(const ggml_compute_params * params, const ggml_tensor * q,
@@ -8211,7 +8051,8 @@ void ggml_compute_forward_flash_attn_ext(const ggml_compute_params * params, con
             break;
         case GGML_PREC_MIXED:
             {
-                ggml_compute_forward_flash_attn_ext_mixed(params, q, k, v, mask, k_quant, v_quant, dst);
+                const ggml_tensor * mask_quant = (dst->src[6] != NULL) ? dst->src[6] : NULL;
+                ggml_compute_forward_flash_attn_ext_mixed(params, q, k, v, mask, k_quant, v_quant, mask_quant, dst);
             }
             break;
         default:

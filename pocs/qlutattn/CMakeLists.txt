@@ -34,6 +34,11 @@ add_executable(${TARGET} test_tmac_quant.cpp)
 target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(${TARGET} PRIVATE cxx_std_11)
 
+set(TARGET align_attn)
+add_executable(${TARGET} align_attn.cpp)
+target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
+target_compile_features(${TARGET} PRIVATE cxx_std_11)
+
 set(TARGET test_tmac_simple)
 add_executable(${TARGET} test_tmac_simple.cpp)
 target_include_directories(

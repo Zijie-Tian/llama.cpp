@@ -270,10 +270,11 @@ int main() {
     //> Init Tensors
     //> ===================================================================================================
 
-    const int64_t head_dim   = 128;
-    const int64_t kv_len     = 128 * 2;
-    const int64_t n_kv_heads = 1;
-    const int     nbits      = 4;  //> nbits >= 2
+    const int64_t head_dim        = 128;
+    const int64_t kv_len          = 128;
+    const int64_t n_kv_heads      = 1;
+    const int     nbits           = 4;    //> nbits >= 2
+    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
 
     ggml_tensor * activation = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, 1, 1, 1);
     ggml_set_name(activation, "activation");
@@ -282,11 +283,10 @@ int main() {
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * kv_len, 1, 1, 1);
     ggml_set_name(k, "k_source");
 
-    ggml_tensor * k_quantized = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * kv_len, 1, 1, 1);
+    int64_t       n_chunk = kv_len / PACK_CHUNK_SIZE;
+    ggml_tensor * k_quantized =
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * PACK_CHUNK_SIZE, n_chunk, 1, 1);
     ggml_set_name(k_quantized, "k_quantized");
-
-    ggml_tensor * k_dequantized = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim * kv_len, 1, 1, 1);
-    ggml_set_name(k_dequantized, "k_dequantized");
 
     fill_tensor_f16(k);
     // set_tensor_f16(k, 1.0f);
@@ -300,17 +300,6 @@ int main() {
     pseudo_symmetric_quantize_128x128_simd_f32((int8_t *) q_vals, (float *) k->data, k_scales, k_zeros,
                                                head_dim * kv_len, nbits);
 
-    // float * k_dequantized = (float * )aligned_malloc(head_dim * kv_len * sizeof(float));
-
-    // pseudo_symmetric_dequantize_128x128_simd_f32(
-    //     k_dequantized,
-    //     (int8_t *)q_vals,
-    //     k_scales,
-    //     k_zeros,
-    //     head_dim * kv_len,
-    //     nbits
-    // );
-
     //> ===================================================================================================
     //> Call quantization.
     //> ===================================================================================================
@@ -319,7 +308,6 @@ int main() {
     ggml_tensor *        quant_op = ggml_cpy(ctx, k, k_quantized);  //> k -> k_quantized
     struct ggml_cgraph * gf       = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, quant_op);
-
     ggml_graph_compute_with_ctx(ctx, gf, 4);
 
     printf("Quantized results :\n");

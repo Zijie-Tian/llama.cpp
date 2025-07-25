@@ -9,7 +9,7 @@ function(llama_build source)
 
     add_executable(${TEST_TARGET} ${source})
     target_link_libraries(${TEST_TARGET} PRIVATE common)
-    
+
     # Link PyTorch libraries if available
     if(LLAMA_TORCH_AVAILABLE)
         if(Torch_FOUND)
@@ -23,7 +23,7 @@ function(llama_build source)
         target_compile_definitions(${TEST_TARGET} PRIVATE LLAMA_TORCH_AVAILABLE)
         target_compile_features(${TEST_TARGET} PRIVATE cxx_std_17)
     endif()
-    
+
     install(TARGETS ${TEST_TARGET} RUNTIME)
 endfunction()
 
@@ -85,7 +85,7 @@ function(llama_build_and_test source)
     add_executable(${TEST_TARGET} ${source} get-model.cpp)
     install(TARGETS ${TEST_TARGET} RUNTIME)
     target_link_libraries(${TEST_TARGET} PRIVATE common)
-    
+
     # Link PyTorch libraries if available
     if(LLAMA_TORCH_AVAILABLE)
         if(Torch_FOUND)
@@ -121,7 +121,7 @@ function(llama_build_torch source)
 
     add_executable(${TEST_TARGET} ${source})
     target_link_libraries(${TEST_TARGET} PRIVATE common)
-    
+
     # PyTorch linking
     if(Torch_FOUND)
         target_link_libraries(${TEST_TARGET} PRIVATE ${TORCH_LIBRARIES})
@@ -132,10 +132,10 @@ function(llama_build_torch source)
         target_link_libraries(${TEST_TARGET} PRIVATE ${TORCH_LIBRARIES})
     endif()
     target_compile_definitions(${TEST_TARGET} PRIVATE LLAMA_TORCH_AVAILABLE)
-    
+
     # Set C++ standard for PyTorch compatibility
     target_compile_features(${TEST_TARGET} PRIVATE cxx_std_17)
-    
+
     install(TARGETS ${TEST_TARGET} RUNTIME)
 endfunction()
 
@@ -265,26 +265,26 @@ endif()
 # Add T-MAC test (only if T-MAC is enabled)
 if (GGML_TMAC AND NOT GGML_BACKEND_DL)
     llama_build_and_test(test_tmac.cpp)
-    
+
     # T-MAC requires specific compiler flags and libraries
     target_compile_definitions(test_tmac PRIVATE GGML_USE_TMAC)
-    target_include_directories(test_tmac PRIVATE 
+    target_include_directories(test_tmac PRIVATE
         ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu/tmac
         ${CMAKE_SOURCE_DIR}/ggml/src/ggml-cpu
         ${CMAKE_SOURCE_DIR}/ggml/src
     )
-    
+
     # Link against ggml library to get T-MAC functionality
     target_link_libraries(test_tmac PRIVATE ggml)
-    
+
     # Add T-MAC specific compile flags if needed
     if (CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         target_compile_options(test_tmac PRIVATE -march=armv8.2a+fp16)
         target_compile_definitions(test_tmac PRIVATE __ARM_FEATURE_FP16_VECTOR_ARITHMETIC)
     endif()
-    
+
     message(STATUS "T-MAC test will be built")
-    
+
     # Also build simple T-MAC test
     #llama_build_and_test(test_tmac_simple.cpp) # This line is removed
     #target_compile_definitions(test_tmac_simple PRIVATE GGML_USE_TMAC) # This line is removed
@@ -294,7 +294,7 @@ if (GGML_TMAC AND NOT GGML_BACKEND_DL)
     #    ${CMAKE_SOURCE_DIR}/ggml/src # This line is removed
     #) # This line is removed
     #target_link_libraries(test_tmac_simple PRIVATE ggml) # This line is removed
-    
+
     #if (CMAKE_CXX_COMPILER_ID MATCHES "Clang") # This line is removed
     #    target_compile_options(test_tmac_simple PRIVATE -march=armv8.2a+fp16) # This line is removed
     #    target_compile_definitions(test_tmac_simple PRIVATE __ARM_FEATURE_FP16_VECTOR_ARITHMETIC) # This line is removed

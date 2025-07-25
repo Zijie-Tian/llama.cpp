@@ -4614,9 +4614,10 @@ struct ggml_tensor * ggml_flash_attn_mixed(
         struct ggml_tensor  * q,
         struct ggml_tensor  * k,
         struct ggml_tensor  * v,
+        struct ggml_tensor  * mask,
         struct ggml_tensor  * k_quant,
         struct ggml_tensor  * v_quant,
-        struct ggml_tensor  * mask,
+        struct ggml_tensor  * qk_mask_quant,
         float                 scale,
         float                 max_bias,
         float                 logit_softcap) {
@@ -4650,6 +4651,7 @@ struct ggml_tensor * ggml_flash_attn_mixed(
     result->src[3] = mask;
     result->src[4] = k_quant;
     result->src[5] = v_quant;
+    result->src[6] = qk_mask_quant;
 
     return result;
 }
