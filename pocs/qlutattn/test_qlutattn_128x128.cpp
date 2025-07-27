@@ -36,8 +36,8 @@ typedef uint16_t ggml_half;
 typedef uint32_t ggml_half2;
 
 // Use fixed seed for reproducible results
-static std::mt19937 g_rng(42);
-// static std::mt19937 g_rng(std::random_device{}());
+// static std::mt19937 g_rng(42);
+static std::mt19937 g_rng(std::random_device{}());
 
 constexpr size_t kAllocAlignment = 64;
 
@@ -270,17 +270,21 @@ int main() {
     //> Init Tensors
     //> ===================================================================================================
 
-    const int64_t head_dim        = 128;        //> 128
-    const int64_t kv_len          = 128;    //> 128 * n_kv_heads
-    const int64_t n_kv_heads      = 4;          //> kv_len // 128
-    const int     nbits           = 4;    //> nbits >= 2
-    const int64_t PACK_SIZE       = 128;  //> 128x128
-    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+    const int64_t head_dim        = 128;       //> 128
+    const int64_t kv_len          = 128 * 16;  //> 128 aligned
+    const int64_t n_kv_heads      = 8;         //> kv_len // 128
+    const int     nbits           = 4;         //> nbits >= 2
+    const int64_t PACK_SIZE       = 128;       //> 128x128
+    const int64_t PACK_CHUNK_SIZE = 128;       //> 128x128
     const int64_t n_chunk         = kv_len / PACK_CHUNK_SIZE;
 
     ggml_tensor * activation = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, 1, 1, 1);
     ggml_set_name(activation, "activation");
     set_tensor_f16(activation, 1.0f);
+
+    ggml_tensor * repeated_activation =
+        ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, kv_len, n_kv_heads, 1);  //> activation -> repeated_activation
+    ggml_set_name(repeated_activation, "repeated_activation");
 
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunk, 1, 1);
     ggml_set_name(k, "k_source");
@@ -288,6 +292,9 @@ int main() {
     ggml_tensor * k_quantized =
         ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunk, 1, 1);
     ggml_set_name(k_quantized, "k_quantized");
+
+    ggml_tensor * k_q4_0 =
+        ggml_new_tensor_4d(ctx, GGML_TYPE_Q4_0, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunk, 1, 1);
 
     fill_tensor_f16(k);
     // set_tensor_f16(k, 1.0f);
@@ -305,22 +312,53 @@ int main() {
     //> Call quantization.
     //> ===================================================================================================
 
-    // NOTE: Quantization operation
-    ggml_tensor *        quant_op = ggml_cpy(ctx, k, k_quantized);  //> k -> k_quantized
-    struct ggml_cgraph * gf       = ggml_new_graph(ctx);
-    ggml_build_forward_expand(gf, quant_op);
-    ggml_graph_compute_with_ctx(ctx, gf, 4);
+    ggml_tensor * quant_op      = ggml_cpy(ctx, k, k_quantized);  //> k -> k_quantized
+    ggml_tensor * quant_op_q4_0 = ggml_cpy(ctx, k, k_q4_0);       //> k -> k_q4_0
 
-    printf("Quantized results :\n");
+    {
+        // NOTE: Quantization operation
+        struct ggml_cgraph * gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, quant_op);
+        ggml_graph_compute_with_ctx(ctx, gf, 4);
+    }
+
+    {
+        // NOTE: Q4_0 quantization operation
+        struct ggml_cgraph * gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, quant_op_q4_0);
+        ggml_graph_compute_with_ctx(ctx, gf, 4);
+    }
 
     //> ===================================================================================================
     //> Reshape the k into 128x128
     //> ===================================================================================================
 
-    ggml_tensor *        k_reshaped = ggml_reshape_4d(ctx, k, head_dim, kv_len, n_kv_heads, 1);
-    struct ggml_cgraph * gf_reshape = ggml_new_graph(ctx);
-    ggml_build_forward_expand(gf_reshape, k_reshaped);
-    ggml_graph_compute_with_ctx(ctx, gf_reshape, 4);
+    ggml_tensor * k_reshaped = ggml_reshape_4d(ctx, k, head_dim, n_kv_heads, kv_len, 1);
+    // ggml_tensor * k_q4_0_reshaped =
+    //     ggml_reshape_4d(ctx, k_q4_0, head_dim, kv_len, n_kv_heads, 1);  //> k_q4_0 -> k_q4_reshaped
+
+    {
+        struct ggml_cgraph * gf_reshape = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf_reshape, k_reshaped);
+        ggml_graph_compute_with_ctx(ctx, gf_reshape, 4);
+    }
+
+    {
+        struct ggml_cgraph * gf_reshape = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf_reshape, k_reshaped);
+        ggml_graph_compute_with_ctx(ctx, gf_reshape, 4);
+    }
+
+    //> ===================================================================================================
+    //> Repeat the activation.
+    //> ===================================================================================================
+
+    {
+        struct ggml_cgraph * gf_repeat = ggml_new_graph(ctx);
+        ggml_tensor *        repeat_op = ggml_repeat(ctx, activation, repeated_activation);
+        ggml_build_forward_expand(gf_repeat, repeat_op);
+        ggml_graph_compute_with_ctx(ctx, gf_repeat, 4);
+    }
 
     //> ===================================================================================================
     //> Do MUL_MAT with quantized tensor.
@@ -330,9 +368,18 @@ int main() {
     struct ggml_cgraph * gf_mul = ggml_new_graph(ctx);
     ggml_tensor *        mul_op = ggml_mul_mat(ctx, activation, k_reshaped);  //> k_quantized * k_dequantized
     ggml_build_forward_expand(gf_mul, mul_op);
-    ggml_tensor *        reshaped_ret = ggml_reshape_4d(ctx, mul_op, kv_len, n_kv_heads, 1, 1);
+    ggml_tensor * reshaped_ret = ggml_reshape_4d(ctx, mul_op, kv_len, n_kv_heads, 1, 1);
     ggml_build_forward_expand(gf_mul, reshaped_ret);
     ggml_graph_compute_with_ctx(ctx, gf_mul, 4);
+
+    // // NOTE: Q4_0 MUL_MAT
+    // struct ggml_cgraph * gf_mul_q4_0 = ggml_new_graph(ctx);
+    // ggml_tensor *        mul_op_q4_0 =
+    //     ggml_mul_mat(ctx, k_q4_0_reshaped, repeated_activation);  //> k_quantized * k_dequantized
+    // ggml_build_forward_expand(gf_mul_q4_0, mul_op_q4_0);
+    // // ggml_tensor *        reshaped_ret_q4_0 = ggml_reshape_4d(ctx, mul_op_q4_0, kv_len, n_kv_heads, 1, 1);
+    // // ggml_build_forward_expand(gf_mul_q4_0, reshaped_ret_q4_0);
+    // ggml_graph_compute_with_ctx(ctx, gf_mul_q4_0, 4);
 
     // NOTE: Mixed precision MUL_MAT
     struct qlutattn_kernel_config * kernel_config =
@@ -341,8 +388,8 @@ int main() {
         fprintf(stderr, "Failed to find qlutattn kernel config for %d x %d x %d\n", head_dim, head_dim, nbits);
         return 1;
     }
-    uint16_t *   ret        = (uint16_t *) aligned_malloc(PACK_CHUNK_SIZE * n_kv_heads * sizeof(uint16_t));
-    uint8_t * LUT_buffer = (uint8_t *) aligned_malloc(
+    uint16_t * ret        = (uint16_t *) aligned_malloc(PACK_CHUNK_SIZE * n_kv_heads * n_chunk * sizeof(uint16_t));
+    uint8_t *  LUT_buffer = (uint8_t *) aligned_malloc(
         head_dim / 4 * 16 * sizeof(uint8_t) + head_dim / kernel_config->act_group_size * sizeof(tmac_float_type) * 2);
 
     int8_t *          qlut       = (int8_t *) LUT_buffer;
@@ -357,11 +404,11 @@ int main() {
 
     // NOTE: Do lut_gemv
     ggml_vec_dot_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot;
-    int64_t                 type_size        = ggml_type_size(k_quantized->type);
+    int64_t        type_size        = ggml_type_size(k_quantized->type);
 
     for (int ih = 0; ih < n_kv_heads * n_chunk; ih++) {
-        qlutattn_vec_dot(head_dim, (float *) (ret + ih * PACK_CHUNK_SIZE), head_dim, (uint8_t *) k_quantized->data + ih * type_size,
-                         head_dim, LUT_buffer, head_dim, head_dim);
+        qlutattn_vec_dot(head_dim, (float *) (ret + ih * PACK_CHUNK_SIZE), head_dim,
+                         (uint8_t *) k_quantized->data + ih * type_size, head_dim, LUT_buffer, head_dim, head_dim);
     }
 
     // qlutattn_vec_dot(head_dim, ret, head_dim, (uint8_t *) k_quantized->data, head_dim, LUT_buffer, head_dim, head_dim);
@@ -373,9 +420,13 @@ int main() {
     printf("MUL_MAT results:\n");
     ggml_print_tensor((uint8_t *) reshaped_ret->data, GGML_TYPE_F32, reshaped_ret->ne, reshaped_ret->nb, 8);
 
+    // printf("Q4_0 MUL_MAT results:\n");
+    // ggml_print_tensor((uint8_t *) mul_op_q4_0->data, GGML_TYPE_F32, mul_op_q4_0->ne,
+    //                   mul_op_q4_0->nb, 8);
+
     printf("Quantized results:\n");
-    size_t nb[4] = { sizeof(tmac_float_type), sizeof(tmac_float_type) * reshaped_ret->ne[0], sizeof(int8_t) * reshaped_ret->ne[1],
-                     sizeof(int8_t) * reshaped_ret->ne[2] };
+    size_t nb[4] = { sizeof(tmac_float_type), sizeof(tmac_float_type) * reshaped_ret->ne[0],
+                     sizeof(int8_t) * reshaped_ret->ne[1], sizeof(int8_t) * reshaped_ret->ne[2] };
     ggml_print_tensor((uint8_t *) ret, GGML_TYPE_F16, reshaped_ret->ne, nb, 8);
 
     ggml_free(ctx);
