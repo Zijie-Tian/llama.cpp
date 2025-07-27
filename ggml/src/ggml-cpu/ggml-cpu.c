@@ -2858,8 +2858,15 @@ struct ggml_cplan ggml_graph_plan(
                             node->src[0]->type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
                             node->src[0]->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
                             //> We need do block quantization.
-                            cur  = node->ne[0] * node->ne[1] * sizeof(uint8_t) + node->ne[0] * node->ne[1] / 128 * sizeof(float) * 2;
-                            cur += ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] /  4 * ggml_qlutattn_type_bits(node->type) * n_tasks;
+                            const int64_t PACK_SIZE         = 128;  //> 128x128
+                            const int64_t PACK_CHUNK_SIZE   = 128;  //> 128x128
+
+                            const int64_t PSEUDO_QUANT_SIZE = PACK_CHUNK_SIZE * PACK_SIZE * sizeof(uint8_t);
+                            const int64_t PSEUDO_SCALE_SIZE = PACK_CHUNK_SIZE * sizeof(float) * 2;
+                            const int64_t SRC0_F32_SIZE     = PACK_CHUNK_SIZE * PACK_SIZE * sizeof(float);       // src0_f32 buffer size.
+                            const int64_t REPACK_SIZE       = PACK_CHUNK_SIZE * PACK_SIZE * 4 * sizeof(uint8_t);  // repack workspace size. (4 is max bits)
+
+                            cur += (PSEUDO_QUANT_SIZE + PSEUDO_SCALE_SIZE + SRC0_F32_SIZE + REPACK_SIZE) * n_tasks;   //> 128x128 * fp32 * nth
                         }
 
                     } break;

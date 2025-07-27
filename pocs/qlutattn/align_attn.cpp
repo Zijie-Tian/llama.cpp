@@ -390,14 +390,14 @@ int main() {
     ggml_tensor * v_qlutattn_seg =
         ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * kv_segment_len, 1, n_kv_heads, 1);
 
-    ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_quant_seg, k_qlutattn_seg);    // NOTE: k_quant_seg -> k_qlutattn_seg
+    ggml_tensor * k_qlutattn_seg_quant =
+        ggml_cpy(ctx, k_quant_seg, k_qlutattn_seg);  // NOTE: k_quant_seg -> k_qlutattn_seg
     ggml_tensor * v_qlutattn_seg_quant = ggml_cpy(ctx, v_quant_seg, v_qlutattn_seg);
 
-    struct ggml_cgraph * gf       = ggml_new_graph(ctx);
+    struct ggml_cgraph * gf = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, k_qlutattn_seg_quant);
     ggml_build_forward_expand(gf, v_qlutattn_seg_quant);
     ggml_graph_compute_with_ctx(ctx, gf, 4);
-
 
     // ggml_tensor * mask_transposed = ggml_permute(ctx, mask, 1, 0, 2, 3);
 
@@ -452,8 +452,8 @@ int main() {
     print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
 
     ggml_tensor * result_seg =
-        ggml_flash_attn_mixed(ctx, q, k_fp16_seg, v_fp16_seg, mask_fp16_seg, k_qlutattn_seg, v_qlutattn_seg, mask_quant_seg,
-                              1.0f / std::sqrt(head_dim), 0.0f, 0.0f);
+        ggml_flash_attn_mixed(ctx, q, k_fp16_seg, v_fp16_seg, mask_fp16_seg, k_qlutattn_seg, v_qlutattn_seg,
+                              mask_quant_seg, 1.0f / std::sqrt(head_dim), 0.0f, 0.0f);
     // ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_WITH_STATE);
     ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_MIXED);
 
