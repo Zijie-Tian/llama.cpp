@@ -225,7 +225,7 @@ int main() {
     const int head_dim       = 128;
     const int n_heads        = 32;
     const int n_kv_heads     = 1;
-    const int seq_len        = 1024;
+    const int seq_len        = 1;
     const int kv_len         = 1024;  // Will be split into segments
     const int n_threads      = 1;
     const int kv_segments    = 2;     // Split KV into 2 segments
@@ -288,11 +288,11 @@ int main() {
 
     // Fill with FIXED reproducible data
     printf("\nGenerating fixed test data (seed=42)...\n");
-    fill_tensor_f32(q, -0.8f, 0.8f);
+    // fill_tensor_f32(q, -0.8f, 0.8f);
     fill_tensor_f16(k, -0.6f, 0.6f);
     fill_tensor_f16(v, -0.7f, 0.7f);
 
-    // set_tensor_f32(q, 2.0f);
+    set_tensor_f32(q, 1.0f);
     // set_tensor_f16(k, 0.5f);
     // set_tensor_f16(v, 0.25f);
 
@@ -370,11 +370,17 @@ int main() {
     // ============================================================================
     // printf("\n--- Test 2: Segmented Flash Attention with State ---\n");
 
+    ggml_tensor * q_fp16 = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, seq_len, n_heads, 1);
+    ggml_tensor * q_quant_op = ggml_cpy(ctx, q, q_fp16);
+    ggml_cgraph * gf_quant = ggml_new_graph(ctx);
+    ggml_build_forward_expand(gf_quant, q_quant_op);
+    ggml_graph_compute_with_ctx(ctx, gf_quant, n_threads);
+
     const int64_t PACK_SIZE       = 128;  //> 128x128
     const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
     const int64_t n_chunks        = (kv_len - kv_segment_len) / PACK_CHUNK_SIZE;
 
-    // Reset state tensor
+    // NOTE: Reset state which are the max KQ values and sum for each head
     reset_state_tensor(state);
 
     // printf("Processing segments using unified op...\n");
@@ -394,7 +400,7 @@ int main() {
     ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
                                                       head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
-    //> Do quantization. 
+    //> Do quantization.
     ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_quant_seg, k_qlutattn_seg);
     ggml_tensor * v_qlutattn_seg_quant = ggml_cpy(ctx, v_quant_seg, v_qlutattn_seg);
 
@@ -456,7 +462,7 @@ int main() {
     print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
 
     ggml_tensor * result_seg =
-        ggml_flash_attn_mixed(ctx, q, k_fp16_seg, v_fp16_seg, mask_fp16_seg, k_qlutattn_seg, v_qlutattn_seg,
+        ggml_flash_attn_mixed(ctx, q_fp16, k_fp16_seg, v_fp16_seg, mask_fp16_seg, k_qlutattn_seg, v_qlutattn_seg,
                               mask_quant_seg, 1.0f / std::sqrt(head_dim), 0.0f, 0.0f);
     // ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_WITH_STATE);
     ggml_flash_attn_ext_set_prec(result_seg, GGML_PREC_MIXED);

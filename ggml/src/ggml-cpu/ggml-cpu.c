@@ -430,8 +430,7 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .nrows                    = 1,
     },
 #endif
-#ifdef MGGML_USE_QLUTATTN
-
+#ifdef GGML_USE_QLUTATTN
     [GGML_TYPE_QLUTATTN_KV1_128x128] = {
         .from_float               = quantize_block_qlutattn_kv1_128x128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
@@ -486,7 +485,7 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-#endif /* ifdef MACRO */
+#endif /* ifdef GGML_USE_QLUTATTN */
 };
 
 const struct ggml_type_traits_cpu * ggml_get_type_traits_cpu(enum ggml_type type) {
@@ -2970,6 +2969,9 @@ struct ggml_cplan ggml_graph_plan(
                     } break;
                 case GGML_OP_FLASH_ATTN_EXT:
                     {
+                        //> Quantization group of LUT.
+                        const int64_t ACT_GROUP_SIZE = 64;
+
                         int32_t mode = node->op_params[3];
                         if (mode == GGML_PREC_F32) {
                             const int64_t ne10 = node->src[1]->ne[0]; // DK
@@ -2992,16 +2994,24 @@ struct ggml_cplan ggml_graph_plan(
                             cur = 2 * output_size + 2 * scratch_total;
 
                         }else if (mode == GGML_PREC_MIXED) {
-                            const int64_t N_Q_HEADS = node->src[0]->ne[2];  // n_q_heads
-                            const int64_t SEQ_LEN   = node->src[0]->ne[1];  // sequence length
-                            const int64_t KV_LEN    = node->src[1]->ne[1];  // KV length
-                            const int64_t DK        = node->src[0]->ne[0];  // DK
-                            const int64_t DV        = node->src[2]->ne[0];  // DV
+                            const int64_t BATCH_SIZE = node->src[0]->ne[3]; // n_batches
+                            const int64_t N_Q_HEADS  = node->src[0]->ne[2];  // n_q_heads
+                            const int64_t SEQ_LEN    = node->src[0]->ne[1];  // sequence length
+                            const int64_t KV_LEN     = node->src[1]->ne[1];  // KV length
+                            const int64_t DK         = node->src[0]->ne[0];  // DK
+                            const int64_t DV         = node->src[2]->ne[0];  // DV
 
-                            const size_t OUTPUT_SIZE    = N_Q_HEADS * SEQ_LEN * DV;
-                            const size_t LOCAL_MAX_SIZE = N_Q_HEADS * SEQ_LEN;
+                            //> Shared  memory buffer.
+                            const int64_t QLUT_SIZE         = DK / 4 * 16 * sizeof(uint8_t);
+                            const int64_t QLUT_SCALE_SIZE   = DK / ACT_GROUP_SIZE * sizeof(uint16_t) * 2; // 2 for lut_scale and lut_biases.
+                            const int64_t OUTPUT_SIZE = 2 * N_Q_HEADS * SEQ_LEN * DV * sizeof(float);
 
-                            cur = sizeof(float)*(OUTPUT_SIZE + 2 * LOCAL_MAX_SIZE + 2 * DV + 1 * DK + 1 + 16)*n_tasks;
+                            //> Per-thread memory buffer.
+                            const int64_t STATES_SIZE       = 2 * BATCH_SIZE * N_Q_HEADS * SEQ_LEN * sizeof(float); // 2x for quantized and fp32
+                            const int64_t QKV_BUFFER_SIZE   = 3 * DK * sizeof(float); // VKQ32, V32 and Q_q
+                            const int64_t PER_THREAD_BUFFER_SIZE = QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE + QKV_BUFFER_SIZE + CACHE_LINE_SIZE_F32;
+
+                            cur = (QLUT_SIZE + QLUT_SCALE_SIZE) * N_Q_HEADS * BATCH_SIZE + OUTPUT_SIZE + PER_THREAD_BUFFER_SIZE * n_tasks; // 2x for quantized and fp32
 
                         } else if (mode == GGML_PREC_DEFAULT) {
                             const int64_t ne10 = node->src[1]->ne[0]; // DK

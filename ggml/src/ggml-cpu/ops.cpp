@@ -12,6 +12,7 @@
 #include "ggml-cpu.h"
 #include "ggml-impl.h"
 #include "ggml.h"
+#include "qlutattn/qlut_ctor.h"
 #include "qlutattn/qlutattn.h"  // NOTICE: This include should not be here.
 #include "unary-ops.h"
 #include "vec.h"
@@ -396,25 +397,25 @@ struct QlutattnI4TypeAccessor {
     }
 };
 
-struct qlutattn_kernel_config {
-    int32_t g;
-    int32_t ngroups_per_elem;
-    int32_t q_group_size;
-    int32_t act_group_size;
+// struct qlutattn_kernel_config {
+//     int32_t g;
+//     int32_t ngroups_per_elem;
+//     int32_t q_group_size;
+//     int32_t act_group_size;
 
-    bool has_scale;
-    int  kfactor;
-    int  bits;
-    int  actk;  // should be equal to (act_group_size / g).
-    bool has_zero_point;
-    bool one_scale;
+//     bool has_scale;
+//     int  kfactor;
+//     int  bits;
+//     int  actk;  // should be equal to (act_group_size / g).
+//     bool has_zero_point;
+//     bool one_scale;
 
-    int32_t  bm;
-    uint32_t simd_n_in;
-    uint32_t simd_n_out;
+//     int32_t  bm;
+//     uint32_t simd_n_in;
+//     uint32_t simd_n_out;
 
-    int32_t chunk_n;
-};
+//     int32_t chunk_n;
+// };
 
 // static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
 //
@@ -532,7 +533,7 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 GGML_ASSERT(m / bits * k * n_kv_heads == ne00 && "m * k must equal to ne00");
 
 // #define EMPTY_WEIGHTS
-#ifndef EMPTY_WEIGHTS
+#    ifndef EMPTY_WEIGHTS
 
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
@@ -670,13 +671,13 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                         }  //> End of ih loop.
                     }  //> End of ne02 loop.
                 }  //> End of ne03 loop.
-#else
+#    else
                 memset(qweights, 0x88, k * m / bits / nelem_per_byte);
                 for (int i = 0; i < scales_size; i++) {
                     scales[i] = 1.0f;
                 }
 
-#endif  // EMPTY_WEIGHTS
+#    endif  // EMPTY_WEIGHTS
 
                 break;
             }
@@ -694,53 +695,53 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
             GGML_ABORT("fatal error");
     }
 
-    // size_t rs = ggml_row_size(dst->type, group_size * ne00);   // Size of one quantized block
-    // char * dst_ptr = (char *) dst->data;
+        // size_t rs = ggml_row_size(dst->type, group_size * ne00);   // Size of one quantized block
+        // char * dst_ptr = (char *) dst->data;
 
-    // for (int i03 = 0; i03 < ne03; i03++) {
-    //     for (int i02 = 0; i02 < ne02; i02++) {
-    //         for (int ig = 0; ig < n_steps; ig++) {
-    //             const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03);
+        // for (int i03 = 0; i03 < ne03; i03++) {
+        //     for (int i02 = 0; i02 < ne02; i02++) {
+        //         for (int ig = 0; ig < n_steps; ig++) {
+        //             const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) ((char *) src0->data + ig * group_size * nb01 + i02*nb02 + i03*nb03);
 
-    //             if (dst->type == GGML_TYPE_QLUTATTN_KV1_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV2_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
-    //                 // Transpose data for per-channel quantization
-    //                 for (int i00 = 0; i00 < ne00; i00++) {
-    //                     for (int g_iter = 0; g_iter < group_size; g_iter++) {
-    //                         src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
-    //                     }
-    //                 }
+        //             if (dst->type == GGML_TYPE_QLUTATTN_KV1_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV2_128x128 || dst->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
+        //                 // Transpose data for per-channel quantization
+        //                 for (int i00 = 0; i00 < ne00; i00++) {
+        //                     for (int g_iter = 0; g_iter < group_size; g_iter++) {
+        //                         src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
+        //                     }
+        //                 }
 
-    //                 // Calculate destination offset and quantize
-    //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
-    //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+        //                 // Calculate destination offset and quantize
+        //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+        //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
 
-    //             } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PC || dst->type == GGML_TYPE_QLUTATTN_W2G128_PC || dst->type == GGML_TYPE_QLUTATTN_W1G128_PC) {
-    //                 // Transpose data for per-channel quantization
-    //                 for (int i00 = 0; i00 < ne00; i00++) {
-    //                     for (int g_iter = 0; g_iter < group_size; g_iter++) {
-    //                         src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
-    //                     }
-    //                 }
+        //             } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PC || dst->type == GGML_TYPE_QLUTATTN_W2G128_PC || dst->type == GGML_TYPE_QLUTATTN_W1G128_PC) {
+        //                 // Transpose data for per-channel quantization
+        //                 for (int i00 = 0; i00 < ne00; i00++) {
+        //                     for (int g_iter = 0; g_iter < group_size; g_iter++) {
+        //                         src0_f32[i00 * group_size + g_iter] = GGML_FP16_TO_FP32(src0_ptr[g_iter * nb01/sizeof(ggml_fp16_t) + i00]);
+        //                     }
+        //                 }
 
-    //                 // Calculate destination offset
-    //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
-    //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
-    //             } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PT || dst->type == GGML_TYPE_QLUTATTN_W2G128_PT || dst->type == GGML_TYPE_QLUTATTN_W1G128_PT) {
-    //                 // Transpose data for per-channel quantization
-    //                 for (int i00 = 0; i00 < ne00 * group_size; i00++) {
-    //                     src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
-    //                 }
+        //                 // Calculate destination offset
+        //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+        //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+        //             } else if (dst->type == GGML_TYPE_QLUTATTN_W4G128_PT || dst->type == GGML_TYPE_QLUTATTN_W2G128_PT || dst->type == GGML_TYPE_QLUTATTN_W1G128_PT) {
+        //                 // Transpose data for per-channel quantization
+        //                 for (int i00 = 0; i00 < ne00 * group_size; i00++) {
+        //                     src0_f32[i00] = GGML_FP16_TO_FP32(src0_ptr[i00]);
+        //                 }
 
-    //                 // Calculate destination offset
-    //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
-    //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
-    //             }
-    //         }
-    //     }
-    // }
-    // // GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
+        //                 // Calculate destination offset
+        //                 size_t dst_offset = (i03 * ne02 * n_steps + i02 * n_steps + ig) * rs;
+        //                 quantize_block_q(src0_f32, dst_ptr + dst_offset, group_size * ne00);
+        //             }
+        //         }
+        //     }
+        // }
+        // // GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
 
-#endif //
+#endif  //
 }
 
 static void ggml_compute_forward_dup_bf16(const ggml_compute_params * params, ggml_tensor * dst) {
@@ -7529,12 +7530,6 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
     GGML_ASSERT(kernel_config != nullptr &&
                 "Failed to find qlutattn kernel config for 128x128x4, please check the kernel config");
 
-
-
-
-
-
-
     // uint16_t * ret        = (uint16_t *) aligned_malloc(PACK_CHUNK_SIZE * nek2 * n_chunk * sizeof(uint16_t));
     // uint8_t *  LUT_buffer = (uint8_t *) aligned_malloc(
     //     head_dim / 4 * 16 * sizeof(uint8_t) + head_dim / kernel_config->act_group_size * sizeof(tmac_float_type) * 2);
@@ -7970,10 +7965,25 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     GGML_TENSOR_LOCALS(int64_t, ne, dst, ne)
     GGML_TENSOR_LOCALS(size_t, nb, dst, nb)
 
-    const int64_t DK        = q->ne[0];
-    const int64_t Q_LEN     = q->ne[1];
-    const int64_t N_Q_HEADS = q->ne[2];
-    const int64_t DV        = dst->ne[0];
+    qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
+
+    int ith = params->ith;
+    int nth = params->nth;
+
+    const int64_t ACT_GROUP_SIZE = kernel_config->act_group_size;
+    const int64_t DK             = q->ne[0];
+    const int64_t Q_LEN          = q->ne[1];
+    const int64_t N_Q_HEADS      = q->ne[2];
+    const int64_t BATCH_SIZE     = q->ne[3];
+    const int64_t DV             = dst->ne[0];
+
+    const int64_t QLUT_SIZE       = DK / 4 * 16 * sizeof(uint8_t);
+    const int64_t QLUT_SCALE_SIZE = DK / ACT_GROUP_SIZE * sizeof(uint16_t) * 2;  // 2 for lut_scale and lut_biases.
+    const int64_t STATES_SIZE     = 2 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float);  // 2x for quantized and fp32
+    const int64_t QKV_BUFFER_SIZE = 3 * DK * sizeof(float);                              // VKQ32, V32 and Q_q
+    const int64_t OUTPUT_SIZE     = 2 * N_Q_HEADS * Q_LEN * DV * sizeof(float);
+    const int64_t PER_THREAD_BUFFER_SIZE =
+        QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE + QKV_BUFFER_SIZE + CACHE_LINE_SIZE_F32;
 
     // Calculate workspace layout for two independent segments
     const size_t output_size    = N_Q_HEADS * Q_LEN * DV;
@@ -7981,19 +7991,24 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     const size_t scratch_total  = scratch_per_th * params->nth;
     const size_t state_elems    = 2 * neq2 * neq1;  // M and S for each head/position
 
-    // Workspace:
-    char * workspace      = (char *) params->wdata;  //> wsize is bytes
-    size_t workspace_size = params->wsize;
+    //> Shared memory buffer.
+    const uint8_t * LUT_buffer = (const uint8_t *) params->wdata;  //> wsize is bytes
+    const uint8_t * OUTPUT_buffer =
+        (const uint8_t *) (LUT_buffer + (QLUT_SIZE + QLUT_SCALE_SIZE) * N_Q_HEADS * BATCH_SIZE);
 
-    char * imm_buffer_fp16  = workspace;
-    char * imm_buffer_quant = imm_buffer_fp16 + output_size * sizeof(float);
+    //> Per-thread memory buffer.
+    const uint8_t * workspace = (const uint8_t *) (OUTPUT_buffer + OUTPUT_SIZE + PER_THREAD_BUFFER_SIZE * params->ith);
+    const uint8_t * pth_LUT_buffer    = (const uint8_t *) workspace;
+    const uint8_t * pth_States_buffer = (const uint8_t *) (workspace + QLUT_SIZE + QLUT_SCALE_SIZE);
+    const uint8_t * pth_QKV_buffer    = (const uint8_t *) (pth_States_buffer + STATES_SIZE);
 
-    char * ws_thread_fp16  = workspace + 2 * output_size * sizeof(float) + params->ith * scratch_per_th * sizeof(float);
-    char * ws_thread_quant = workspace + 2 * output_size * sizeof(float) + scratch_total * sizeof(float) +
-                             params->ith * scratch_per_th * sizeof(float);
+    const uint8_t * imm_buffer_fp16  = (uint8_t *) OUTPUT_buffer;
+    const uint8_t * imm_buffer_quant = imm_buffer_fp16 + OUTPUT_SIZE;
+    const uint8_t * ws_thread_fp16   = pth_States_buffer;
+    const uint8_t * ws_thread_quant  = workspace + STATES_SIZE / 2;
 
-    // memset(imm_buffer_fp16,  0, output_size * sizeof(float));     //> initialize imm_buffer_fp16 to zero
-    // memset(imm_buffer_quant, 0, output_size * sizeof(float));     //> initialize imm_buffer_quant to zero
+    // memset(imm_buffer_fp16, 0, output_size * sizeof(float));   //> initialize imm_buffer_fp16 to zero
+    // memset(imm_buffer_quant, 0, output_size * sizeof(float));  //> initialize imm_buffer_quant to zero
 
     float * ws_state_thread_fp16  = (float *) ws_thread_fp16;
     float * ws_state_thread_quant = (float *) ws_thread_quant;
@@ -8017,27 +8032,55 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     memcpy(&max_bias, (float *) dst->op_params + 1, sizeof(float));
     memcpy(&logit_softcap, (float *) dst->op_params + 2, sizeof(float));
 
-    // Process FP16 segment first
-    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
-        ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16, ws_thread_fp16,
-                                        scale, max_bias, logit_softcap);
+    //> Precompute all QLUT, LUT_Scales and LUT_Biases.
+    const int nr  = neq1 * neq2 * neq3;  //> number of rows, one row is one head_dim.
+    const int dr  = (nr + params->nth - 1) / params->nth;
+    const int ir0 = dr * params->ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    for (int ir = ir0; ir < ir1; ++ir) {
+        const int iq3 = ir / (neq2 * neq1);         //>  ir / (n_q_head * seq_len)                      => Batch idx.
+        const int iq2 =
+            (ir - iq3 * neq2 * neq1) / neq1;        //> (ir - iq3 * n_q_head * seq_len) / seq_len       => Head idx.
+        const int iq1 =
+            (ir - iq3 * neq2 * neq1 - iq2 * neq1);  //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   => Sequence idx.
+
+        const float * pq = (const float *) ((char *) q->data + iq1 * nbq1 + iq2 * nbq2 + iq3 * nbq3);
+
+        const uint8_t * qlut_ptr = (const uint8_t *) ((char *) params->wdata + ir * (QLUT_SIZE + QLUT_SCALE_SIZE));
+        const uint8_t * lut_scales_ptr =
+            (const uint8_t *) ((char *) params->wdata + ir * (QLUT_SIZE + QLUT_SCALE_SIZE) + QLUT_SIZE);
+        const uint8_t * lut_biases_ptr =
+            (const uint8_t *) ((char *) params->wdata + ir * (QLUT_SIZE + QLUT_SCALE_SIZE) + QLUT_SIZE +
+                               QLUT_SCALE_SIZE / 2);
+
+        ggml::cpu::qlutattn::qlutattn_lut_ctor_int8_g4((void *) pq, (void *) lut_scales_ptr, (void *) lut_biases_ptr,
+                                                       (void *) qlut_ptr, DK, kernel_config);
     }
 
     ggml_barrier(params->threadpool);
 
-    if (k_quant && v_quant && k_quant->ne[1] > 0) {
-        // TODO: Integrate TMAC GeMV here.
-        ggml_flash_attn_ext_qlutattn_segment(params, q, k_quant, v_quant, mask_quant, (float *) imm_buffer_quant,
-                                             ws_thread_quant, scale, max_bias, logit_softcap);
+    // Process FP16 segment first
+    if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
+        ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16,
+                                        (void *) ws_thread_fp16, scale, max_bias, logit_softcap);
     }
+
+    ggml_barrier(params->threadpool);
+
+    // if (k_quant && v_quant && k_quant->ne[1] > 0) {
+    //     // TODO: Integrate TMAC GeMV here.
+    //     ggml_flash_attn_ext_qlutattn_segment(params, q, k_quant, v_quant, mask_quant, (float *) imm_buffer_quant,
+    //                                          ws_thread_quant, scale, max_bias, logit_softcap);
+    // }
 
     ggml_barrier(params->threadpool);
 
     //> Merge the two segments
-    const int64_t nr  = neq1 * neq2 * neq3;  //> number of rows, one row is one head_dim.
-    const int64_t dr  = (nr + params->nth - 1) / params->nth;
-    const int64_t ir0 = dr * params->ith;
-    const int64_t ir1 = MIN(ir0 + dr, nr);
+    // const int64_t nr  = neq1 * neq2 * neq3;  //> number of rows, one row is one head_dim.
+    // const int64_t dr  = (nr + params->nth - 1) / params->nth;
+    // const int64_t ir0 = dr * params->ith;
+    // const int64_t ir1 = MIN(ir0 + dr, nr);
 
     float * dst_data = (float *) dst->data;
 
