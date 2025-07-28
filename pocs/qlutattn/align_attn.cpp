@@ -229,7 +229,7 @@ int main() {
     const int kv_len         = 1024;  // Will be split into segments
     const int n_threads      = 1;
     const int kv_segments    = 2;     // Split KV into 2 segments
-    const int kv_segment_len = kv_len / kv_segments;
+    const int kv_segment_len = 128;
 
     // // Test parameters
     // const int head_dim       = 4;
@@ -370,6 +370,10 @@ int main() {
     // ============================================================================
     // printf("\n--- Test 2: Segmented Flash Attention with State ---\n");
 
+    const int64_t PACK_SIZE       = 128;  //> 128x128
+    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+    const int64_t n_chunks        = (kv_len - kv_segment_len) / PACK_CHUNK_SIZE;
+
     // Reset state tensor
     reset_state_tensor(state);
 
@@ -381,17 +385,17 @@ int main() {
         ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1, v->nb[1], v->nb[2], v->nb[3], 0);
 
     // NOTE: Reshape and quantization.
-    ggml_tensor * k_quant_seg = ggml_view_4d(ctx, k, head_dim * (kv_len - kv_segment_len), 1, n_kv_heads, 1, k->nb[1],
+    ggml_tensor * k_quant_seg = ggml_view_4d(ctx, k, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, k->nb[1],
                                              k->nb[2], k->nb[3], kv_segment_len * k->nb[1]);
-    ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim * (kv_len - kv_segment_len), 1, n_kv_heads, 1, v->nb[1],
+    ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, v->nb[1],
                                              v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
-    ggml_tensor * k_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * kv_segment_len, 1, n_kv_heads, 1);
-    ggml_tensor * v_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * kv_segment_len, 1, n_kv_heads, 1);
+    ggml_tensor * k_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
+                                                      head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+    ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
+                                                      head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
-    ggml_tensor * k_qlutattn_seg_quant =
-        ggml_cpy(ctx, k_quant_seg, k_qlutattn_seg);  // NOTE: k_quant_seg -> k_qlutattn_seg
+    //> Do quantization. 
+    ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_quant_seg, k_qlutattn_seg);
     ggml_tensor * v_qlutattn_seg_quant = ggml_cpy(ctx, v_quant_seg, v_qlutattn_seg);
 
     struct ggml_cgraph * gf = ggml_new_graph(ctx);
@@ -403,7 +407,7 @@ int main() {
 
     // ggml_tensor * mask_fp16_seg = ggml_view_4d(ctx, mask_transposed, padded_seq_len, kv_segment_len, n_kv_heads, 1,
     //                                           mask->nb[1], mask->nb[2], mask->nb[3], 0);
-    // ggml_tensor * mask_quant_seg = ggml_view_4d(ctx, mask_transposed, padded_seq_len, kv_len - kv_segment_len, n_kv_heads, 1,
+    // ggml_tensor * mask_quant_seg = ggml_view_4d(ctx, mask_transposed, padded_seq_len, kv_en - kv_segment_len, n_kv_heads, 1,
     //                                             mask->nb[1], mask->nb[2], mask->nb[3], 0);
 
     const int     padded_segment_len = GGML_PAD(kv_segment_len, 64);
@@ -434,7 +438,7 @@ int main() {
             // The actual KV position in the full sequence is j + kv_segment_len
             int actual_kv_pos = j + kv_segment_len;
             if (actual_kv_pos <= i && actual_kv_pos < kv_len && i < seq_len) {
-                // Can attend to this position
+                // Can attend to this position.
                 mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = ggml_fp32_to_fp16(0.0f);
             } else {
                 // Cannot attend to this position

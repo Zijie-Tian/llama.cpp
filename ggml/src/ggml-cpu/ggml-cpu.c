@@ -2854,9 +2854,9 @@ struct ggml_cplan ggml_graph_plan(
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
                         }
 
-                        if (node->src[0]->type == GGML_TYPE_QLUTATTN_KV1_128x128 ||
-                            node->src[0]->type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
-                            node->src[0]->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
+                        if (node->type == GGML_TYPE_QLUTATTN_KV1_128x128 ||
+                            node->type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
+                            node->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
                             //> We need do block quantization.
                             const int64_t PACK_SIZE         = 128;  //> 128x128
                             const int64_t PACK_CHUNK_SIZE   = 128;  //> 128x128

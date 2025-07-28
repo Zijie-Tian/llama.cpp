@@ -270,12 +270,12 @@ int main() {
     //> Init Tensors
     //> ===================================================================================================
 
-    const int64_t head_dim        = 128;       //> 128
-    const int64_t kv_len          = 128 * 16;  //> 128 aligned
-    const int64_t n_kv_heads      = 8;         //> kv_len // 128
-    const int     nbits           = 4;         //> nbits >= 2
-    const int64_t PACK_SIZE       = 128;       //> 128x128
-    const int64_t PACK_CHUNK_SIZE = 128;       //> 128x128
+    const int64_t head_dim        = 128;           //> 128
+    const int64_t kv_len          = 128 * 8 * 16;  //> 128 aligned
+    const int64_t n_kv_heads      = 8;             //> kv_len // 128
+    const int     nbits           = 4;             //> nbits >= 2
+    const int64_t PACK_SIZE       = 128;           //> 128x128
+    const int64_t PACK_CHUNK_SIZE = 128;           //> 128x128
     const int64_t n_chunk         = kv_len / PACK_CHUNK_SIZE;
 
     ggml_tensor * activation = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, 1, 1, 1);

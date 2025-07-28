@@ -521,10 +521,11 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 uint8_t * workspace = (uint8_t *) params->wdata + ws_th_size * ith;  // NOTICE : Too large.
 
                 uint8_t * qweight_ptr = (uint8_t *) workspace;
-                float *   scale_ptr   = (float *) (workspace + PSEUDO_QUANT_SIZE);  //> scale buffer.
-                float *   zero_ptr    = (float *) (workspace + PSEUDO_QUANT_SIZE + PACK_CHUNK_SIZE * sizeof(float));  //> zero point buffer.
-                float *   src0_f32    = (float *) (workspace + PSEUDO_QUANT_SIZE + PSEUDO_SCALE_SIZE);
-                uint8_t * repack_ws   = (uint8_t *) (workspace + PSEUDO_QUANT_SIZE + PSEUDO_SCALE_SIZE + SRC0_F32_SIZE);
+                float *   scale_ptr   = (float *) (workspace + PSEUDO_QUANT_SIZE);                //> scale buffer.
+                float *   zero_ptr =
+                    (float *) (workspace + PSEUDO_QUANT_SIZE + PACK_CHUNK_SIZE * sizeof(float));  //> zero point buffer.
+                float *   src0_f32  = (float *) (workspace + PSEUDO_QUANT_SIZE + PSEUDO_SCALE_SIZE);
+                uint8_t * repack_ws = (uint8_t *) (workspace + PSEUDO_QUANT_SIZE + PSEUDO_SCALE_SIZE + SRC0_F32_SIZE);
 
                 GGML_ASSERT(ws_th_size * ith <= params->wsize);
                 GGML_ASSERT(m * k % (128 * 128) == 0 && "Must align to the 128 * 128.");
@@ -536,22 +537,22 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 for (int i03 = 0; i03 < ne03; i03++) {
                     for (int i02 = 0; i02 < ne02; i02++) {
                         for (int ih = ih0; ih < ih1; ih++) {
-
                             memset(workspace, 0, ws_th_size);  //> Clear workspace.
 
                             // NOTE: SRC input buffer.
-                            const ggml_fp16_t * src0_ptr = (ggml_fp16_t *) src0->data + ih * PACK_CHUNK_SIZE * PACK_SIZE;
+                            const ggml_fp16_t * src0_ptr =
+                                (ggml_fp16_t *) src0->data + ih * PACK_CHUNK_SIZE * PACK_SIZE;
                             for (int i = 0; i < PACK_CHUNK_SIZE * PACK_SIZE; i++) {
                                 src0_f32[i] = GGML_FP16_TO_FP32(src0_ptr[i]);
                             }
 
-                            const int64_t id_head    = ih % n_kv_heads;  //> head index.
-                            const int64_t id_chunk   = ih / n_kv_heads;  //> chunk index.
+                            const int64_t id_head  = ih % n_kv_heads;  //> head index.
+                            const int64_t id_chunk = ih / n_kv_heads;  //> chunk index.
 
                             // NOTE: Final out buffer. (nb0 is type_size)
-                            uint8_t *     qweights = (uint8_t *) dst->data + id_head * nb0 + id_chunk * nb1 + i02 * nb2 +
-                                                              i03 * nb3;  // final buffer.
-                            ggml_fp16_t * scales   = (ggml_fp16_t *) (qweights + m / bits * k / nelem_per_byte);
+                            uint8_t * qweights = (uint8_t *) dst->data + id_head * nb0 + id_chunk * nb1 + i02 * nb2 +
+                                                 i03 * nb3;  // final buffer.
+                            ggml_fp16_t * scales = (ggml_fp16_t *) (qweights + m / bits * k / nelem_per_byte);
 
                             // NOTE: Pseudo quantization and simple pack.
                             quantize_block_q(src0_f32, (char *) qweight_ptr, PACK_CHUNK_SIZE * PACK_SIZE);
@@ -7442,11 +7443,6 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                                                  const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
                                                  float * dst_data, void * workspace, const float scale,
                                                  const float max_bias, const float logit_softcap) {
-    //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
-    //> K:      [head_dim, kv_len,   n_q_head, n_q_batch]
-    //> V:      [head_dim, kv_len,   n_q_head, n_q_batch]
-    //> Mask:   [q_len,    n_q_head, 1,        n_q_batch]
-
     GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
     GGML_TENSOR_LOCALS(size_t, nbq, q, nb)
     GGML_TENSOR_LOCALS(int64_t, nek, k, ne)
@@ -7517,6 +7513,44 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
     const ggml_type      k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
     const ggml_vec_dot_t kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
 
+    const int64_t PACK_SIZE       = 128;  //> 128x128
+    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+
+    //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
+    //> K:      [head_dim, kv_len,   n_q_head, n_q_batch]
+    //> V:      [head_dim, kv_len,   n_q_head, n_q_batch]
+    //> Mask:   [q_len,    n_q_head, 1,        n_q_batch]
+
+    // NOTE: Mixed precision MUL_MAT
+    struct qlutattn_kernel_config * kernel_config =
+        find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
+    GGML_ASSERT(kernel_config != nullptr &&
+                "Failed to find qlutattn kernel config for 128x128x4, please check the kernel config");
+
+
+
+
+
+
+
+    // uint16_t * ret        = (uint16_t *) aligned_malloc(PACK_CHUNK_SIZE * nek2 * n_chunk * sizeof(uint16_t));
+    // uint8_t *  LUT_buffer = (uint8_t *) aligned_malloc(
+    //     head_dim / 4 * 16 * sizeof(uint8_t) + head_dim / kernel_config->act_group_size * sizeof(tmac_float_type) * 2);
+    //
+    // int8_t *          qlut       = (int8_t *) LUT_buffer;
+    // tmac_float_type * lut_scales = (tmac_float_type *) ((uint8_t *) LUT_buffer + head_dim / 4 * 16 * sizeof(uint8_t));
+    // tmac_float_type * lut_biases =
+    //     (tmac_float_type *) ((uint8_t *) LUT_buffer + head_dim / 4 * 16 * sizeof(uint8_t) +
+    //                          head_dim / kernel_config->act_group_size * sizeof(tmac_float_type));
+    //
+    // // NOTE: Call QLUT build & quantization.
+    // ggml::cpu::qlutattn::qlutattn_lut_ctor_int8_g4(activation->data, lut_scales, lut_biases, qlut, head_dim,
+    //                                                kernel_config);
+    //
+    // // NOTE: Do lut_gemv
+    // ggml_vec_dot_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot;
+    // int64_t        type_size        = ggml_type_size(k_quantized->type);
+    //
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
         const int iq3 = ir / (neq2 * neq1);
