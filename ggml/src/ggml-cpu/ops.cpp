@@ -1,6 +1,5 @@
 #include "ops.h"
 
-#include <CoreFoundation/CFByteOrder.h>
 #include <float.h>
 #include <unistd.h>  // for usleep
 
@@ -475,6 +474,7 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
     GGML_ASSERT(bits > 0 && "Invalid quantization type");
     const int nelem_per_byte = 8 / bits;
 
+#ifdef GGML_USE_QLUTATTN
     switch (dst->type) {
         case GGML_TYPE_QLUTATTN_KV1_128x128:
         case GGML_TYPE_QLUTATTN_KV2_128x128:
@@ -738,6 +738,8 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
     //     }
     // }
     // // GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
+
+#endif //
 }
 
 static void ggml_compute_forward_dup_bf16(const ggml_compute_params * params, ggml_tensor * dst) {
