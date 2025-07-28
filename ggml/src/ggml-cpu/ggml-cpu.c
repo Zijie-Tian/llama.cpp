@@ -430,6 +430,8 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .nrows                    = 1,
     },
 #endif
+#ifdef MGGML_USE_QLUTATTN
+
     [GGML_TYPE_QLUTATTN_KV1_128x128] = {
         .from_float               = quantize_block_qlutattn_kv1_128x128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
@@ -484,6 +486,7 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
+#endif /* ifdef MACRO */
 };
 
 const struct ggml_type_traits_cpu * ggml_get_type_traits_cpu(enum ggml_type type) {
