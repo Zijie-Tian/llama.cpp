@@ -218,6 +218,103 @@ static void print_tensor_summary(ggml_tensor * tensor, const std::string & name)
            tensor->nb[2], tensor->nb[3], ggml_type_name(tensor->type), ggml_nelements(tensor));
 }
 
+/**
+ * Print a visualization of the KQV attention mask.
+ * Shows which tokens can attend to which other tokens.
+ * x = can attend (0 or greater)
+ * - = cannot attend (-INFINITY)
+ * For large n_kv, only prints first and last few columns with ellipsis
+ */
+static void ggml_print_mask(const ggml_tensor * mask, int64_t n_kv, int64_t n_tokens) {
+    printf("\n=== KQV Attention Mask ===\n");
+    printf("KV tokens →\n");
+
+    const int  preview_size  = 8;  // Number of columns to show at start/end
+    // const bool truncate = n_kv > 3 * preview_size;
+    const bool truncate      = false;
+    const int  display_width = truncate ? 2 * preview_size + 3 : n_kv;
+
+    // Print column numbers
+    printf("     ");
+    for (int i = 0; i < display_width; i++) {
+        if (truncate && i == preview_size) {
+            printf("...");
+        } else if (truncate && i > preview_size) {
+            printf("%d", (n_kv - (2 * preview_size - i)) % 10);
+        } else {
+            printf("%d", i % 10);
+        }
+    }
+    printf("\n");
+
+    // Print separator
+    printf("     ");
+    for (int i = 0; i < display_width; i++) {
+        if (truncate && i == preview_size) {
+            printf("...");
+        } else {
+            printf("=");
+        }
+    }
+    printf("\n");
+
+    const int  row_preview   = 5;  // Number of rows to show at start/end
+    // const bool truncate_rows = n_tokens > 2 * row_preview + 1;
+    const bool truncate_rows = false;
+
+    // printf("mask type : %s", ggml_type_name(mask->type));
+
+    if (mask->type == GGML_TYPE_F32) {
+        float * mask_data = (float *) mask->data;
+
+        // Print each row of the mask
+        for (int j = 0; j < n_tokens; j++) {
+            // Skip middle rows if truncating
+            if (truncate_rows && j == row_preview) {
+                printf("... |\n");
+                j = n_tokens - row_preview - 1;
+                continue;
+            }
+
+            printf("%3d |", j);  // Row number
+            for (int i = 0; i < display_width; i++) {
+                if (truncate && i == preview_size) {
+                    printf("...");
+                } else {
+                    int   idx = truncate && i > preview_size ? n_kv - (2 * preview_size - i) : i;
+                    float val = mask_data[j * n_kv + idx];
+                    printf("%c", (val == 0.0f) ? 'x' : '-');
+                }
+            }
+            printf("\n");
+        }
+    } else {
+        ggml_fp16_t * mask_data = (ggml_fp16_t *) mask->data;
+
+        for (int j = 0; j < n_tokens; j++) {
+            // Skip middle rows if truncating
+            if (truncate_rows && j == row_preview) {
+                printf("... |\n");
+                j = n_tokens - row_preview - 1;
+                continue;
+            }
+
+            printf("%3d |", j);  // Row number
+            for (int i = 0; i < display_width; i++) {
+                if (truncate && i == preview_size) {
+                    printf("...");
+                } else {
+                    int   idx = truncate && i > preview_size ? n_kv - (2 * preview_size - i) : i;
+                    float val = ggml_fp16_to_fp32(mask_data[j * n_kv + idx]);
+                    printf("%c", (val == 0) ? 'x' : '-');
+                }
+            }
+            printf("\n");
+        }
+    }
+    printf("\n");
+}
+
 int main() {
     printf("=== Flash Attention State Tensor - Comprehensive Test ===\n");
 
@@ -226,7 +323,7 @@ int main() {
     const int n_heads        = 32;
     const int n_kv_heads     = 1;
     const int seq_len        = 1;
-    const int kv_len         = 1024;  // Will be split into segments
+    const int kv_len         = 256;  // Will be split into segments
     const int n_threads      = 1;
     const int kv_segments    = 2;     // Split KV into 2 segments
     const int kv_segment_len = 128;
@@ -260,9 +357,9 @@ int main() {
         return 1;
     }
 
-    // ============================================================================
-    // Create and initialize tensors with FIXED data
-    // ============================================================================
+    //> ============================================================================
+    //> Create and initialize tensors with FIXED data
+    //> ============================================================================
     printf("\n--- Creating Fixed Test Data ---\n");
 
     // Create tensors for flash attention
@@ -303,7 +400,7 @@ int main() {
         for (int j = 0; j < padded_kv_len; j++) {
             // For testing: allow all query positions to see all KV positions < kv_len
             // This ensures both segments have valid attention weights
-            if (j <= i && j < seq_len && i < seq_len) {
+            if (i < seq_len && j < kv_len) {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(0.0f);
             } else {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(-INFINITY);
@@ -311,7 +408,7 @@ int main() {
         }
     }
 
-    printf("Fixed test data generated successfully\n");
+    ggml_print_mask(mask, kv_len, seq_len);
 
     // Print table header for tensor summary
     printf(
@@ -323,9 +420,9 @@ int main() {
         "+-----------------------+---------------------------------------+---------------------------------------------"
         "-----+----------+------------+\n");
 
-    // ============================================================================
-    // Test 1: Standard Flash Attention (Reference Result)
-    // ============================================================================
+    //> ============================================================================
+    //> Test 1: Standard Flash Attention (Reference Result)
+    //> ============================================================================
     // printf("\n--- Test 1: Standard Flash Attention (Reference) ---\n");
 
     print_tensor_summary(q, "Q");
@@ -335,9 +432,9 @@ int main() {
     print_tensor_summary(state, "State");
 
     ggml_tensor * result_standard = ggml_flash_attn_ext(ctx, q, k, v, mask,
-                                                        1.0f / std::sqrt(head_dim),  // scale
+                                                        1.0f / std::sqrt(head_dim),   // scale
                                                         0.0f,                        // max_bias
-                                                        0.0f                         // logit_softcap
+                                                        0.0f                    // logit_softcap
     );
     ggml_flash_attn_ext_set_prec(result_standard, GGML_PREC_F32);
 
@@ -365,9 +462,9 @@ int main() {
         "+-----------------------+---------------------------------------+---------------------------------------------"
         "-----+----------+------------+\n");
 
-    // ============================================================================
-    // Test 2: Segmented Flash Attention with State Accumulation
-    // ============================================================================
+    //> ============================================================================
+    //> Test 2: Segmented Flash Attention with State Accumulation
+    //> ============================================================================
     // printf("\n--- Test 2: Segmented Flash Attention with State ---\n");
 
     ggml_tensor * q_fp16 = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, seq_len, n_heads, 1);
@@ -409,13 +506,6 @@ int main() {
     ggml_build_forward_expand(gf, v_qlutattn_seg_quant);
     ggml_graph_compute_with_ctx(ctx, gf, 4);
 
-    // ggml_tensor * mask_transposed = ggml_permute(ctx, mask, 1, 0, 2, 3);
-
-    // ggml_tensor * mask_fp16_seg = ggml_view_4d(ctx, mask_transposed, padded_seq_len, kv_segment_len, n_kv_heads, 1,
-    //                                           mask->nb[1], mask->nb[2], mask->nb[3], 0);
-    // ggml_tensor * mask_quant_seg = ggml_view_4d(ctx, mask_transposed, padded_seq_len, kv_en - kv_segment_len, n_kv_heads, 1,
-    //                                             mask->nb[1], mask->nb[2], mask->nb[3], 0);
-
     const int     padded_segment_len = GGML_PAD(kv_segment_len, 64);
     ggml_tensor * mask_fp16_seg      = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_segment_len, padded_seq_len);
     ggml_tensor * mask_quant_seg =
@@ -423,33 +513,36 @@ int main() {
 
     ggml_fp16_t * mask_fp16_data  = (ggml_fp16_t *) mask_fp16_seg->data;
     ggml_fp16_t * mask_quant_data = (ggml_fp16_t *) mask_quant_seg->data;
-    // memset(mask_data, 0, ggml_nbytes(mask_fp16_seg));
-    // memset(mask_data, 0, ggml_nbytes(mask_quant_seg));
-    for (int i = 0; i < padded_seq_len; i++) {
-        for (int j = 0; j < kv_segment_len; j++) {
-            // Causal masking - positions can only see up to their position
-            if (j <= i && j < seq_len && i < seq_len) {
-                // Mask out future positions with -INFINITY
-                mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
-            } else {
-                // Mask out future positions with -INFINITY
-                mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(-INFINITY);
-            }
-        }
-    }
+    // // memset(mask_data, 0, ggml_nbytes(mask_fp16_seg));
+    // // memset(mask_data, 0, ggml_nbytes(mask_quant_seg));
+    // for (int i = 0; i < padded_seq_len; i++) {
+    //     for (int j = 0; j < kv_segment_len; j++) {
+            
+    //         mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
+
+    //         // Causal masking - positions can only see up to their position
+    //         // if (i < seq_len && j < kv_len) {
+    //         //     // Mask out future positions with -INFINITY
+    //         //     mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
+    //         // } else {
+    //         //     // Mask out future positions with -INFINITY
+    //         //     mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(-INFINITY);
+    //         // }
+    //     }
+    // }
 
     for (int i = 0; i < padded_seq_len; i++) {
-        for (int j = 0; j < padded_kv_len - kv_segment_len; j++) {
+        for (int j = 0; j < padded_kv_len; j++) {
             // Causal masking - positions can only see up to their position
             // The actual KV position in the full sequence is j + kv_segment_len
             int actual_kv_pos = j + kv_segment_len;
-            if (actual_kv_pos <= i && actual_kv_pos < kv_len && i < seq_len) {
-                // Can attend to this position.
-                mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = ggml_fp32_to_fp16(0.0f);
+
+            if (j < kv_segment_len) {
+                mask_fp16_data[i * kv_segment_len + j] = mask_data[i * padded_kv_len + j];
             } else {
-                // Cannot attend to this position
-                mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = ggml_fp32_to_fp16(-INFINITY);
+                mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = mask_data[i * padded_kv_len + j];
             }
+
         }
     }
 
@@ -460,6 +553,13 @@ int main() {
     print_tensor_summary(v_quant_seg, "V_QUANT_SEG");
     print_tensor_summary(mask_fp16_seg, "MASK_FP16_SEG");
     print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
+    
+    printf(
+        "+-----------------------+---------------------------------------+---------------------------------------------"
+        "-----+----------+------------+\n");
+
+    ggml_print_mask(mask_fp16_seg, kv_len, seq_len);
+
 
     ggml_tensor * result_seg =
         ggml_flash_attn_mixed(ctx, q_fp16, k_fp16_seg, v_fp16_seg, mask_fp16_seg, k_qlutattn_seg, v_qlutattn_seg,
@@ -476,16 +576,11 @@ int main() {
         return 1;
     }
 
-    // printf("Unified op computed successfully\n");
-    // print_f32_sample("Final segmented result", result_seg, 8);
+    // ggml_print_mask(mask_quant_seg, kv_len, seq_len);
 
-    printf(
-        "+-----------------------+---------------------------------------+---------------------------------------------"
-        "-----+----------+------------+\n");
-
-    // =====================================================================
-    // Test 3: PyTorch Verification using scaled_dot_product_attention
-    // =====================================================================
+    //> =====================================================================
+    //> Test 3: PyTorch Verification using scaled_dot_product_attention
+    //> =====================================================================
     printf("\n--- PyTorch Verification ---\n");
 
     std::vector<float> torch_result_data;

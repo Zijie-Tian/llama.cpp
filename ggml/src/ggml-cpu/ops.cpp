@@ -7697,7 +7697,7 @@ static void ggml_flash_attn_ext_f16_segment(const ggml_compute_params * params, 
         const int iv3 = iq3 / rv3;
         const int iv2 = iq2 / rv2;
 
-        const float * pq = (const float *) ((char *) q->data + (iq1 * nbq1 + iq2 * nbq2 + iq3 * nbq3));
+        const uint8_t * pq = (const uint8_t *) ((uint8_t *) q->data + (iq1 * nbq1 + iq2 * nbq2 + iq3 * nbq3));
 
         // Validate and sanitize Q values before conversion
         float pq_temp[512];  // Temporary buffer for sanitized Q values (DK should be <= 512)
@@ -7705,14 +7705,12 @@ static void ggml_flash_attn_ext_f16_segment(const ggml_compute_params * params, 
 
         bool found_invalid = false;
         for (int i = 0; i < DK; i++) {
-            if (isnan(pq[i]) || isinf(pq[i])) {
-                pq_temp[i]    = 0.0f;  // Replace invalid values with 0
-                found_invalid = true;
-                if (ith == 0 && iq1 == 0 && iq2 == 0 && i < 5) {
-                    fprintf(stderr, "[MIXED-KV-ERROR] Invalid Q value at index %d: %f, replacing with 0\n", i, pq[i]);
-                }
+            if (q -> type == GGML_TYPE_F32) {
+                pq_temp[i] = ((const float *) pq)[i];
+            } else if (q -> type == GGML_TYPE_F16) {
+                pq_temp[i] = GGML_FP16_TO_FP32(((const uint16_t *) pq)[i]);
             } else {
-                pq_temp[i] = pq[i];
+                GGML_ASSERT(0 && "Should not be here.");
             }
         }
 
@@ -8003,7 +8001,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     const uint8_t * pth_QKV_buffer    = (const uint8_t *) (pth_States_buffer + STATES_SIZE);
 
     const uint8_t * imm_buffer_fp16  = (uint8_t *) OUTPUT_buffer;
-    const uint8_t * imm_buffer_quant = imm_buffer_fp16 + OUTPUT_SIZE;
+    const uint8_t * imm_buffer_quant = imm_buffer_fp16 + OUTPUT_SIZE / 2;
     const uint8_t * ws_thread_fp16   = pth_States_buffer;
     const uint8_t * ws_thread_quant  = workspace + STATES_SIZE / 2;
 
