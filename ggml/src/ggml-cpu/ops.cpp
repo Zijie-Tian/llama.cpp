@@ -3,7 +3,9 @@
 #include <float.h>
 #include <unistd.h>  // for usleep
 
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <unordered_map>
 
@@ -7334,6 +7336,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(const ggml_compute_params * 
             fprintf(stderr, "[MIXED-KV-ERROR] Found invalid values in Q at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
         }
 
+        //> Q FP32 -> Q Quant.
         q_to_vec_dot(pq_temp, Q_q, DK);
 
         // online softmax / attention
@@ -7442,10 +7445,16 @@ static void ggml_compute_forward_flash_attn_ext_f16(const ggml_compute_params * 
     }
 }
 
-static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * params, const ggml_tensor * q,
-                                                 const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
-                                                 float * dst_data, void * workspace, const float scale,
-                                                 const float max_bias, const float logit_softcap) {
+
+static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params * params, const ggml_tensor * q,
+                                            const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
+                                            float * dst_data, void * workspace, const float scale, const float max_bias,
+                                            const float logit_softcap) {
+    //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
+    //> K:      [head_dim, kv_len,   n_q_head, n_q_batch]
+    //> V:      [head_dim, kv_len,   n_q_head, n_q_batch]
+    //> Mask:   [q_len,    n_q_head, 1,        n_q_batch]
+
     GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
     GGML_TENSOR_LOCALS(size_t, nbq, q, nb)
     GGML_TENSOR_LOCALS(int64_t, nek, k, ne)
@@ -7468,12 +7477,13 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
     const int ith = params->ith;
     const int nth = params->nth;
 
-    const int64_t DK = nek0;         //> head_dim * seq_len
-    const int64_t DV = nev0;         //> head_dim * seq_len
-    const int64_t N  = neq1;         //> 1
+    const int64_t DK = nek0;         //> head_dim
+    const int64_t DV = nev0;         //> head_dim
+    const int64_t N  = neq1;         //> q_len
 
-    const int64_t Q_LEN     = neq1;  //> q_len
-    const int64_t N_Q_HEADS = neq2;  //> n_q_head
+    const int64_t Q_LEN      = neq1;  //> q_len
+    const int64_t N_Q_HEADS  = neq2;  //> n_q_head
+    const int64_t BATCH_SIZE = neq3;  //> batch_size
 
     GGML_ASSERT(ne0 == DV);          //> head_dim
     GGML_ASSERT(ne2 == N);           //> q_len
@@ -7484,7 +7494,12 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
     GGML_ASSERT(nbk0 == ggml_type_size(k->type));
     GGML_ASSERT(nbv0 == ggml_type_size(v->type));
 
-    GGML_ASSERT(neq1 == N);  //> q -> ne[1] == q_len
+    //> V donot transpose before.
+    GGML_ASSERT(neq0 == DK);  //> q -> ne[0] == head_dim
+    GGML_ASSERT(nek0 == DK);  //> k -> ne[0] == head_dim
+    GGML_ASSERT(nev0 == DV);  //> v -> ne[0] == head_dim
+
+    GGML_ASSERT(neq1 == N);   //> q -> ne[1] == q_len
 
     // broadcast factors
     const int64_t rk2 = neq2 / nek2;  //> n_q_head / n_kv_head
@@ -7513,47 +7528,413 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
     const float m0 = powf(2.0f, -(max_bias) / n_head_log2);
     const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
 
-    const ggml_type      k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
-    const ggml_vec_dot_t kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
-
-    const int64_t PACK_SIZE       = 128;  //> 128x128
-    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
-
-    //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
-    //> K:      [head_dim, kv_len,   n_q_head, n_q_batch]
-    //> V:      [head_dim, kv_len,   n_q_head, n_q_batch]
-    //> Mask:   [q_len,    n_q_head, 1,        n_q_batch]
+    const ggml_type         k_vec_dot_type = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
+    const ggml_from_float_t q_to_vec_dot   = ggml_get_type_traits_cpu(k_vec_dot_type)->from_float;
+    const ggml_vec_dot_t    kq_vec_dot     = ggml_get_type_traits_cpu(k->type)->vec_dot;
+    const ggml_to_float_t   v_to_float     = ggml_get_type_traits(v->type)->to_float;
 
     // NOTE: Mixed precision MUL_MAT
     struct qlutattn_kernel_config * kernel_config =
         find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
     GGML_ASSERT(kernel_config != nullptr &&
                 "Failed to find qlutattn kernel config for 128x128x4, please check the kernel config");
+    const int64_t ACT_GROUP_SIZE = kernel_config->act_group_size;
 
-    // uint16_t * ret        = (uint16_t *) aligned_malloc(PACK_CHUNK_SIZE * nek2 * n_chunk * sizeof(uint16_t));
-    // uint8_t *  LUT_buffer = (uint8_t *) aligned_malloc(
-    //     head_dim / 4 * 16 * sizeof(uint8_t) + head_dim / kernel_config->act_group_size * sizeof(tmac_float_type) * 2);
-    //
-    // int8_t *          qlut       = (int8_t *) LUT_buffer;
-    // tmac_float_type * lut_scales = (tmac_float_type *) ((uint8_t *) LUT_buffer + head_dim / 4 * 16 * sizeof(uint8_t));
-    // tmac_float_type * lut_biases =
-    //     (tmac_float_type *) ((uint8_t *) LUT_buffer + head_dim / 4 * 16 * sizeof(uint8_t) +
-    //                          head_dim / kernel_config->act_group_size * sizeof(tmac_float_type));
-    //
-    // // NOTE: Call QLUT build & quantization.
-    // ggml::cpu::qlutattn::qlutattn_lut_ctor_int8_g4(activation->data, lut_scales, lut_biases, qlut, head_dim,
-    //                                                kernel_config);
-    //
-    // // NOTE: Do lut_gemv
-    // ggml_vec_dot_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot;
-    // int64_t        type_size        = ggml_type_size(k_quantized->type);
-    //
+    const int64_t QLUT_SIZE       = DK / 4 * 16 * sizeof(uint8_t);
+    const int64_t QLUT_SCALE_SIZE = DK / ACT_GROUP_SIZE * sizeof(uint16_t) * 2;  // 2 for lut_scale and lut_biases.
+    const int64_t STATES_SIZE     = 4 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float);  // 2x for quantized and fp32
+    const int64_t QKV_BUFFER_SIZE = 3 * DK * sizeof(float);                              // VKQ32, V32 and Q_q
+
+    float * state_data = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE);               //> Up states buffer.
+    float * VKQ32      = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE);    // FP32 VKQ accumulator
+
+    GGML_ASSERT((q_to_vec_dot) && "fattn: unsupported K-type");
+    GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float) && "fattn: unsupported V-type");
+
+    // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices
-        const int iq3 = ir / (neq2 * neq1);
-        const int iq2 = (ir - iq3 * neq2 * neq1) / neq1;
-        const int iq1 = (ir - iq3 * neq2 * neq1 - iq2 * neq1);
+        const int iq3 = ir / (neq2 * neq1);         //>  ir / (n_q_head * seq_len)                      => Batch idx.
+        const int iq2 =
+            (ir - iq3 * neq2 * neq1) / neq1;        //> (ir - iq3 * n_q_head * seq_len) / seq_len       => Head idx.
+        const int iq1 =
+            (ir - iq3 * neq2 * neq1 - iq2 * neq1);  //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   => Sequence idx.
+
+        const uint32_t h = iq2;                     // head index
+        const float    slope =
+            (max_bias > 0.0f) ? h < n_head_log2 ? powf(m0, h + 1) : powf(m1, 2 * (h - n_head_log2) + 1) : 1.0f;
+
+        // float S = 0.0f;      // sum
+        // float M = -INFINITY; // maximum KQ value
+        // float       * VKQ32 = (float       *) params->wdata + output_size * 2
+        //     + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
+
+
+
+        float *       V32   = (VKQ32 + 1 * DV);                  // (temporary) FP32 V buffer
+        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1 * DV);  // (temporary) FP16 VKQ accumulator
+        ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2 * DV);  // (temporary) buffer for Q converted to quantized/FP16
+
+        float M = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0];
+        float S = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1];
+
+        if (v->type == GGML_TYPE_F16) {
+            memset(VKQ16, 0, DV * sizeof(ggml_fp16_t));
+        } else {
+            memset(VKQ32, 0, DV * sizeof(float));
+        }
+
+        // Initialize Q_q buffer to prevent NaN
+        memset(Q_q, 0, DK * sizeof(ggml_fp16_t));
+
+        const ggml_fp16_t * mp = mask ? (ggml_fp16_t *) ((char *) mask->data + iq1 * mask->nb[1]) : NULL;
+        // k indices
+        const int ik3 = iq3 / rk3;
+        const int ik2 = iq2 / rk2;
+
+        // v indices
+        const int iv3 = iq3 / rv3;
+        const int iv2 = iq2 / rv2;
+
+        const uint8_t * pq = (const uint8_t *) ((uint8_t *) q->data + (iq1 * nbq1 + iq2 * nbq2 + iq3 * nbq3));
+
+        // Validate and sanitize Q values before conversion
+        float pq_temp[512];  // Temporary buffer for sanitized Q values (DK should be <= 512)
+        GGML_ASSERT(DK <= 512);
+
+        bool found_invalid = false;
+        for (int i = 0; i < DK; i++) {
+            if (q->type == GGML_TYPE_F32) {
+                pq_temp[i] = ((const float *) pq)[i];
+            } else if (q->type == GGML_TYPE_F16) {
+                pq_temp[i] = GGML_FP16_TO_FP32(((const uint16_t *) pq)[i]);
+            } else {
+                GGML_ASSERT(0 && "Should not be here.");
+            }
+        }
+
+        if (found_invalid && ith == 0 && iq1 == 0 && iq2 == 0) {
+            fprintf(stderr, "[MIXED-KV-ERROR] Found invalid values in Q at iq1=%d, iq2=%d, iq3=%d\n", iq1, iq2, iq3);
+        }
+
+        // TODO: Modify this place, so we can access the KV cache in a block step.
+        q_to_vec_dot(pq_temp, Q_q, DK);
+
+        // online softmax / attention
+        // loop over n_kv and n_head_kv
+        // ref: https://arxiv.org/pdf/2112.05682.pdf
+        // NOTICE : Loop alone the kv_len dim.
+        int standard_valid = 0;
+        for (int64_t ic = 0; ic < nek1; ++ic) {
+            const float mv = mp ? slope * GGML_FP16_TO_FP32(mp[ic]) : 0.0f;
+            if (mv == -INFINITY) {
+                continue;
+            }
+            standard_valid++;
+
+            float s;  // KQ value
+
+            //> k_data: [head_dim, kv_len, n_kv_head, n_kv_batch]
+            // NOTE: For quantized data, This will pick one block.
+            const char * k_data = (const char *) k->data + (ic * nbk1 + ik2 * nbk2 + ik3 * nbk3);
+            kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
+
+            // DEBUG: Check s before scaling
+            float s_raw = s;
+
+            s = s * scale;  // scale KQ value
+
+            // DEBUG: Check for NaN after scaling
+            if (isnan(s) && !isnan(s_raw)) {
+                fprintf(stderr, "[MIXED-KV-ERROR] NaN introduced by scaling: s_raw=%f, scale=%f, s=%f\n", s_raw, scale,
+                        s);
+            }
+
+            if (logit_softcap != 0.0f) {
+                s = logit_softcap * tanhf(s);
+            }
+
+            s += mv;  // apply mask
+
+            const float M_old = M;
+
+            float ms = 1.0f;  // upon new higher max val, scale VKQ and KQ sum with this value
+            float vs = 1.0f;  // post-softmax KQ value, expf(s - M)
+
+            const char * v_data = ((const char *) v->data + (ic * nbv1 + iv2 * nbv2 + iv3 * nbv3));
+
+            if (v->type == GGML_TYPE_F16) {
+                if (s > M) {
+                    // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                    M  = s;
+                    ms = expf(M_old - M);
+
+                    // V = V*expf(Mold - M)
+                    ggml_vec_scale_f16(DV, VKQ16, ms);
+                } else {
+                    // no new maximum, ms == 1.0f, vs != 1.0f
+                    vs = expf(s - M);
+                }
+
+                // V += v*expf(s - M)
+                //> VKQ16 = VKQ16 + v_data * expf(s - M)
+                ggml_vec_mad_f16(DV, VKQ16, (const ggml_fp16_t *) v_data, vs);
+            } else {
+                if (s > M) {
+                    // s is new maximum, ms < 1.0f, vs == expf(s - s) == 1.0f
+                    M  = s;
+                    ms = expf(M_old - M);
+
+                    // V = V*expf(Mold - M)
+                    ggml_vec_scale_f32(DV, VKQ32, ms);
+                } else {
+                    // no new maximum, ms == 1.0f, vs != 1.0f
+                    vs = expf(s - M);
+                }
+
+                // V += v*expf(s - M)
+                if (v_to_float) {
+                    v_to_float(v_data, V32, DV);
+                    ggml_vec_mad_f32(DV, VKQ32, V32, vs);
+                } else {
+                    // V is F32
+                    ggml_vec_mad_f32(DV, VKQ32, (const float *) v_data, vs);
+                }
+            }
+
+            S = S * ms + vs;  // scale and increment sum with partial sum
+        }
+
+        if (v->type == GGML_TYPE_F16) {
+            for (int64_t d = 0; d < DV; ++d) {
+                VKQ32[d] = GGML_FP16_TO_FP32(VKQ16[d]);
+            }
+        }
+
+        state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0] = M;
+        state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1] = S;
+
+        if (S != 0.0f) {
+            // V /= S
+            const float S_inv = 1.0f / S;
+            ggml_vec_scale_f32(DV, VKQ32, S_inv);
+        } else {
+            memset(VKQ32, 0, DV * sizeof(float));
+        }
+
+        // dst indices
+        const int i1 = iq1;
+        const int i2 = iq2;
+        const int i3 = iq3;
+
+        // original
+        // memcpy((char *) dst->data + (i1*nb1 + i2*nb2 + i3*nb3), V, nev0*sizeof(float));
+
+        // permute(0, 2, 1, 3)
+        memcpy((char *) dst_data + (i3 * ne2 * ne1 + i2 + i1 * ne1) * nb1, VKQ32, nb1);
     }
+}
+
+static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * params, const ggml_tensor * q,
+                                                 const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
+                                                 float * dst_data, void * workspace, const float scale,
+                                                 const float max_bias, const float logit_softcap) {
+    // NOTE: Mixed precision MUL_MAT
+    struct qlutattn_kernel_config * kernel_config =
+        find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
+    GGML_ASSERT(kernel_config != nullptr &&
+                "Failed to find qlutattn kernel config for 128x128x4, please check the kernel config");
+
+    GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
+    GGML_TENSOR_LOCALS(size_t, nbq, q, nb)
+    GGML_TENSOR_LOCALS(int64_t, nek, k, ne)
+    GGML_TENSOR_LOCALS(size_t, nbk, k, nb)
+    GGML_TENSOR_LOCALS(int64_t, nev, v, ne)
+    GGML_TENSOR_LOCALS(size_t, nbv, v, nb)
+
+    const int64_t PACK_SIZE       = 128;  //> 128x128
+    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+
+    //> Output dimensions are derived from Q tensor
+    const int64_t ne0 = PACK_SIZE;  // DV (head_dim)
+    const int64_t ne1 = neq2;       // N_Q_HEADS
+    const int64_t ne2 = neq1;       // Q_LEN
+    const int64_t ne3 = neq3;       // batch
+
+    //> Reconstruct the nb
+    const int64_t nb0 = sizeof(float);
+    const int64_t nb1 = ne0 * nb0;
+    const int64_t nb2 = ne1 * nb1;
+    const int64_t nb3 = ne2 * nb2;
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    const int64_t ACT_GROUP_SIZE = kernel_config->act_group_size;
+    const int64_t DK             = q->ne[0];
+    const int64_t Q_LEN          = q->ne[1];
+    const int64_t N_Q_HEADS      = q->ne[2];
+    const int64_t BATCH_SIZE     = q->ne[3];
+    const int64_t DV             = PACK_SIZE;
+
+    const int64_t QLUT_SIZE       = DK / 4 * 16 * sizeof(uint8_t);
+    const int64_t QLUT_SCALE_SIZE = DK / ACT_GROUP_SIZE * sizeof(uint16_t) * 2;         // 2 for lut_scale and lut_biases.
+    const int64_t STATES_SIZE     = 4 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float); // 2x for quantized and fp32
+    const int64_t QKV_BUFFER_SIZE = 3 * DK * sizeof(float);                             // VKQ32, V32 and Q_q
+    const int64_t OUTPUT_SIZE     = 2 * N_Q_HEADS * Q_LEN * DV * sizeof(float);
+    const int64_t PER_THREAD_BUFFER_SIZE =
+        QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE + QKV_BUFFER_SIZE + CACHE_LINE_SIZE_F32;
+
+    // input tensor rows must be contiguous
+    //> QKV cannot do transpose.
+    GGML_ASSERT(ne2  == Q_LEN);  //> q_len
+    GGML_ASSERT(nbq0 == ggml_type_size(q->type));
+    GGML_ASSERT(nbk0 == ggml_type_size(k->type));
+    GGML_ASSERT(nbv0 == ggml_type_size(v->type));
+
+    // parallelize by q rows using ggml_vec_dot_f32
+    const int nr = neq1 * neq2 * neq3;  //> number of rows, one row is one head_dim.
+
+    // NOTE: Parallelize by q rows.
+    const int dr  = (nr + nth - 1) / nth;
+    const int ir0 = dr * ith;
+    const int ir1 = MIN(ir0 + dr, nr);
+
+    float scale_adjusted = scale;
+    if (logit_softcap != 0) {
+        scale_adjusted /= logit_softcap;
+    }
+
+    const ggml_type      k_vec_dot_type         = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
+    const ggml_vec_dot_f16_t kq_vec_dot         = ggml_get_type_traits_cpu(k->type)->vec_dot_f16;
+    const ggml_vec_dot_f16_t pv_vec_dot_fp16    = ggml_get_type_traits_cpu(v->type)->vec_dot_f16;
+    const ggml_vec_dot_t pv_vec_dot             = ggml_get_type_traits_cpu(v->type)->vec_dot;
+
+    int64_t        type_size        = ggml_type_size(k->type);  //> Quantized KV cache Block type size.
+
+    // const int64_t N_KV_HEAD       = nek0 / (PACK_SIZE * PACK_CHUNK_SIZE);  //> n_kv_head
+    
+    //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
+    //> K:      [head_dim * PACK_CHUNK_SIZE, kv_len / PACK_CHUNK_SIZE,   n_q_head, n_q_batch]
+    //> V:      [head_dim * PACK_CHUNK_SIZE, kv_len / PACK_CHUNK_SIZE,   n_q_head, n_q_batch]
+    //> Mask:   [q_len,    n_q_head, 1,        n_q_batch]
+    
+    //> Locate the workspace buffer.
+    const uint8_t * pth_qLUT_buffer = (const uint8_t *) workspace;
+    float * state_data              = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE / 2);   //> Down states buffer.
+    float * VKQ32                   = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE);       // FP32 VKQ accumulator
+
+    // loop over n_batch and n_head
+    for (int ir = ir0; ir < ir1; ++ir) {
+        // q indices
+        const int iq3 = ir / (neq2 * neq1);         //>  ir / (n_q_head * seq_len)                      => Batch idx.
+        const int iq2 =
+            (ir - iq3 * neq2 * neq1) / neq1;        //> (ir - iq3 * n_q_head * seq_len) / seq_len       => Head idx.
+        const int iq1 =
+            (ir - iq3 * neq2 * neq1 - iq2 * neq1);  //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   => Sequence idx.
+
+        // const uint32_t h = iq2;                     // head index
+        
+        const uint8_t * qLUT_buffer = (const uint8_t *) params->wdata + ir * (QLUT_SIZE + QLUT_SCALE_SIZE);
+
+        //> Change all M/S to ggml_fp16_t
+        float M = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0];
+        float S = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1];
+        ggml_fp16_t M_fp16 = ggml_fp32_to_fp16(M);
+
+        float *       V32   = (VKQ32 + 1 * DV);                  // (temporary) FP32 V buffer
+        ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1 * DV);  // (temporary) FP16 VKQ accumulator
+        ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2 * DV);  // (temporary) buffer for Q converted to quantized/FP16
+
+        if (v->type == GGML_TYPE_F16) {
+            memset(VKQ16, 0, DV * sizeof(ggml_fp16_t));
+        } else {
+            memset(VKQ32, 0, DV * sizeof(float));
+        }
+
+        ggml_fp16_t qk_buffer[PACK_CHUNK_SIZE];
+        memset(qk_buffer, 0, PACK_CHUNK_SIZE * sizeof(ggml_fp16_t));
+
+        //> iterate with 128x128 block per step.
+        // NOTICE : This can be considered as loop along the kv_len dim, BUT, each step forward multiple heads.
+        int standard_valid = 0;
+        for (int64_t idx_chunk = 0; idx_chunk < nek1; ++idx_chunk) {
+            // TODO: Should compute multi heads in one step.
+            // NOTICE : This qk_buffer 
+            kq_vec_dot(PACK_SIZE, qk_buffer, PACK_SIZE,
+                         (uint8_t *) k->data + idx_chunk * type_size, PACK_SIZE, qLUT_buffer, PACK_SIZE, PACK_SIZE);
+
+            // //> 1 / sqrt(DK)
+            // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+            //     qk_buffer[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(qk_buffer[i]) / sqrtf((float) DK));
+            // }
+
+            //> 3-pass to get softmax.
+            for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+                if (ggml_fp16_to_fp32(qk_buffer[i]) > ggml_fp16_to_fp32(M_fp16)) {
+                    M_fp16 = qk_buffer[i];
+                }
+            }
+            for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+                qk_buffer[i] = ggml_fp32_to_fp16( expf(ggml_fp16_to_fp32(qk_buffer[i]) - ggml_fp16_to_fp32(M_fp16)) );
+                S += ggml_compute_fp16_to_fp32(qk_buffer[i]);
+            }
+            // // float EXP_SUM_INV = 1.0f / S;
+            // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+            //     qk_buffer[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(qk_buffer[i]) / S);
+            // }
+
+
+            //> ===================================================================================================
+            //> PV main loop.
+            //> ===================================================================================================
+            float tmp_f32[PACK_CHUNK_SIZE];
+            memset(tmp_f32, 0, PACK_CHUNK_SIZE * sizeof(float));
+
+            for (int idx_k = 0; idx_k < PACK_CHUNK_SIZE; ++idx_k) {
+                ggml_fp16_t * vec = (ggml_fp16_t *) v->data + idx_k * PACK_SIZE;
+                for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+                    tmp_f32[i] = ggml_fp16_to_fp32(vec[i]);
+                }
+
+                // memcpy(tmp_f32, (const float *) v->data + idx_k * PACK_SIZE, PACK_SIZE * sizeof(float));
+                ggml_vec_mad_f32(PACK_CHUNK_SIZE, VKQ32,  tmp_f32, GGML_FP16_TO_FP32(qk_buffer[idx_k]));
+            }
+
+            // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+            //     VKQ32[i] = GGML_FP16_TO_FP32(VKQ16[i]) / S;
+            // }
+
+            memcpy(dst_data, VKQ32, PACK_CHUNK_SIZE * sizeof(float));
+
+            //> ===================================================================================================
+            //> Do PV Mixed precision PV product.
+            //> ===================================================================================================
+            // const uint8_t * qlut_ptr = (const uint8_t *) ((uint8_t *) pth_qLUT_buffer);
+            // const uint8_t * lut_scales_ptr =
+            //     (const uint8_t *) ((uint8_t *) pth_qLUT_buffer + QLUT_SIZE);
+            // const uint8_t * lut_biases_ptr =
+            //     (const uint8_t *) ((uint8_t *) pth_qLUT_buffer + QLUT_SIZE + QLUT_SCALE_SIZE / 2);
+
+            // ggml::cpu::qlutattn::qlutattn_lut_ctor_int8_g4((void *) qk_buffer, (void *) lut_scales_ptr, (void *) lut_biases_ptr,
+            //                     (void *) qlut_ptr, PACK_SIZE, kernel_config);
+
+            // pv_vec_dot(PACK_SIZE, VKQ16, PACK_SIZE, (const uint8_t *) v->data + ib * type_size, PACK_SIZE, qlut_ptr, PACK_SIZE, PACK_SIZE);
+
+            // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+            //     VKQ32[i] = GGML_FP16_TO_FP32(VKQ16[i]);
+            // }
+            
+            // ggml_vec_mad_f32(PACK_SIZE, dst_data + ir * PACK_CHUNK_SIZE, VKQ32, 1.0f);
+        }
+
+        state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0] = ggml_fp16_to_fp32(M_fp16);
+        state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1] = S;
+    }
+
+    return;
+
+    // memcpy(dst_data, VKQ32, PACK_SIZE * sizeof(float));
 }
 
 static void ggml_flash_attn_ext_f16_segment(const ggml_compute_params * params, const ggml_tensor * q,
@@ -7660,9 +8041,6 @@ static void ggml_flash_attn_ext_f16_segment(const ggml_compute_params * params, 
 
         // float S = 0.0f;      // sum
         // float M = -INFINITY; // maximum KQ value
-
-        const size_t output_size = N_Q_HEADS * Q_LEN * DV;
-
         // float       * VKQ32 = (float       *) params->wdata + output_size * 2
         //     + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
 
@@ -7705,9 +8083,9 @@ static void ggml_flash_attn_ext_f16_segment(const ggml_compute_params * params, 
 
         bool found_invalid = false;
         for (int i = 0; i < DK; i++) {
-            if (q -> type == GGML_TYPE_F32) {
+            if (q->type == GGML_TYPE_F32) {
                 pq_temp[i] = ((const float *) pq)[i];
-            } else if (q -> type == GGML_TYPE_F16) {
+            } else if (q->type == GGML_TYPE_F16) {
                 pq_temp[i] = GGML_FP16_TO_FP32(((const uint16_t *) pq)[i]);
             } else {
                 GGML_ASSERT(0 && "Should not be here.");
@@ -7977,7 +8355,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
 
     const int64_t QLUT_SIZE       = DK / 4 * 16 * sizeof(uint8_t);
     const int64_t QLUT_SCALE_SIZE = DK / ACT_GROUP_SIZE * sizeof(uint16_t) * 2;  // 2 for lut_scale and lut_biases.
-    const int64_t STATES_SIZE     = 2 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float);  // 2x for quantized and fp32
+    const int64_t STATES_SIZE     = 4 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float);  // 2x for quantized and fp32
     const int64_t QKV_BUFFER_SIZE = 3 * DK * sizeof(float);                              // VKQ32, V32 and Q_q
     const int64_t OUTPUT_SIZE     = 2 * N_Q_HEADS * Q_LEN * DV * sizeof(float);
     const int64_t PER_THREAD_BUFFER_SIZE =
@@ -8003,7 +8381,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     const uint8_t * imm_buffer_fp16  = (uint8_t *) OUTPUT_buffer;
     const uint8_t * imm_buffer_quant = imm_buffer_fp16 + OUTPUT_SIZE / 2;
     const uint8_t * ws_thread_fp16   = pth_States_buffer;
-    const uint8_t * ws_thread_quant  = workspace + STATES_SIZE / 2;
+    const uint8_t * ws_thread_quant  = pth_States_buffer + STATES_SIZE / 2;
 
     // memset(imm_buffer_fp16, 0, output_size * sizeof(float));   //> initialize imm_buffer_fp16 to zero
     // memset(imm_buffer_quant, 0, output_size * sizeof(float));  //> initialize imm_buffer_quant to zero
@@ -8011,7 +8389,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     float * ws_state_thread_fp16  = (float *) ws_thread_fp16;
     float * ws_state_thread_quant = (float *) ws_thread_quant;
 
-    for (int64_t i = 0; i < neq2 * neq1; ++i) {
+    for (int64_t i = 0; i < N_Q_HEADS * Q_LEN; ++i) {
         ws_state_thread_fp16[2 * i + 0]  = -INFINITY;
         ws_state_thread_fp16[2 * i + 1]  = 0.0f;
         ws_state_thread_quant[2 * i + 0] = -INFINITY;
@@ -8060,17 +8438,17 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
 
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
-        ggml_flash_attn_ext_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16,
-                                        (void *) ws_thread_fp16, scale, max_bias, logit_softcap);
+        ggml_flash_attn_ext_qlutattn_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16,
+                                        (void *) workspace, scale, max_bias, logit_softcap);
     }
 
     ggml_barrier(params->threadpool);
 
-    // if (k_quant && v_quant && k_quant->ne[1] > 0) {
-    //     // TODO: Integrate TMAC GeMV here.
-    //     ggml_flash_attn_ext_qlutattn_segment(params, q, k_quant, v_quant, mask_quant, (float *) imm_buffer_quant,
-    //                                          ws_thread_quant, scale, max_bias, logit_softcap);
-    // }
+    if (k_quant && v_quant && k_quant->ne[1] > 0) {
+        // TODO: Integrate TMAC GeMV here.
+        ggml_flash_attn_ext_qlutattn_segment(params, q, k_quant, v_quant, mask_quant, (float *) imm_buffer_quant,
+                                             (void *) workspace, scale, max_bias, logit_softcap);
+    }
 
     ggml_barrier(params->threadpool);
 

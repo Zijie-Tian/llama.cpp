@@ -262,7 +262,7 @@ void ggml_qlutattn_mul_mat_task_compute(void * src0, void * scales, void * qlut,
                                            kernel_config);
 }
 
-void ggml_vec_dot_qlutattn_kv4_128x128(int n, float * GGML_RESTRICT C, size_t bs, const uint8_t * GGML_RESTRICT x,
+void ggml_vec_dot_qlutattn_kv4_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, size_t bs, const uint8_t * GGML_RESTRICT x,
                                        size_t bx, const ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
     GGML_ASSERT(bx % 128 == 0 && by % 128 == 0 && "Must be multiple of 128 for QLUTATTN KV4 128x128");
     struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, nrc, 4);

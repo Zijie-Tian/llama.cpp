@@ -388,7 +388,7 @@ int main() {
         fprintf(stderr, "Failed to find qlutattn kernel config for %d x %d x %d\n", head_dim, head_dim, nbits);
         return 1;
     }
-    uint16_t * ret        = (uint16_t *) aligned_malloc(PACK_CHUNK_SIZE * n_kv_heads * n_chunk * sizeof(uint16_t));
+    ggml_fp16_t * ret        = (ggml_fp16_t *) aligned_malloc(PACK_CHUNK_SIZE * n_kv_heads * n_chunk * sizeof(ggml_fp16_t));
     uint8_t *  LUT_buffer = (uint8_t *) aligned_malloc(
         head_dim / 4 * 16 * sizeof(uint8_t) + head_dim / kernel_config->act_group_size * sizeof(tmac_float_type) * 2);
 
@@ -403,11 +403,11 @@ int main() {
                                                    kernel_config);
 
     // NOTE: Do lut_gemv
-    ggml_vec_dot_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot;
+    ggml_vec_dot_f16_t qlutattn_vec_dot = ggml_get_type_traits_cpu(k_quantized->type)->vec_dot_f16;
     int64_t        type_size        = ggml_type_size(k_quantized->type);
 
     for (int ih = 0; ih < n_kv_heads * n_chunk; ih++) {
-        qlutattn_vec_dot(head_dim, (float *) (ret + ih * PACK_CHUNK_SIZE), head_dim,
+        qlutattn_vec_dot(head_dim, (ggml_fp16_t *) (ret + ih * PACK_CHUNK_SIZE), head_dim,
                          (uint8_t *) k_quantized->data + ih * type_size, head_dim, LUT_buffer, head_dim, head_dim);
     }
 

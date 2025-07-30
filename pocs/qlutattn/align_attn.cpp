@@ -320,12 +320,12 @@ int main() {
 
     // Test parameters
     const int head_dim       = 128;
-    const int n_heads        = 32;
+    const int n_heads        = 1;
     const int n_kv_heads     = 1;
     const int seq_len        = 1;
     const int kv_len         = 256;  // Will be split into segments
     const int n_threads      = 1;
-    const int kv_segments    = 2;     // Split KV into 2 segments
+    const int kv_segments    = 2;    // Split KV into 2 segments
     const int kv_segment_len = 128;
 
     // // Test parameters
@@ -365,7 +365,7 @@ int main() {
     // Create tensors for flash attention
     // Format: [head_dim, seq_len, n_heads,    1] for Q
     // Format: [head_dim, kv_len,  n_kv_heads, 1] for K, V
-    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads, 1);
+    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads,   1);
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
     ggml_tensor * v = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
 
@@ -385,11 +385,11 @@ int main() {
 
     // Fill with FIXED reproducible data
     printf("\nGenerating fixed test data (seed=42)...\n");
-    // fill_tensor_f32(q, -0.8f, 0.8f);
-    fill_tensor_f16(k, -0.6f, 0.6f);
-    fill_tensor_f16(v, -0.7f, 0.7f);
+    fill_tensor_f32(q, 0.f, 0.8f);
+    fill_tensor_f16(k, 0.f, 1.f);
+    fill_tensor_f16(v, 0.f, 1.f);
 
-    set_tensor_f32(q, 1.0f);
+    // set_tensor_f32(q, 1.0f);
     // set_tensor_f16(k, 0.5f);
     // set_tensor_f16(v, 0.25f);
 
@@ -400,7 +400,7 @@ int main() {
         for (int j = 0; j < padded_kv_len; j++) {
             // For testing: allow all query positions to see all KV positions < kv_len
             // This ensures both segments have valid attention weights
-            if (i < seq_len && j < kv_len) {
+            if (i < seq_len && kv_segment_len < j && j < kv_len) {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(0.0f);
             } else {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(-INFINITY);
@@ -432,9 +432,9 @@ int main() {
     print_tensor_summary(state, "State");
 
     ggml_tensor * result_standard = ggml_flash_attn_ext(ctx, q, k, v, mask,
-                                                        1.0f / std::sqrt(head_dim),   // scale
+                                                        1.0f / std::sqrt(head_dim),  // scale
                                                         0.0f,                        // max_bias
-                                                        0.0f                    // logit_softcap
+                                                        0.0f                         // logit_softcap
     );
     ggml_flash_attn_ext_set_prec(result_standard, GGML_PREC_F32);
 
@@ -467,9 +467,9 @@ int main() {
     //> ============================================================================
     // printf("\n--- Test 2: Segmented Flash Attention with State ---\n");
 
-    ggml_tensor * q_fp16 = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, seq_len, n_heads, 1);
+    ggml_tensor * q_fp16     = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, seq_len, n_heads, 1);
     ggml_tensor * q_quant_op = ggml_cpy(ctx, q, q_fp16);
-    ggml_cgraph * gf_quant = ggml_new_graph(ctx);
+    ggml_cgraph * gf_quant   = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf_quant, q_quant_op);
     ggml_graph_compute_with_ctx(ctx, gf_quant, n_threads);
 
@@ -479,8 +479,6 @@ int main() {
 
     // NOTE: Reset state which are the max KQ values and sum for each head
     reset_state_tensor(state);
-
-    // printf("Processing segments using unified op...\n");
 
     ggml_tensor * k_fp16_seg =
         ggml_view_4d(ctx, k, head_dim, kv_segment_len, n_kv_heads, 1, k->nb[1], k->nb[2], k->nb[3], 0);
@@ -492,10 +490,15 @@ int main() {
                                              k->nb[2], k->nb[3], kv_segment_len * k->nb[1]);
     ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, v->nb[1],
                                              v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
+
     ggml_tensor * k_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
                                                       head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
-    ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
+    
+    // NOTICE : Debugging.
+    ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,
                                                       head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+    // ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
+    //                                                   head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     //> Do quantization.
     ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_quant_seg, k_qlutattn_seg);
@@ -517,7 +520,7 @@ int main() {
     // // memset(mask_data, 0, ggml_nbytes(mask_quant_seg));
     // for (int i = 0; i < padded_seq_len; i++) {
     //     for (int j = 0; j < kv_segment_len; j++) {
-            
+
     //         mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
 
     //         // Causal masking - positions can only see up to their position
@@ -542,7 +545,6 @@ int main() {
             } else {
                 mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = mask_data[i * padded_kv_len + j];
             }
-
         }
     }
 
@@ -553,13 +555,12 @@ int main() {
     print_tensor_summary(v_quant_seg, "V_QUANT_SEG");
     print_tensor_summary(mask_fp16_seg, "MASK_FP16_SEG");
     print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
-    
+
     printf(
         "+-----------------------+---------------------------------------+---------------------------------------------"
         "-----+----------+------------+\n");
 
     ggml_print_mask(mask_fp16_seg, kv_len, seq_len);
-
 
     ggml_tensor * result_seg =
         ggml_flash_attn_mixed(ctx, q_fp16, k_fp16_seg, v_fp16_seg, mask_fp16_seg, k_qlutattn_seg, v_qlutattn_seg,

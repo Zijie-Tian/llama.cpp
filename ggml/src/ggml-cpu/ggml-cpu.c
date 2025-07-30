@@ -445,7 +445,7 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     },
     [GGML_TYPE_QLUTATTN_KV4_128x128] = {
         .from_float               = quantize_block_qlutattn_kv4_128x128,
-        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_qlutattn_kv4_128x128,  //> Fake
+        .vec_dot_f16              = (ggml_vec_dot_f16_t) ggml_vec_dot_qlutattn_kv4_128x128,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
@@ -2994,12 +2994,14 @@ struct ggml_cplan ggml_graph_plan(
                             cur = 2 * output_size + 2 * scratch_total;
 
                         }else if (mode == GGML_PREC_MIXED) {
+                            const int64_t PACK_SIZE       = 128;  //> 128x128
+                            const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
                             const int64_t BATCH_SIZE = node->src[0]->ne[3]; // n_batches
-                            const int64_t N_Q_HEADS  = node->src[0]->ne[2];  // n_q_heads
-                            const int64_t SEQ_LEN    = node->src[0]->ne[1];  // sequence length
-                            const int64_t KV_LEN     = node->src[1]->ne[1];  // KV length
-                            const int64_t DK         = node->src[0]->ne[0];  // DK
-                            const int64_t DV         = node->src[2]->ne[0];  // DV
+                            const int64_t N_Q_HEADS  = node->src[0]->ne[2]; // n_q_heads
+                            const int64_t SEQ_LEN    = node->src[0]->ne[1]; // sequence length
+                            const int64_t KV_LEN     = node->src[1]->ne[1]; // KV length
+                            const int64_t DK         = node->src[0]->ne[0]; // DK
+                            const int64_t DV         = DK;                  // NOTICE : DV should not be src[2]->ne[0], that dim is head_dim * PACK_CHUNK_SIZE * n_kv_head.
 
                             //> Shared  memory buffer.
                             const int64_t QLUT_SIZE         = DK / 4 * 16 * sizeof(uint8_t);
@@ -3007,7 +3009,7 @@ struct ggml_cplan ggml_graph_plan(
                             const int64_t OUTPUT_SIZE = 2 * N_Q_HEADS * SEQ_LEN * DV * sizeof(float);
 
                             //> Per-thread memory buffer.
-                            const int64_t STATES_SIZE       = 2 * BATCH_SIZE * N_Q_HEADS * SEQ_LEN * sizeof(float); // 2x for quantized and fp32
+                            const int64_t STATES_SIZE       = 4 * BATCH_SIZE * N_Q_HEADS * SEQ_LEN * sizeof(float); // 2x for quantized and fp32
                             const int64_t QKV_BUFFER_SIZE   = 3 * DK * sizeof(float); // VKQ32, V32 and Q_q
                             const int64_t PER_THREAD_BUFFER_SIZE = QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE + QKV_BUFFER_SIZE + CACHE_LINE_SIZE_F32;
 
