@@ -935,7 +935,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = 0,
         .is_quantized             = false,
     },
-    [GGML_TYPE_QLUTATTN_KV1_128x128] = {
+    [GGML_TYPE_QLUTATTN_K1_128x128] = {
         .type_name                = "qlutattn_kv1_128x128",
         .blck_size                = QKLUTATTN_KV1_128x128,
         .type_size                = sizeof(block_qlutattn_kv1_128x128),
@@ -943,7 +943,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w1g128,   //> Fake
         .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv1_128x128_ref,
     },
-    [GGML_TYPE_QLUTATTN_KV2_128x128] = {
+    [GGML_TYPE_QLUTATTN_K2_128x128] = {
         .type_name                = "qlutattn_kv2_128x128",
         .blck_size                = QKLUTATTN_KV2_128x128,
         .type_size                = sizeof(block_qlutattn_kv2_128x128),
@@ -951,7 +951,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w2g128,   //> Fake
         .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv2_128x128_ref,
     },
-    [GGML_TYPE_QLUTATTN_KV4_128x128] = {
+    [GGML_TYPE_QLUTATTN_K4_128x128] = {
         .type_name                = "qlutattn_kv4_128x128",
         .blck_size                = QKLUTATTN_KV4_128x128,
         .type_size                = sizeof(block_qlutattn_kv4_128x128),
@@ -959,6 +959,31 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w4g128,   //> Fake
         .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv4_128x128_ref,
     },
+    [GGML_TYPE_QLUTATTN_V1_128x128] = {
+        .type_name                = "qlutattn_kv1_128x128",
+        .blck_size                = QKLUTATTN_KV1_128x128,
+        .type_size                = sizeof(block_qlutattn_kv1_128x128),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w1g128,   //> Fake
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv1_128x128_ref,
+    },
+    [GGML_TYPE_QLUTATTN_V2_128x128] = {
+        .type_name                = "qlutattn_kv2_128x128",
+        .blck_size                = QKLUTATTN_KV2_128x128,
+        .type_size                = sizeof(block_qlutattn_kv2_128x128),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w2g128,   //> Fake
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv2_128x128_ref,
+    },
+    [GGML_TYPE_QLUTATTN_V4_128x128] = {
+        .type_name                = "qlutattn_kv4_128x128",
+        .blck_size                = QKLUTATTN_KV4_128x128,
+        .type_size                = sizeof(block_qlutattn_kv4_128x128),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w4g128,   //> Fake
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv4_128x128_ref,
+    },
+
     [GGML_TYPE_QLUTATTN_W1G128_PC] = {
         .type_name                = "qlutattn_w1g128_per_channel",
         .blck_size                = QKLUTATTN_W1G128,
@@ -6076,9 +6101,9 @@ size_t ggml_quantize_chunk(enum ggml_type type, const float * src, void * dst, i
         case GGML_TYPE_IQ4_XS:
             result = quantize_iq4_xs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix);
             break;
-        // case GGML_TYPE_QLUTATTN_KV1_128x128: result = quantize_qlutattn_w1g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        // case GGML_TYPE_QLUTATTN_KV2_128x128: result = quantize_qlutattn_w2g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        // case GGML_TYPE_QLUTATTN_KV4_128x128: result = quantize_qlutattn_w4g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        // case GGML_TYPE_QLUTATTN_K1_128x128: result = quantize_qlutattn_w1g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        // case GGML_TYPE_QLUTATTN_K2_128x128: result = quantize_qlutattn_w2g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        // case GGML_TYPE_QLUTATTN_K4_128x128: result = quantize_qlutattn_w4g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_F16:
             {
                 size_t elemsize = sizeof(ggml_fp16_t);

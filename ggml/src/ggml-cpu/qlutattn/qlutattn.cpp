@@ -21,16 +21,16 @@
 //> Helper functions for QLUTATTN
 //> ===================================================================================================
 static inline bool is_qlutattn_2bit_type(enum ggml_type type) {
-    return (type == GGML_TYPE_QLUTATTN_KV2_128x128);
+    return (type == GGML_TYPE_QLUTATTN_K2_128x128);
 }
 
 static inline bool is_qlutattn_4bit_type(enum ggml_type type) {
-    return (type == GGML_TYPE_QLUTATTN_KV4_128x128);
+    return (type == GGML_TYPE_QLUTATTN_K4_128x128);
 }
 
 bool is_qlutattn_type(enum ggml_type type) {
-    return (type == GGML_TYPE_QLUTATTN_KV1_128x128 || type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
-            type == GGML_TYPE_QLUTATTN_KV4_128x128);
+    return (type == GGML_TYPE_QLUTATTN_K1_128x128 || type == GGML_TYPE_QLUTATTN_K2_128x128 ||
+            type == GGML_TYPE_QLUTATTN_K4_128x128);
 }
 
 bool is_type_supported(enum ggml_type type) {
@@ -61,9 +61,9 @@ static inline int get_type_bits(enum ggml_type type) {
 
 static inline int get_type_group_size(enum ggml_type type) {
     switch (type) {
-        case GGML_TYPE_QLUTATTN_KV1_128x128:
-        case GGML_TYPE_QLUTATTN_KV2_128x128:
-        case GGML_TYPE_QLUTATTN_KV4_128x128:
+        case GGML_TYPE_QLUTATTN_K1_128x128:
+        case GGML_TYPE_QLUTATTN_K2_128x128:
+        case GGML_TYPE_QLUTATTN_K4_128x128:
             return 128;
         default:
             return -1;  // Unsupported type

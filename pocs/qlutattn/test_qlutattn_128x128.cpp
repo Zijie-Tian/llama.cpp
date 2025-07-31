@@ -290,7 +290,7 @@ int main() {
     ggml_set_name(k, "k_source");
 
     ggml_tensor * k_quantized =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunk, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunk, 1, 1);
     ggml_set_name(k_quantized, "k_quantized");
 
     ggml_tensor * k_q4_0 =

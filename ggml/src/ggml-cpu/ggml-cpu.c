@@ -431,19 +431,19 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
     },
 #endif
 #ifdef GGML_USE_QLUTATTN
-    [GGML_TYPE_QLUTATTN_KV1_128x128] = {
+    [GGML_TYPE_QLUTATTN_K1_128x128] = {
         .from_float               = quantize_block_qlutattn_kv1_128x128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_KV2_128x128] = {
+    [GGML_TYPE_QLUTATTN_K2_128x128] = {
         .from_float               = quantize_block_qlutattn_kv2_128x128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
-    [GGML_TYPE_QLUTATTN_KV4_128x128] = {
+    [GGML_TYPE_QLUTATTN_K4_128x128] = {
         .from_float               = quantize_block_qlutattn_kv4_128x128,
         .vec_dot_f16              = (ggml_vec_dot_f16_t) ggml_vec_dot_qlutattn_kv4_128x128,
         .vec_dot_type             = GGML_TYPE_F32,
@@ -2779,15 +2779,15 @@ int ggml_qlutattn_type_bits(enum ggml_type type) {
     switch (type) {
         case GGML_TYPE_QLUTATTN_W1G128_PC:
         case GGML_TYPE_QLUTATTN_W1G128_PT:
-        case GGML_TYPE_QLUTATTN_KV1_128x128:
+        case GGML_TYPE_QLUTATTN_K1_128x128:
             return 1;
         case GGML_TYPE_QLUTATTN_W2G128_PC:
         case GGML_TYPE_QLUTATTN_W2G128_PT:
-        case GGML_TYPE_QLUTATTN_KV2_128x128:
+        case GGML_TYPE_QLUTATTN_K2_128x128:
             return 2;
         case GGML_TYPE_QLUTATTN_W4G128_PC:
         case GGML_TYPE_QLUTATTN_W4G128_PT:
-        case GGML_TYPE_QLUTATTN_KV4_128x128:
+        case GGML_TYPE_QLUTATTN_K4_128x128:
             return 4;
         default:
             return 0; // Unreachable, but avoids compiler warnings
@@ -2856,9 +2856,9 @@ struct ggml_cplan ggml_graph_plan(
                             cur = ggml_type_size(GGML_TYPE_F32) * node->ne[0] * node->ne[1] * n_tasks;
                         }
 
-                        if (node->type == GGML_TYPE_QLUTATTN_KV1_128x128 ||
-                            node->type == GGML_TYPE_QLUTATTN_KV2_128x128 ||
-                            node->type == GGML_TYPE_QLUTATTN_KV4_128x128) {
+                        if (node->type == GGML_TYPE_QLUTATTN_K1_128x128 ||
+                            node->type == GGML_TYPE_QLUTATTN_K2_128x128 ||
+                            node->type == GGML_TYPE_QLUTATTN_K4_128x128) {
                             //> We need do block quantization.
                             const int64_t PACK_SIZE         = 128;  //> 128x128
                             const int64_t PACK_CHUNK_SIZE   = 128;  //> 128x128

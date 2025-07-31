@@ -500,13 +500,13 @@ int main() {
     ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, v->nb[1],
                                              v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
 
-    ggml_tensor * k_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
-                                                      head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+    ggml_tensor * k_qlutattn_seg =
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     // NOTICE : Debugging.
     ggml_tensor * v_qlutattn_seg =
         ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
-    // ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
+    // ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K4_128x128,
     //                                                   head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     //> Do quantization.
