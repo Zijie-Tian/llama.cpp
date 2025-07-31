@@ -7445,11 +7445,11 @@ static void ggml_compute_forward_flash_attn_ext_f16(const ggml_compute_params * 
     }
 }
 
-
 static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params * params, const ggml_tensor * q,
-                                            const ggml_tensor * k, const ggml_tensor * v, const ggml_tensor * mask,
-                                            float * dst_data, void * workspace, const float scale, const float max_bias,
-                                            const float logit_softcap) {
+                                                     const ggml_tensor * k, const ggml_tensor * v,
+                                                     const ggml_tensor * mask, float * dst_data, void * workspace,
+                                                     const float scale, const float max_bias,
+                                                     const float logit_softcap) {
     //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
     //> K:      [head_dim, kv_len,   n_q_head, n_q_batch]
     //> V:      [head_dim, kv_len,   n_q_head, n_q_batch]
@@ -7477,16 +7477,16 @@ static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params *
     const int ith = params->ith;
     const int nth = params->nth;
 
-    const int64_t DK = nek0;         //> head_dim
-    const int64_t DV = nev0;         //> head_dim
-    const int64_t N  = neq1;         //> q_len
+    const int64_t DK = nek0;          //> head_dim
+    const int64_t DV = nev0;          //> head_dim
+    const int64_t N  = neq1;          //> q_len
 
     const int64_t Q_LEN      = neq1;  //> q_len
     const int64_t N_Q_HEADS  = neq2;  //> n_q_head
     const int64_t BATCH_SIZE = neq3;  //> batch_size
 
-    GGML_ASSERT(ne0 == DV);          //> head_dim
-    GGML_ASSERT(ne2 == N);           //> q_len
+    GGML_ASSERT(ne0 == DV);           //> head_dim
+    GGML_ASSERT(ne2 == N);            //> q_len
 
     // input tensor rows must be contiguous
     //> QKV cannot do transpose.
@@ -7545,8 +7545,9 @@ static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params *
     const int64_t STATES_SIZE     = 4 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float);  // 2x for quantized and fp32
     const int64_t QKV_BUFFER_SIZE = 3 * DK * sizeof(float);                              // VKQ32, V32 and Q_q
 
-    float * state_data = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE);               //> Up states buffer.
-    float * VKQ32      = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE);    // FP32 VKQ accumulator
+    float * state_data = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE);  //> Up states buffer.
+    float * VKQ32 =
+        (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE);     // FP32 VKQ accumulator
 
     GGML_ASSERT((q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float) && "fattn: unsupported V-type");
@@ -7569,8 +7570,6 @@ static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params *
         // float       * VKQ32 = (float       *) params->wdata + output_size * 2
         //     + ith*(2 * Q_LEN * N_Q_HEADS + 1*DK + 2*DV + CACHE_LINE_SIZE_F32) + 2 * Q_LEN * N_Q_HEADS; // FP32 VKQ accumulator
 
-
-
         float *       V32   = (VKQ32 + 1 * DV);                  // (temporary) FP32 V buffer
         ggml_fp16_t * VKQ16 = (ggml_fp16_t *) (VKQ32 + 1 * DV);  // (temporary) FP16 VKQ accumulator
         ggml_fp16_t * Q_q   = (ggml_fp16_t *) (VKQ32 + 2 * DV);  // (temporary) buffer for Q converted to quantized/FP16
@@ -7587,10 +7586,10 @@ static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params *
         // Initialize Q_q buffer to prevent NaN
         memset(Q_q, 0, DK * sizeof(ggml_fp16_t));
 
-        const ggml_fp16_t * mp = mask ? (ggml_fp16_t *) ((char *) mask->data + iq1 * mask->nb[1]) : NULL;
+        const ggml_fp16_t * mp  = mask ? (ggml_fp16_t *) ((char *) mask->data + iq1 * mask->nb[1]) : NULL;
         // k indices
-        const int ik3 = iq3 / rk3;
-        const int ik2 = iq2 / rk2;
+        const int           ik3 = iq3 / rk3;
+        const int           ik2 = iq2 / rk2;
 
         // v indices
         const int iv3 = iq3 / rv3;
@@ -7778,16 +7777,16 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
     const int64_t DV             = PACK_SIZE;
 
     const int64_t QLUT_SIZE       = DK / 4 * 16 * sizeof(uint8_t);
-    const int64_t QLUT_SCALE_SIZE = DK / ACT_GROUP_SIZE * sizeof(uint16_t) * 2;         // 2 for lut_scale and lut_biases.
-    const int64_t STATES_SIZE     = 4 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float); // 2x for quantized and fp32
-    const int64_t QKV_BUFFER_SIZE = 3 * DK * sizeof(float);                             // VKQ32, V32 and Q_q
+    const int64_t QLUT_SCALE_SIZE = DK / ACT_GROUP_SIZE * sizeof(uint16_t) * 2;  // 2 for lut_scale and lut_biases.
+    const int64_t STATES_SIZE     = 4 * BATCH_SIZE * N_Q_HEADS * Q_LEN * sizeof(float);  // 2x for quantized and fp32
+    const int64_t QKV_BUFFER_SIZE = 3 * DK * sizeof(float);                              // VKQ32, V32 and Q_q
     const int64_t OUTPUT_SIZE     = 2 * N_Q_HEADS * Q_LEN * DV * sizeof(float);
     const int64_t PER_THREAD_BUFFER_SIZE =
         QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE + QKV_BUFFER_SIZE + CACHE_LINE_SIZE_F32;
 
     // input tensor rows must be contiguous
     //> QKV cannot do transpose.
-    GGML_ASSERT(ne2  == Q_LEN);  //> q_len
+    GGML_ASSERT(ne2 == Q_LEN);  //> q_len
     GGML_ASSERT(nbq0 == ggml_type_size(q->type));
     GGML_ASSERT(nbk0 == ggml_type_size(k->type));
     GGML_ASSERT(nbv0 == ggml_type_size(v->type));
@@ -7805,24 +7804,26 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
         scale_adjusted /= logit_softcap;
     }
 
-    const ggml_type      k_vec_dot_type         = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
-    const ggml_vec_dot_f16_t kq_vec_dot         = ggml_get_type_traits_cpu(k->type)->vec_dot_f16;
-    const ggml_vec_dot_f16_t pv_vec_dot_fp16    = ggml_get_type_traits_cpu(v->type)->vec_dot_f16;
-    const ggml_vec_dot_t pv_vec_dot             = ggml_get_type_traits_cpu(v->type)->vec_dot;
+    const ggml_type          k_vec_dot_type  = ggml_get_type_traits_cpu(k->type)->vec_dot_type;
+    const ggml_vec_dot_f16_t kq_vec_dot      = ggml_get_type_traits_cpu(k->type)->vec_dot_f16;
+    const ggml_vec_dot_f16_t pv_vec_dot_fp16 = ggml_get_type_traits_cpu(v->type)->vec_dot_f16;
+    const ggml_vec_dot_t     pv_vec_dot      = ggml_get_type_traits_cpu(v->type)->vec_dot;
 
-    int64_t        type_size        = ggml_type_size(k->type);  //> Quantized KV cache Block type size.
+    int64_t type_size = ggml_type_size(k->type);  //> Quantized KV cache Block type size.
 
     // const int64_t N_KV_HEAD       = nek0 / (PACK_SIZE * PACK_CHUNK_SIZE);  //> n_kv_head
-    
+
     //> Q:      [head_dim, q_len,    n_q_head, n_q_batch]
     //> K:      [head_dim * PACK_CHUNK_SIZE, kv_len / PACK_CHUNK_SIZE,   n_q_head, n_q_batch]
     //> V:      [head_dim * PACK_CHUNK_SIZE, kv_len / PACK_CHUNK_SIZE,   n_q_head, n_q_batch]
     //> Mask:   [q_len,    n_q_head, 1,        n_q_batch]
-    
+
     //> Locate the workspace buffer.
     const uint8_t * pth_qLUT_buffer = (const uint8_t *) workspace;
-    float * state_data              = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE / 2);   //> Down states buffer.
-    float * VKQ32                   = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE);       // FP32 VKQ accumulator
+    float *         state_data      = (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE +
+                                    STATES_SIZE / 2);                            //> Down states buffer.
+    float *         VKQ32 =
+        (float *) ((const uint8_t *) workspace + QLUT_SIZE + QLUT_SCALE_SIZE + STATES_SIZE);  // FP32 VKQ accumulator
 
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
@@ -7834,12 +7835,12 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
             (ir - iq3 * neq2 * neq1 - iq2 * neq1);  //> (ir - iq3 * n_q_head * seq_len - iq2*seq_len)   => Sequence idx.
 
         // const uint32_t h = iq2;                     // head index
-        
+
         const uint8_t * qLUT_buffer = (const uint8_t *) params->wdata + ir * (QLUT_SIZE + QLUT_SCALE_SIZE);
 
         //> Change all M/S to ggml_fp16_t
-        float M = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0];
-        float S = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1];
+        float       M      = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 0];
+        float       S      = state_data[(iq1 * N_Q_HEADS + iq2) * 2 + 1];
         ggml_fp16_t M_fp16 = ggml_fp32_to_fp16(M);
 
         float *       V32   = (VKQ32 + 1 * DV);                  // (temporary) FP32 V buffer
@@ -7860,9 +7861,9 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
         int standard_valid = 0;
         for (int64_t idx_chunk = 0; idx_chunk < nek1; ++idx_chunk) {
             // TODO: Should compute multi heads in one step.
-            // NOTICE : This qk_buffer 
-            kq_vec_dot(PACK_SIZE, qk_buffer, PACK_SIZE,
-                         (uint8_t *) k->data + idx_chunk * type_size, PACK_SIZE, qLUT_buffer, PACK_SIZE, PACK_SIZE);
+            // NOTICE : This qk_buffer
+            kq_vec_dot(PACK_SIZE, qk_buffer, PACK_SIZE, (uint8_t *) k->data + idx_chunk * type_size, PACK_SIZE,
+                       qLUT_buffer, PACK_SIZE, PACK_SIZE);
 
             // //> 1 / sqrt(DK)
             // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
@@ -7876,14 +7877,13 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                 }
             }
             for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
-                qk_buffer[i] = ggml_fp32_to_fp16( expf(ggml_fp16_to_fp32(qk_buffer[i]) - ggml_fp16_to_fp32(M_fp16)) );
+                qk_buffer[i] = ggml_fp32_to_fp16(expf(ggml_fp16_to_fp32(qk_buffer[i]) - ggml_fp16_to_fp32(M_fp16)));
                 S += ggml_compute_fp16_to_fp32(qk_buffer[i]);
             }
             // // float EXP_SUM_INV = 1.0f / S;
             // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
             //     qk_buffer[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(qk_buffer[i]) / S);
             // }
-
 
             //> ===================================================================================================
             //> PV main loop.
@@ -7898,7 +7898,7 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                 }
 
                 // memcpy(tmp_f32, (const float *) v->data + idx_k * PACK_SIZE, PACK_SIZE * sizeof(float));
-                ggml_vec_mad_f32(PACK_CHUNK_SIZE, VKQ32,  tmp_f32, GGML_FP16_TO_FP32(qk_buffer[idx_k]));
+                ggml_vec_mad_f32(PACK_CHUNK_SIZE, VKQ32, tmp_f32, GGML_FP16_TO_FP32(qk_buffer[idx_k]));
             }
 
             // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
@@ -7924,7 +7924,7 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
             // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
             //     VKQ32[i] = GGML_FP16_TO_FP32(VKQ16[i]);
             // }
-            
+
             // ggml_vec_mad_f32(PACK_SIZE, dst_data + ir * PACK_CHUNK_SIZE, VKQ32, 1.0f);
         }
 
@@ -8439,7 +8439,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
         ggml_flash_attn_ext_qlutattn_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16,
-                                        (void *) workspace, scale, max_bias, logit_softcap);
+                                                 (void *) workspace, scale, max_bias, logit_softcap);
     }
 
     ggml_barrier(params->threadpool);
@@ -8504,8 +8504,6 @@ void ggml_compute_forward_flash_attn_ext(const ggml_compute_params * params, con
         case GGML_PREC_DEFAULT:
         case GGML_PREC_WITH_STATE:
             {
-                // ggml_tensor *
-
                 // Enhanced function with state managed via workspace
                 // CRITICAL FIX: mask_quant should be NULL if not provided
                 const ggml_tensor * mask_quant = (dst->src[6] != NULL) ? dst->src[6] : NULL;

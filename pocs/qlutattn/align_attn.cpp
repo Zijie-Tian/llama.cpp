@@ -365,7 +365,7 @@ int main() {
     // Create tensors for flash attention
     // Format: [head_dim, seq_len, n_heads,    1] for Q
     // Format: [head_dim, kv_len,  n_kv_heads, 1] for K, V
-    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads,   1);
+    ggml_tensor * q = ggml_new_tensor_4d(ctx, GGML_TYPE_F32, head_dim, seq_len, n_heads, 1);
     ggml_tensor * k = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
     ggml_tensor * v = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, kv_len, n_kv_heads, 1);
 
@@ -493,10 +493,10 @@ int main() {
 
     ggml_tensor * k_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
                                                       head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
-    
+
     // NOTICE : Debugging.
-    ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_F16,
-                                                      head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+    ggml_tensor * v_qlutattn_seg =
+        ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
     // ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_KV4_128x128,
     //                                                   head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
