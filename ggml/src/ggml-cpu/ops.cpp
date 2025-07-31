@@ -7872,18 +7872,16 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
 
             //> 3-pass to get softmax.
             for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+                qk_buffer[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(qk_buffer[i]) / sqrtf(128));  //> 1 / sqrt(DK)
                 if (ggml_fp16_to_fp32(qk_buffer[i]) > ggml_fp16_to_fp32(M_fp16)) {
-                    M_fp16 = qk_buffer[i];
+                    M_fp16 = ggml_fp32_to_fp16(ggml_fp16_to_fp32(qk_buffer[i]) / sqrtf(128));    //> 1 / sqrt(DK)
                 }
             }
             for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
-                qk_buffer[i] = ggml_fp32_to_fp16(expf(ggml_fp16_to_fp32(qk_buffer[i]) - ggml_fp16_to_fp32(M_fp16)));
+                float gap    = ggml_fp16_to_fp32(qk_buffer[i]) - ggml_fp16_to_fp32(M_fp16);
+                qk_buffer[i] = ggml_fp32_to_fp16(expf(gap));
                 S += ggml_compute_fp16_to_fp32(qk_buffer[i]);
             }
-            // // float EXP_SUM_INV = 1.0f / S;
-            // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
-            //     qk_buffer[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(qk_buffer[i]) / S);
-            // }
 
             //> ===================================================================================================
             //> PV main loop.
@@ -7901,9 +7899,9 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                 ggml_vec_mad_f32(PACK_CHUNK_SIZE, VKQ32, tmp_f32, GGML_FP16_TO_FP32(qk_buffer[idx_k]));
             }
 
-            // for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
-            //     VKQ32[i] = GGML_FP16_TO_FP32(VKQ16[i]) / S;
-            // }
+            for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
+                VKQ32[i] = VKQ32[i] / S;
+            }
 
             memcpy(dst_data, VKQ32, PACK_CHUNK_SIZE * sizeof(float));
 

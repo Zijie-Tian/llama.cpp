@@ -41,6 +41,14 @@ static void fill_tensor_f16(ggml_tensor * dst, float min_val = -1.0f, float max_
     }
 }
 
+static void fake_rand_tensor_f32(ggml_tensor * dst) {
+    float * data       = (float *) dst->data;
+    size_t  n_elements = ggml_nelements(dst);
+    for (size_t i = 0; i < n_elements; i++) {
+        data[i] = (float) (i % 4);  // Fake pattern
+    }
+}
+
 static void set_tensor_f32(ggml_tensor * dst, float value) {
     float * data       = (float *) dst->data;
     size_t  n_elements = ggml_nelements(dst);
@@ -385,12 +393,13 @@ int main() {
 
     // Fill with FIXED reproducible data
     printf("\nGenerating fixed test data (seed=42)...\n");
-    fill_tensor_f32(q, 0.f, 0.8f);
-    fill_tensor_f16(k, 0.f, 1.f);
+    // fill_tensor_f32(q, 0.f, 0.8f);
+    fake_rand_tensor_f32(q);
+    // fill_tensor_f16(k, 0.f, 1.f);
     fill_tensor_f16(v, 0.f, 1.f);
 
     // set_tensor_f32(q, 1.0f);
-    // set_tensor_f16(k, 0.5f);
+    set_tensor_f16(k, 1.f);
     // set_tensor_f16(v, 0.25f);
 
     // Initialize mask (causal mask - positions can only see previous and current KV)
@@ -651,8 +660,8 @@ int main() {
             for (int s = 0; s < seq_len; ++s) {
                 for (int d = 0; d < head_dim; ++d) {
                     int ti                = h * seq_len * head_dim + s * head_dim + d;
-                    int ci                = d + s * head_dim + h * head_dim * seq_len;
                     torch_result_data[ci] = trd[ti];
+                    int ci                = d + s * head_dim + h * head_dim * seq_len;
                 }
             }
         }
