@@ -19,6 +19,7 @@
 
 // Use fixed seed for reproducible results
 static std::mt19937 g_rng(std::random_device{}());
+
 // static std::mt19937 g_rng(42);
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
@@ -337,7 +338,7 @@ int main() {
     const int seq_len        = 1;
     const int kv_len         = 1024;  // Will be split into segments
     const int n_threads      = 4;
-    const int kv_segments    = 2;    // Split KV into 2 segments
+    const int kv_segments    = 2;     // Split KV into 2 segments
     const int kv_segment_len = 128;
 
     // // Test parameters
@@ -495,12 +496,14 @@ int main() {
     ggml_tensor * k_permuted = ggml_cont(ctx, ggml_permute(ctx, k_reshape_op, 0, 2, 1, 3));
     ggml_tensor * v_permuted = ggml_cont(ctx, ggml_permute(ctx, v_reshape_op, 0, 2, 1, 3));
 
-    ggml_tensor * k_permuted_view = ggml_view_4d(
-        ctx, k_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, k_permuted->nb[1] * n_kv_heads,
-        k_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads);
-    ggml_tensor * v_permuted_view = ggml_view_4d(
-        ctx, v_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, v_permuted->nb[1] * n_kv_heads,
-        v_permuted->nb[1] * n_kv_heads * n_chunks, v_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads);
+    ggml_tensor * k_permuted_view =
+        ggml_view_4d(ctx, k_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1,
+                     k_permuted->nb[1] * n_kv_heads, k_permuted->nb[1] * n_kv_heads * n_chunks,
+                     k_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads);
+    ggml_tensor * v_permuted_view =
+        ggml_view_4d(ctx, v_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1,
+                     v_permuted->nb[1] * n_kv_heads, v_permuted->nb[1] * n_kv_heads * n_chunks,
+                     v_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads);
 
     {
         ggml_cgraph * gf = ggml_new_graph(ctx);

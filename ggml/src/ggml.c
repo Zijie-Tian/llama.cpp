@@ -6101,9 +6101,9 @@ size_t ggml_quantize_chunk(enum ggml_type type, const float * src, void * dst, i
         case GGML_TYPE_IQ4_XS:
             result = quantize_iq4_xs(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix);
             break;
-        // case GGML_TYPE_QLUTATTN_K1_128x128: result = quantize_qlutattn_w1g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        // case GGML_TYPE_QLUTATTN_K2_128x128: result = quantize_qlutattn_w2g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
-        // case GGML_TYPE_QLUTATTN_K4_128x128: result = quantize_qlutattn_w4g128(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        // case GGML_TYPE_QLUTATTN_K1_128x128: result = quantize_block_qlutattn_k1_128x128_ref(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        // case GGML_TYPE_QLUTATTN_K2_128x128: result = quantize_block_qlutattn_k2_128x128_ref(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        // case GGML_TYPE_QLUTATTN_K4_128x128: result = quantize_block_qlutattn_k4_128x128_ref(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_F16:
             {
                 size_t elemsize = sizeof(ggml_fp16_t);

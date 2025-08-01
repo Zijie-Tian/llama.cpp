@@ -8040,11 +8040,12 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
 
         for (int64_t idx_chunk = 0; idx_chunk < nek1; ++idx_chunk) {
             ggml_fp16_t M_fp16_old = M_fp16;
-            float S_old = S;
+            float       S_old      = S;
 
             kq_vec_dot(PACK_SIZE, qk_buffer, PACK_SIZE, (uint8_t *) k->data + idx_chunk * nbk1 + ik_head * type_size,
                        PACK_SIZE, qLUT_buffer, PACK_SIZE, PACK_SIZE);
 
+            // TODO: Following block is INEffeicient
             //> 3-pass to get softmax.
             for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
                 qk_buffer[i] = ggml_fp32_to_fp16(ggml_fp16_to_fp32(qk_buffer[i]) / sqrtf(128));  //> 1 / sqrt(DK)
@@ -8097,7 +8098,7 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                             PACK_SIZE, PACK_SIZE);
 
             for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
-                VKQ32[i] = VKQ32[i] * (S_old / S)  + GGML_FP16_TO_FP32(VKQ16[i]) / S;
+                VKQ32[i] = VKQ32[i] * (S_old / S) + GGML_FP16_TO_FP32(VKQ16[i]) / S;
             }
         }
 
@@ -8660,7 +8661,7 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
         // float * imm_fp16_vec  = (float *) ((uint8_t *) imm_buffer_fp16);
         // float * imm_quant_vec = (float *) ((uint8_t *) imm_buffer_quant);
 
-        float scale_fp16  = expf(M_fp16  - M) * S_fp16 / S;
+        float scale_fp16  = expf(M_fp16 - M) * S_fp16 / S;
         float scale_quant = expf(M_quant - M) * S_quant / S;
 
         ggml_vec_scale_f32(DV, imm_fp16_vec, scale_fp16);

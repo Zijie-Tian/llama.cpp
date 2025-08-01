@@ -298,6 +298,8 @@ static std::string var_to_str(ggml_scale_mode mode) {
 #define VARS_TO_STR11(a, b, c, d, e, f, g, h, i, j, k) VAR_TO_STR(a) + "," + VARS_TO_STR10(b, c, d, e, f, g, h, i, j, k)
 #define VARS_TO_STR12(a, b, c, d, e, f, g, h, i, j, k, l) \
     VAR_TO_STR(a) + "," + VARS_TO_STR11(b, c, d, e, f, g, h, i, j, k, l)
+#define VARS_TO_STR13(a, b, c, d, e, f, g, h, i, j, k, l, m) \
+    VAR_TO_STR(a) + "," + VARS_TO_STR12(b, c, d, e, f, g, h, i, j, k, l, m)
 
 #ifdef GGML_USE_SYCL
 static bool inline _isinf(float f) {
@@ -3303,6 +3305,107 @@ struct test_flash_attn_ext : public test_case {
     bool grad_precise() override { return true; }
 };
 
+struct test_qlutattn_ext : public test_case {
+    const int64_t hsk;          // K head size
+    const int64_t hsv;          // V head size
+    const int64_t nh;           // num heads
+    const int64_t nr;           // repeat in Q, tests for grouped-query attention
+    const int64_t kv;           // kv size
+    const int64_t nb;           // batch size
+
+    const bool mask;            // use mask
+
+    const float max_bias;       // ALiBi
+    const float logit_softcap;  // Gemma 2
+
+    const ggml_prec        prec;
+    const ggml_type        type_K;
+    const ggml_type        type_V;
+    std::array<int32_t, 4> permute;
+
+    std::string vars() override {
+        return VARS_TO_STR13(hsk, hsv, nh, nr, kv, nb, mask, max_bias, logit_softcap, prec, type_K, type_V, permute);
+    }
+
+    double max_nmse_err() override { return 5e-4; }
+
+    uint64_t op_flops(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        // Just counting matmul costs:
+        // Q*K^T is nb x hsk x kv, P*V is nb x kv x hsv, per head
+        return 2 * nh * nr * nb * (hsk + hsv) * kv;
+    }
+
+    test_qlutattn_ext(int64_t hsk = 128, int64_t hsv = 128, int64_t nh = 32, int64_t nr = 1, int64_t kv = 96,
+                      int64_t nb = 8, bool mask = true, float max_bias = 0.0f, float logit_softcap = 0.0f,
+                      ggml_prec prec = GGML_PREC_MIXED, ggml_type type_K = GGML_TYPE_QLUTATTN_K4_128x128,
+                      ggml_type              type_V  = GGML_TYPE_QLUTATTN_V4_128x128,
+                      std::array<int32_t, 4> permute = { 0, 1, 2, 3 }) :
+        hsk(hsk),
+        hsv(hsv),
+        nh(nh),
+        nr(nr),
+        kv(kv),
+        nb(nb),
+        mask(mask),
+        max_bias(max_bias),
+        logit_softcap(logit_softcap),
+        prec(prec),
+        type_K(type_K),
+        type_V(type_V),
+        permute(permute) {}
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        GGML_ASSERT(type_K == GGML_TYPE_QLUTATTN_K4_128x128 || type_V == GGML_TYPE_QLUTATTN_V4_128x128);
+
+        const int64_t PACK_SIZE       = 128;  //> 128x128
+        const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+        //
+        const auto &  create_permuted = [&](ggml_type type, int64_t ne0, int64_t ne1, int64_t ne2,
+                                           int64_t ne3) -> ggml_tensor * {
+            int64_t ne[4] = { ne0, ne1, ne2, ne3 };
+            int64_t ne_perm[4];
+            for (int i = 0; i < 4; ++i) {
+                ne_perm[permute[i]] = ne[i];
+            }
+            ggml_tensor * t = ggml_new_tensor_4d(ctx, type, ne_perm[0], ne_perm[1], ne_perm[2], ne_perm[3]);
+            if (permute != std::array<int32_t, 4>{ 0, 1, 2, 3 }) {
+                t = ggml_permute(ctx, t, permute[0], permute[1], permute[2], permute[3]);
+            }
+            return t;
+        };
+
+        ggml_tensor * q          = create_permuted(GGML_TYPE_F16, hsk, 1, nr * nh, nb);
+        ggml_tensor * k_fp16     = create_permuted(GGML_TYPE_F16, hsk, PACK_CHUNK_SIZE, nh, nb);
+        ggml_tensor * v_fp16     = create_permuted(GGML_TYPE_F16, hsk, PACK_CHUNK_SIZE, nh, nb);
+        ggml_tensor * k_qlutattn = create_permuted(type_K, hsk * PACK_CHUNK_SIZE * nh, kv / PACK_CHUNK_SIZE, 1, nb);
+        ggml_tensor * v_qlutattn = create_permuted(type_V, hsk * PACK_CHUNK_SIZE * nh, kv / PACK_CHUNK_SIZE, 1, nb);
+
+        ggml_tensor * m_fp16     = nullptr;
+        ggml_tensor * m_qlutattn = nullptr;
+        if (mask) {
+            m_fp16 = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, PACK_CHUNK_SIZE, GGML_PAD(nb * 1, GGML_KQ_MASK_PAD), 1, 1);
+            ggml_set_name(m_fp16, "m_fp16");
+            m_qlutattn =
+                ggml_new_tensor_4d(ctx, GGML_TYPE_F16, kv - PACK_CHUNK_SIZE, GGML_PAD(nb * 1, GGML_KQ_MASK_PAD), 1, 1);
+            ggml_set_name(m_qlutattn, "m_qlutattn");
+        }
+
+        ggml_tensor * out = ggml_flash_attn_mixed(ctx, q, k_fp16, v_fp16, m_fp16, k_qlutattn, v_qlutattn, m_qlutattn,
+                                                  1.0f / sqrtf(hsk), max_bias, logit_softcap);
+        ggml_flash_attn_ext_set_prec(out, prec);
+        ggml_set_name(out, "out");
+
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) {
+        // TODO: Do quant and pack.
+    }
+
+    bool grad_precise() override { return true; }
+};
+
 // GGML_OP_CROSS_ENTROPY_LOSS
 struct test_cross_entropy_loss : public test_case {
     const ggml_type              type;
@@ -4609,18 +4712,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
             for (int nr : {
                      1,
                  }) {
-                test_cases.emplace_back(new test_flash_attn_ext(
-                    //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
-                    hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
-                test_cases.emplace_back(new test_flash_attn_ext(
-                    //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
-                    hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0));
-                test_cases.emplace_back(new test_flash_attn_ext(
-                    //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
-                    hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
-                test_cases.emplace_back(new test_flash_attn_ext(
-                    //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
-                    hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q2_K));
+                // NOTE: Mixed precision.
+                test_cases.emplace_back(new test_qlutattn_ext(hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_MIXED,
+                                                              GGML_TYPE_QLUTATTN_K4_128x128,
+                                                              GGML_TYPE_QLUTATTN_V4_128x128));
+
+                // // NOTE: Original flash attn perf.
+                // test_cases.emplace_back(new test_flash_attn_ext(
+                //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
+                //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
+                // test_cases.emplace_back(new test_flash_attn_ext(
+                //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
+                //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0));
+                // test_cases.emplace_back(new test_flash_attn_ext(
+                //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
+                //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
+                // test_cases.emplace_back(new test_flash_attn_ext(
+                //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
+                //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q2_K));
             }
         }
     }
