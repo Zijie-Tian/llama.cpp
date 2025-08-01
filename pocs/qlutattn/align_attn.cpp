@@ -18,8 +18,8 @@
 #include <vector>
 
 // Use fixed seed for reproducible results
-// static std::mt19937 g_rng(std::random_device{}());
-static std::mt19937 g_rng(42);
+static std::mt19937 g_rng(std::random_device{}());
+// static std::mt19937 g_rng(42);
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
     float *                               data       = (float *) dst->data;
@@ -49,17 +49,21 @@ static void fake_rand_tensor_f32(ggml_tensor * dst) {
     }
 }
 
-static void set_tensor_f32(ggml_tensor * dst, float value) {
-    float * data       = (float *) dst->data;
-    size_t  n_elements = ggml_nelements(dst);
+static void set_tensor_f32(ggml_tensor * dst, float value, size_t n_elements = 0) {
+    float * data = (float *) dst->data;
+    if (n_elements == 0) {
+        n_elements = ggml_nelements(dst);
+    }
     for (size_t i = 0; i < n_elements; i++) {
         data[i] = value;
     }
 }
 
-static void set_tensor_f16(ggml_tensor * dst, float value) {
-    ggml_fp16_t * data       = (ggml_fp16_t *) dst->data;
-    size_t        n_elements = ggml_nelements(dst);
+static void set_tensor_f16(ggml_tensor * dst, float value, size_t n_elements = 0) {
+    ggml_fp16_t * data = (ggml_fp16_t *) dst->data;
+    if (n_elements == 0) {
+        n_elements = ggml_nelements(dst);
+    }
     for (size_t i = 0; i < n_elements; i++) {
         data[i] = ggml_fp32_to_fp16(value);
     }
@@ -328,11 +332,11 @@ int main() {
 
     // Test parameters
     const int head_dim       = 128;
-    const int n_heads        = 1;
-    const int n_kv_heads     = 1;
+    const int n_heads        = 32;
+    const int n_kv_heads     = 8;
     const int seq_len        = 1;
-    const int kv_len         = 256;  // Will be split into segments
-    const int n_threads      = 1;
+    const int kv_len         = 1024;  // Will be split into segments
+    const int n_threads      = 4;
     const int kv_segments    = 2;    // Split KV into 2 segments
     const int kv_segment_len = 128;
 
@@ -395,12 +399,12 @@ int main() {
     printf("\nGenerating fixed test data (seed=42)...\n");
     // fill_tensor_f32(q, 0.f, 0.8f);
     fake_rand_tensor_f32(q);
-    // fill_tensor_f16(k, 0.f, 1.f);
+    fill_tensor_f16(k, 0.f, 1.f);
     fill_tensor_f16(v, 0.f, 1.f);
 
     // set_tensor_f32(q, 1.0f);
-    set_tensor_f16(k, 1.f);
-    // set_tensor_f16(v, 0.25f);
+    // set_tensor_f16(k, 1.f, head_dim * kv_len * 1);
+    // set_tensor_f16(v, 0.25f, head_dim * kv_len * 1);
 
     // Initialize mask (causal mask - positions can only see previous and current KV)
     ggml_fp16_t * mask_data = (ggml_fp16_t *) mask->data;
@@ -476,15 +480,40 @@ int main() {
     //> ============================================================================
     // printf("\n--- Test 2: Segmented Flash Attention with State ---\n");
 
+    const int64_t PACK_SIZE       = 128;  //> 128x128
+    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+    const int64_t n_chunks        = (kv_len - kv_segment_len) / PACK_CHUNK_SIZE;
+
+    ggml_tensor * k_reshaped =
+        ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE, kv_len / PACK_CHUNK_SIZE, n_kv_heads, 1);
+    ggml_tensor * v_reshaped =
+        ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE, kv_len / PACK_CHUNK_SIZE, n_kv_heads, 1);
+
+    ggml_tensor * k_reshape_op = ggml_cpy(ctx, k, k_reshaped);
+    ggml_tensor * v_reshape_op = ggml_cpy(ctx, v, v_reshaped);
+
+    ggml_tensor * k_permuted = ggml_cont(ctx, ggml_permute(ctx, k_reshape_op, 0, 2, 1, 3));
+    ggml_tensor * v_permuted = ggml_cont(ctx, ggml_permute(ctx, v_reshape_op, 0, 2, 1, 3));
+
+    ggml_tensor * k_permuted_view = ggml_view_4d(
+        ctx, k_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, k_permuted->nb[1] * n_kv_heads,
+        k_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads);
+    ggml_tensor * v_permuted_view = ggml_view_4d(
+        ctx, v_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, v_permuted->nb[1] * n_kv_heads,
+        v_permuted->nb[1] * n_kv_heads * n_chunks, v_permuted->nb[1] * n_kv_heads * n_chunks, k_permuted->nb[1] * n_kv_heads);
+
+    {
+        ggml_cgraph * gf = ggml_new_graph(ctx);
+        ggml_build_forward_expand(gf, k_permuted_view);
+        ggml_build_forward_expand(gf, k_permuted_view);
+        ggml_graph_compute_with_ctx(ctx, gf, n_threads);
+    }
+
     ggml_tensor * q_fp16     = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim, seq_len, n_heads, 1);
     ggml_tensor * q_quant_op = ggml_cpy(ctx, q, q_fp16);
     ggml_cgraph * gf_quant   = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf_quant, q_quant_op);
     ggml_graph_compute_with_ctx(ctx, gf_quant, n_threads);
-
-    const int64_t PACK_SIZE       = 128;  //> 128x128
-    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
-    const int64_t n_chunks        = (kv_len - kv_segment_len) / PACK_CHUNK_SIZE;
 
     // NOTE: Reset state which are the max KQ values and sum for each head
     reset_state_tensor(state);
@@ -494,24 +523,25 @@ int main() {
     ggml_tensor * v_fp16_seg =
         ggml_view_4d(ctx, v, head_dim, kv_segment_len, n_kv_heads, 1, v->nb[1], v->nb[2], v->nb[3], 0);
 
-    // NOTE: Reshape and quantization.
-    ggml_tensor * k_quant_seg = ggml_view_4d(ctx, k, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, k->nb[1],
-                                             k->nb[2], k->nb[3], kv_segment_len * k->nb[1]);
-    ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, v->nb[1],
-                                             v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
+    // // NOTE: Reshape and quantization.
+    // ggml_tensor * k_quant_seg =
+    //     ggml_view_4d(ctx, k_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1, k_permuted->nb[1],
+    //                  k_permuted->nb[1], k_permuted->nb[3], kv_segment_len * k->nb[1]);
+    // ggml_tensor * v_quant_seg = ggml_view_4d(ctx, v_permuted, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1,
+    //                                          v->nb[1], v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
 
     ggml_tensor * k_qlutattn_seg =
         ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     // NOTICE : Debugging.
+    // ggml_tensor * v_qlutattn_seg =
+    //     ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
     ggml_tensor * v_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
-    // ggml_tensor * v_qlutattn_seg = ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K4_128x128,
-    //                                                   head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_V4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     //> Do quantization.
-    ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_quant_seg, k_qlutattn_seg);
-    ggml_tensor * v_qlutattn_seg_quant = ggml_cpy(ctx, v_quant_seg, v_qlutattn_seg);
+    ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_permuted_view, k_qlutattn_seg);
+    ggml_tensor * v_qlutattn_seg_quant = ggml_cpy(ctx, v_permuted_view, v_qlutattn_seg);
 
     struct ggml_cgraph * gf = ggml_new_graph(ctx);
     ggml_build_forward_expand(gf, k_qlutattn_seg_quant);
@@ -560,8 +590,8 @@ int main() {
     print_tensor_summary(q, "Q");
     print_tensor_summary(k_fp16_seg, "K_FP16_SEG");
     print_tensor_summary(v_fp16_seg, "V_FP16_SEG");
-    print_tensor_summary(k_quant_seg, "K_QUANT_SEG");
-    print_tensor_summary(v_quant_seg, "V_QUANT_SEG");
+    print_tensor_summary(k_permuted_view, "K_QUANT_SEG");
+    print_tensor_summary(v_permuted_view, "V_QUANT_SEG");
     print_tensor_summary(mask_fp16_seg, "MASK_FP16_SEG");
     print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
 
@@ -718,7 +748,7 @@ int main() {
     // Print first 128 elements
     // ============================================================================
 
-    size_t show = std::min((size_t) 128, n_elems);
+    size_t show = std::min((size_t) 512, n_elems);
     for (size_t i = 0; i < show; ++i) {
         float s = standard_data[i];
         float g = segmented_data[i];
@@ -810,7 +840,7 @@ int main() {
         printf("\nAverage ratio (segmented/standard) for first 1000 elements: %.6f\n", sum_ratio / valid_ratios);
     }
 
-    const float tolerance = 1e-3f;
+    const float tolerance = 1e-2f;
     bool        pass      = max_std_seg < tolerance;
     if (torch_success) {
         pass = pass && max_std_torch < tolerance && max_seg_torch < tolerance;

@@ -941,7 +941,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_qlutattn_kv1_128x128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w1g128,   //> Fake
-        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv1_128x128_ref,
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_k1_128x128_ref,
     },
     [GGML_TYPE_QLUTATTN_K2_128x128] = {
         .type_name                = "qlutattn_kv2_128x128",
@@ -949,7 +949,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_qlutattn_kv2_128x128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w2g128,   //> Fake
-        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv2_128x128_ref,
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_k2_128x128_ref,
     },
     [GGML_TYPE_QLUTATTN_K4_128x128] = {
         .type_name                = "qlutattn_kv4_128x128",
@@ -957,7 +957,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_qlutattn_kv4_128x128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w4g128,   //> Fake
-        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv4_128x128_ref,
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_k4_128x128_ref,
     },
     [GGML_TYPE_QLUTATTN_V1_128x128] = {
         .type_name                = "qlutattn_kv1_128x128",
@@ -965,7 +965,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_qlutattn_kv1_128x128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w1g128,   //> Fake
-        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv1_128x128_ref,
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_v1_128x128_ref,
     },
     [GGML_TYPE_QLUTATTN_V2_128x128] = {
         .type_name                = "qlutattn_kv2_128x128",
@@ -973,7 +973,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_qlutattn_kv2_128x128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w2g128,   //> Fake
-        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv2_128x128_ref,
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_v2_128x128_ref,
     },
     [GGML_TYPE_QLUTATTN_V4_128x128] = {
         .type_name                = "qlutattn_kv4_128x128",
@@ -981,7 +981,7 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = sizeof(block_qlutattn_kv4_128x128),
         .is_quantized             = true,
         .to_float                 = (ggml_to_float_t) dequantize_row_qlutattn_w4g128,   //> Fake
-        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_kv4_128x128_ref,
+        .from_float_ref           = (ggml_from_float_t) quantize_block_qlutattn_v4_128x128_ref,
     },
 
     [GGML_TYPE_QLUTATTN_W1G128_PC] = {

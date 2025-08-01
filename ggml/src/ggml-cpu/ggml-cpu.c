@@ -432,23 +432,42 @@ static const struct ggml_type_traits_cpu type_traits_cpu[GGML_TYPE_COUNT] = {
 #endif
 #ifdef GGML_USE_QLUTATTN
     [GGML_TYPE_QLUTATTN_K1_128x128] = {
-        .from_float               = quantize_block_qlutattn_kv1_128x128,
+        .from_float               = quantize_block_qlutattn_k1_128x128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_QLUTATTN_K2_128x128] = {
-        .from_float               = quantize_block_qlutattn_kv2_128x128,
+        .from_float               = quantize_block_qlutattn_k2_128x128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
     [GGML_TYPE_QLUTATTN_K4_128x128] = {
-        .from_float               = quantize_block_qlutattn_kv4_128x128,
+        .from_float               = quantize_block_qlutattn_k4_128x128,
         .vec_dot_f16              = (ggml_vec_dot_f16_t) ggml_vec_dot_qlutattn_kv4_128x128,
         .vec_dot_type             = GGML_TYPE_F32,
         .nrows                    = 1,
     },
+    [GGML_TYPE_QLUTATTN_V1_128x128] = {
+        .from_float               = quantize_block_qlutattn_v1_128x128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_QLUTATTN_V2_128x128] = {
+        .from_float               = quantize_block_qlutattn_v2_128x128,
+        .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,  //> Fake
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+    [GGML_TYPE_QLUTATTN_V4_128x128] = {
+        .from_float               = quantize_block_qlutattn_v4_128x128,
+        .vec_dot_f16              = (ggml_vec_dot_f16_t) ggml_vec_dot_qlutattn_kv4_128x128,
+        .vec_dot_type             = GGML_TYPE_F32,
+        .nrows                    = 1,
+    },
+
     [GGML_TYPE_QLUTATTN_W1G128_PC] = {
         .from_float               = quantize_row_qlutattn_w1g128,
         .vec_dot                  = (ggml_vec_dot_t) ggml_vec_dot_f32,

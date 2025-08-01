@@ -173,6 +173,55 @@ static void pseudo_symmetric_quantize_f32(
     }
 }
 
+/**
+ * @brief Pseudo symmetric quantization of a float array.
+ *      NOTICE : This function is per-channel quantization.
+ * @param quantized
+ * @param input
+ * @param scales
+ * @param zeros
+ * @param n
+ * @param n_bit
+ * @param q_group_size (unused, retained for compatibility)
+ */
+static void pseudo_symmetric_quantize_pc_f32(
+    int8_t* quantized,
+    const float* input,
+    float* scales,
+    float* zeros,
+    int n,
+    int n_bit,
+    int q_group_size
+) {
+    GGML_ASSERT((q_group_size == 0 || q_group_size == -1 || n % q_group_size == 0) && "Invalid q_group_size");
+    int num_groups;
+    num_groups = n / q_group_size;
+
+    //> [-2^(n_bit - 1) + 1, 2^(n_bit - 1) - 1]
+    const int max_int = (1 << (n_bit - 1)) - 1;
+    const int min_int = -max_int;
+
+    for (int g = 0; g < num_groups; ++g) {
+        int start_idx = g;
+        int step = num_groups;
+
+        float max_abs_val = -FLT_MAX;
+        for (int i = start_idx; i < n; i += step) {
+            float abs_val = fabsf(input[i]);
+            if (abs_val > max_abs_val) max_abs_val = abs_val;
+        }
+
+        scales[g] = max_abs_val / max_int;
+        zeros[g]  = 0.0f;    // NOTE : zero point is 0 for symmetric quantization.
+
+        for (int i = start_idx; i < n; i += step) {
+            int quantized_val = (int)roundf(input[i] / scales[g]);
+            quantized_val = quantized_val < min_int ? min_int : (quantized_val > max_int ? max_int : quantized_val); // NOTE: CLIP
+            quantized[i] = (int8_t)quantized_val;
+        }
+    }
+}
+
 //> ===================================================================================================
 //> Following are QLUTATTN quantization functions.
 //> ===================================================================================================
@@ -233,17 +282,60 @@ static void pseudo_symmetric_quantize_128x128_f32(
     }
 }
 
-void quantize_block_qlutattn_kv1_128x128_ref(const float *restrict x, block_qlutattn_kv1_128x128 *restrict y, int64_t k) {
+void quantize_block_qlutattn_k1_128x128_ref(const float *restrict x, block_qlutattn_kv1_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV1_128x128 == 0);
 
     const int nb = k / QKLUTATTN_KV1_128x128;
 }
 
-void quantize_block_qlutattn_kv2_128x128_ref(const float *restrict x, block_qlutattn_kv2_128x128 *restrict y, int64_t k) {
+void quantize_block_qlutattn_k2_128x128_ref(const float *restrict x, block_qlutattn_kv2_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV2_128x128 == 0);
 }
 
-void quantize_block_qlutattn_kv4_128x128_ref(const float *restrict x, block_qlutattn_kv4_128x128 *restrict y, int64_t k) {
+void quantize_block_qlutattn_k4_128x128_ref(const float *restrict x, block_qlutattn_kv4_128x128 *restrict y, int64_t k) {
+    GGML_ASSERT(k % QKLUTATTN_KV4_128x128 == 0);
+
+    const int nb = k / QKLUTATTN_KV4_128x128;
+
+    int8_t pseudo_quant_buf[QKLUTATTN_KV4_128x128];
+
+    for (int i = 0; i < nb; i++) {
+        memset(pseudo_quant_buf, 0, sizeof(pseudo_quant_buf));
+
+        float * scale_ptr = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV4_128x128 / 2);
+        float * zero_ptr  = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV4_128x128 / 2 + 128 * sizeof(float));
+
+        pseudo_symmetric_quantize_f32(
+            (int8_t *) pseudo_quant_buf,
+            x + i * QKLUTATTN_KV4_128x128,
+            scale_ptr,
+            zero_ptr,
+            QKLUTATTN_KV4_128x128,
+            4,
+            128
+        );
+
+        for (int j = 0; j < QKLUTATTN_KV4_128x128 / 2; j++) {
+            const uint8_t x0 = (pseudo_quant_buf[j * 2 + 0] + (1 << (4 - 1)));
+            const uint8_t x1 = (pseudo_quant_buf[j * 2 + 1] + (1 << (4 - 1)));
+
+            //> 4-bits pack.
+            y[i].qs[j] = (x0 << 4) | (x1 << 0);
+        }
+    }
+}
+
+void quantize_block_qlutattn_v1_128x128_ref(const float *restrict x, block_qlutattn_kv1_128x128 *restrict y, int64_t k) {
+    GGML_ASSERT(k % QKLUTATTN_KV1_128x128 == 0);
+
+    const int nb = k / QKLUTATTN_KV1_128x128;
+}
+
+void quantize_block_qlutattn_v2_128x128_ref(const float *restrict x, block_qlutattn_kv2_128x128 *restrict y, int64_t k) {
+    GGML_ASSERT(k % QKLUTATTN_KV2_128x128 == 0);
+}
+
+void quantize_block_qlutattn_v4_128x128_ref(const float *restrict x, block_qlutattn_kv4_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV4_128x128 == 0);
 
     const int nb = k / QKLUTATTN_KV4_128x128;
