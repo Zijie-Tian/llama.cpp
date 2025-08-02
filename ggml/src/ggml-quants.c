@@ -286,10 +286,68 @@ void quantize_block_qlutattn_k1_128x128_ref(const float *restrict x, block_qluta
     GGML_ASSERT(k % QKLUTATTN_KV1_128x128 == 0);
 
     const int nb = k / QKLUTATTN_KV1_128x128;
+
+    int8_t pseudo_quant_buf[QKLUTATTN_KV1_128x128];
+
+    for (int i = 0; i < nb; i++) {
+        memset(pseudo_quant_buf, 0, sizeof(pseudo_quant_buf));
+
+        float * scale_ptr = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV1_128x128 / 2);
+        float * zero_ptr  = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV1_128x128 / 2 + 128 * sizeof(float));
+
+        pseudo_symmetric_quantize_f32(
+            (int8_t *) pseudo_quant_buf,
+            x + i * QKLUTATTN_KV1_128x128,
+            scale_ptr,
+            zero_ptr,
+            QKLUTATTN_KV1_128x128,
+            1,
+            128
+        );
+
+        for (int j = 0; j < QKLUTATTN_KV1_128x128 / 2; j++) {
+            // const uint8_t x0 = (pseudo_quant_buf[j * 2 + 0] + (1 << (1 - 1)));
+            // const uint8_t x1 = (pseudo_quant_buf[j * 2 + 1] + (1 << (1 - 1)));
+
+            // //> 4-bits pack.
+            // y[i].qs[j] = (x0 << 4) | (x1 << 0);
+        }
+    }
 }
 
 void quantize_block_qlutattn_k2_128x128_ref(const float *restrict x, block_qlutattn_kv2_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV2_128x128 == 0);
+
+    const int nb = k / QKLUTATTN_KV2_128x128;
+
+    int8_t pseudo_quant_buf[QKLUTATTN_KV2_128x128];
+
+    for (int i = 0; i < nb; i++) {
+        memset(pseudo_quant_buf, 0, sizeof(pseudo_quant_buf));
+
+        float * scale_ptr = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV2_128x128 / 4);
+        float * zero_ptr  = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV2_128x128 / 4 + 128 * sizeof(float));
+
+        pseudo_symmetric_quantize_f32(
+            (int8_t *) pseudo_quant_buf,
+            x + i * QKLUTATTN_KV2_128x128,
+            scale_ptr,
+            zero_ptr,
+            QKLUTATTN_KV2_128x128,
+            2,
+            128
+        );
+
+        for (int j = 0; j < QKLUTATTN_KV2_128x128 / 4; j++) {
+            const uint8_t x0 = (pseudo_quant_buf[j * 4 + 0] + (1 << (2 - 1)));
+            const uint8_t x1 = (pseudo_quant_buf[j * 4 + 1] + (1 << (2 - 1)));
+            const uint8_t x2 = (pseudo_quant_buf[j * 4 + 2] + (1 << (2 - 1)));
+            const uint8_t x3 = (pseudo_quant_buf[j * 4 + 3] + (1 << (2 - 1)));
+
+            //> 4-bits pack.
+            y[i].qs[j] = (x0 << 6) | (x1 << 4) | (x2 << 2) | (x3 << 0);
+        }
+    }
 }
 
 void quantize_block_qlutattn_k4_128x128_ref(const float *restrict x, block_qlutattn_kv4_128x128 *restrict y, int64_t k) {
@@ -333,6 +391,37 @@ void quantize_block_qlutattn_v1_128x128_ref(const float *restrict x, block_qluta
 
 void quantize_block_qlutattn_v2_128x128_ref(const float *restrict x, block_qlutattn_kv2_128x128 *restrict y, int64_t k) {
     GGML_ASSERT(k % QKLUTATTN_KV2_128x128 == 0);
+
+    const int nb = k / QKLUTATTN_KV2_128x128;
+
+    int8_t pseudo_quant_buf[QKLUTATTN_KV2_128x128];
+
+    for (int i = 0; i < nb; i++) {
+        memset(pseudo_quant_buf, 0, sizeof(pseudo_quant_buf));
+
+        float * scale_ptr = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV2_128x128 / 4);
+        float * zero_ptr  = (float *)((uint8_t *)(y[i].qs) + QKLUTATTN_KV2_128x128 / 4 + 128 * sizeof(float));
+
+        pseudo_symmetric_quantize_f32(
+            (int8_t *) pseudo_quant_buf,
+            x + i * QKLUTATTN_KV2_128x128,
+            scale_ptr,
+            zero_ptr,
+            QKLUTATTN_KV2_128x128,
+            2,
+            128
+        );
+
+        for (int j = 0; j < QKLUTATTN_KV2_128x128 / 4; j++) {
+            const uint8_t x0 = (pseudo_quant_buf[j * 4 + 0] + (1 << (2 - 1)));
+            const uint8_t x1 = (pseudo_quant_buf[j * 4 + 1] + (1 << (2 - 1)));
+            const uint8_t x2 = (pseudo_quant_buf[j * 4 + 2] + (1 << (2 - 1)));
+            const uint8_t x3 = (pseudo_quant_buf[j * 4 + 3] + (1 << (2 - 1)));
+
+            //> 4-bits pack.
+            y[i].qs[j] = (x0 << 6) | (x1 << 4) | (x2 << 2) | (x3 << 0);
+        }
+    }
 }
 
 void quantize_block_qlutattn_v4_128x128_ref(const float *restrict x, block_qlutattn_kv4_128x128 *restrict y, int64_t k) {

@@ -380,6 +380,52 @@ static void ggml_compute_forward_dup_f16(const ggml_compute_params * params, ggm
     }
 }
 
+struct QlutattnI1TypeAccessor {
+    static constexpr int BITS   = 1;
+    static constexpr int n_elem = 8 / BITS;
+
+    static uint8_t get_q(const void * data, int idx) {
+        const uint8_t * qs       = (const uint8_t *) data;
+        int             elem_idx = idx % n_elem;
+        return qs[idx / n_elem] >> ((n_elem - 1 - elem_idx) * BITS);
+    }
+
+    static ggml_fp16_t get_scale(const void * data, int idx, int group_size) {
+        const float * ss = (const float *) data;
+        float         s  = ss[idx / group_size];
+        return f32_to_f16(s);
+    }
+
+    static ggml_fp16_t get_zero_point(const void * data, int idx, int group_size) {
+        const float * zs = (const float *) data;
+        float         z  = zs[idx / group_size];
+        return f32_to_f16(z);
+    }
+};
+
+struct QlutattnI2TypeAccessor {
+    static constexpr int BITS   = 2;
+    static constexpr int n_elem = 8 / BITS;
+
+    static uint8_t get_q(const void * data, int idx) {
+        const uint8_t * qs       = (const uint8_t *) data;
+        int             elem_idx = idx % n_elem;
+        return qs[idx / n_elem] >> ((n_elem - 1 - elem_idx) * BITS);
+    }
+
+    static ggml_fp16_t get_scale(const void * data, int idx, int group_size) {
+        const float * ss = (const float *) data;
+        float         s  = ss[idx / group_size];
+        return f32_to_f16(s);
+    }
+
+    static ggml_fp16_t get_zero_point(const void * data, int idx, int group_size) {
+        const float * zs = (const float *) data;
+        float         z  = zs[idx / group_size];
+        return f32_to_f16(z);
+    }
+};
+
 struct QlutattnI4TypeAccessor {
     static constexpr int BITS   = 4;
     static constexpr int n_elem = 8 / BITS;
@@ -567,7 +613,16 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                             for (int im = 0; im < m / bits; im++) {
                                 for (int ik = 0; ik < k; ik++) {
                                     uint8_t v;
-                                    v = QlutattnI4TypeAccessor::get_q(qweight_ptr, im * k + ik);
+
+                                    if (bits == 1) {
+                                        v = QlutattnI1TypeAccessor::get_q(qweight_ptr, im * k + ik);
+                                    } else if (bits == 2) {
+                                        v = QlutattnI2TypeAccessor::get_q(qweight_ptr, im * k + ik);
+                                    } else if (bits == 4) {
+                                        v = QlutattnI4TypeAccessor::get_q(qweight_ptr, im * k + ik);
+                                    } else {
+                                        GGML_ABORT("Invalid bits for quantization");
+                                    }
 
                                     for (int ib = 0; ib < bits; ib++) {
                                         int new_im    = im;
@@ -652,8 +707,22 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
 
                                         ggml_fp16_t scale;
                                         ggml_fp16_t zero_point;
-                                        scale      = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
-                                        zero_point = QlutattnI4TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+
+                                        if (bits == 1) {
+                                            scale = QlutattnI1TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                                            zero_point =
+                                                QlutattnI1TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+                                        } else if (bits == 2) {
+                                            scale = QlutattnI2TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                                            zero_point =
+                                                QlutattnI2TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+                                        } else if (bits == 4) {
+                                            scale = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                                            zero_point =
+                                                QlutattnI4TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+                                        } else {
+                                            GGML_ABORT("Invalid bits for quantization");
+                                        }
 
                                         idx         = idx / group_size;
                                         int nb1     = k / group_size;
@@ -780,7 +849,14 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                             for (int im = 0; im < m / bits; im++) {
                                 for (int ik = 0; ik < k; ik++) {
                                     uint8_t v;
-                                    v = QlutattnI4TypeAccessor::get_q(qweight_ptr, im * k + ik);
+
+                                    if (bits == 1) {
+                                        v = QlutattnI1TypeAccessor::get_q(qweight_ptr, im * k + ik);
+                                    } else if (bits == 2) {
+                                        v = QlutattnI2TypeAccessor::get_q(qweight_ptr, im * k + ik);
+                                    } else if (bits == 4) {
+                                        v = QlutattnI4TypeAccessor::get_q(qweight_ptr, im * k + ik);
+                                    }
 
                                     for (int ib = 0; ib < bits; ib++) {
                                         int new_im    = im;
@@ -865,8 +941,22 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
 
                                         ggml_fp16_t scale;
                                         ggml_fp16_t zero_point;
-                                        scale      = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
-                                        zero_point = QlutattnI4TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+
+                                        if (bits == 1) {
+                                            scale = QlutattnI1TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                                            zero_point =
+                                                QlutattnI1TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+                                        } else if (bits == 2) {
+                                            scale = QlutattnI2TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                                            zero_point =
+                                                QlutattnI2TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+                                        } else if (bits == 4) {
+                                            scale = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                                            zero_point =
+                                                QlutattnI4TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
+                                        } else {
+                                            GGML_ABORT("Invalid bits for quantization");
+                                        }
 
                                         idx         = idx / group_size;
                                         int nb1     = k / group_size;
@@ -8575,9 +8665,6 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
         ws_state_thread_quant[2 * i + 1] = 0.0f;
     }
 
-    // Wait for thread 0 to finish initialization
-    ggml_barrier(params->threadpool);
-
     // Extract scale parameters from dst
     float scale         = 1.0f;
     float max_bias      = 0.0f;
@@ -8613,23 +8700,17 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
                                                        (void *) qlut_ptr, DK, kernel_config);
     }
 
-    ggml_barrier(params->threadpool);
-
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
         // ggml_flash_attn_ext_qlutattn_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16,
         //                                          (void *) workspace, scale, max_bias, logit_softcap);
     }
 
-    ggml_barrier(params->threadpool);
-
     if (k_quant && v_quant && k_quant->ne[1] > 0) {
         // TODO: Integrate TMAC GeMV here.
         ggml_flash_attn_ext_qlutattn_segment(params, q, k_quant, v_quant, mask_quant, (float *) imm_buffer_quant,
                                              (void *) workspace, scale, max_bias, logit_softcap);
     }
-
-    ggml_barrier(params->threadpool);
 
     //> Merge the two segments
     // const int64_t nr  = neq1 * neq2 * neq3;  //> number of rows, one row is one head_dim.

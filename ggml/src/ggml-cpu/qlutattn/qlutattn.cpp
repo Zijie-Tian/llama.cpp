@@ -262,6 +262,131 @@ void ggml_qlutattn_mul_mat_task_compute(void * src0, void * scales, void * qlut,
                                            kernel_config);
 }
 
+
+void ggml_vec_dot_qlutattn_kv1_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, size_t bs, const uint8_t * GGML_RESTRICT x,
+                                       size_t bx, const ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
+    GGML_ASSERT(bx % 128 == 0 && by % 128 == 0 && "Must be multiple of 128 for QLUTATTN KV1 128x128");
+
+    // NOTE: This function is for 2-bit QLUTATTN KV.
+    struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, nrc, 1);
+
+    int bits           = kernel_config->bits;
+    int bm             = kernel_config->bm;
+    int act_group_size = kernel_config->act_group_size;
+    int K              = 128;
+    int M              = 128;
+    int N              = 1;
+    
+    int nelems_per_byte = 8 / bits; // > 1-bit QLUTATTN KV, so 8 / 1 = 8.
+
+    // TODO: Add vec_dot of LUT inside this function.
+    assert(kernel_config->has_scale);
+    assert(!(kernel_config->one_scale && kernel_config->has_zero_point));
+
+    // NOTE: Following are extract the pointers from the y tensor.
+    int8_t *          QLUT       = (int8_t *) y;                                       // Quantized  LUT
+    tmac_float_type * LUT_Scales = (tmac_float_type *) ((uint8_t *) y + by / 4 * 16);  // Scales for LUT_Scales
+    tmac_float_type * LUT_Biases =
+        (tmac_float_type *) ((uint8_t *) y + by / 4 * 16 +
+                             by / act_group_size * sizeof(tmac_float_type));  // Biases for LUT_Biases
+
+    // NOTE: Extract from x.
+    int8_t *          qweights = (int8_t *) x;  // Packed KV cache
+    tmac_float_type * Scales   = (tmac_float_type *) ((uint8_t *) x + 128 * 128 / nelems_per_byte * sizeof(uint8_t));  // Scales for A
+
+    assert(QLUT != nullptr && LUT_Scales != nullptr && LUT_Biases != nullptr);
+    assert(C != nullptr && "Output tensor s must not be null");
+
+    const int     m           = bm / bits;
+    const int64_t chunk_size0 = m;
+
+    for (int32_t chunk_outer = 0; chunk_outer < M / m; chunk_outer++) {
+        /* One Block */
+        const int64_t w_offset = chunk_outer * m * K * bits / 8;
+        const int64_t scales_offset =
+            kernel_config->one_scale ? 0 : ggml_qlutattn_get_scales_size(kernel_config, m, K) * chunk_outer;
+
+        for (int32_t n_outer = 0; n_outer < N; n_outer++) {
+            const int64_t qlut_offset       = K * n_outer * 4;
+            const int64_t lut_scales_offset = K / act_group_size * n_outer;
+            const int64_t dst_offset        = M * n_outer + chunk_outer * chunk_size0;
+
+            int8_t *          lut        = (int8_t *) QLUT + qlut_offset;
+            uint8_t *         a          = (uint8_t *) qweights + w_offset;
+            tmac_float_type * scales     = (tmac_float_type *) Scales + scales_offset;
+            tmac_float_type * lut_scales = (tmac_float_type *) LUT_Scales + lut_scales_offset;
+            tmac_float_type * lut_biases = (tmac_float_type *) LUT_Biases + lut_scales_offset;
+            tmac_float_type * act_output = (tmac_float_type *) C + dst_offset;
+
+            ggml::cpu::qlutattn::qgemm_lut_int8_g4(a, lut, scales, lut_scales, lut_biases, act_output, bm, K, N,
+                                                   kernel_config);
+        }
+        /* One Block */
+    }
+}
+
+void ggml_vec_dot_qlutattn_kv2_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, size_t bs, const uint8_t * GGML_RESTRICT x,
+                                       size_t bx, const ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
+    GGML_ASSERT(bx % 128 == 0 && by % 128 == 0 && "Must be multiple of 128 for QLUTATTN KV2 128x128");
+
+    // NOTE: This function is for 2-bit QLUTATTN KV.
+    struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, nrc, 2);
+
+    int bits           = kernel_config->bits;
+    int bm             = kernel_config->bm;
+    int act_group_size = kernel_config->act_group_size;
+    int K              = 128;
+    int M              = 128;
+    int N              = 1;
+
+    int nelems_per_byte = 8 / bits;  // 2-bit quantization means 4 elements per byte.
+
+    // TODO: Add vec_dot of LUT inside this function.
+    assert(kernel_config->has_scale);
+    assert(!(kernel_config->one_scale && kernel_config->has_zero_point));
+
+    // NOTE: Following are extract the pointers from the y tensor.
+    int8_t *          QLUT       = (int8_t *) y;                                       // Quantized  LUT
+    tmac_float_type * LUT_Scales = (tmac_float_type *) ((uint8_t *) y + by / 4 * 16);  // Scales for LUT_Scales
+    tmac_float_type * LUT_Biases =
+        (tmac_float_type *) ((uint8_t *) y + by / 4 * 16 +
+                             by / act_group_size * sizeof(tmac_float_type));  // Biases for LUT_Biases
+
+    // NOTE: Extract from x.
+    int8_t *          qweights = (int8_t *) x;  // Packed KV cache
+    tmac_float_type * Scales   = (tmac_float_type *) ((uint8_t *) x + 128 * 128 / nelems_per_byte * sizeof(uint8_t));  // Scales for A
+
+    assert(QLUT != nullptr && LUT_Scales != nullptr && LUT_Biases != nullptr);
+    assert(C != nullptr && "Output tensor s must not be null");
+
+    const int     m           = bm / bits;
+    const int64_t chunk_size0 = m;
+
+    for (int32_t chunk_outer = 0; chunk_outer < M / m; chunk_outer++) {
+        /* One Block */
+        const int64_t w_offset = chunk_outer * m * K * bits / 8;
+        const int64_t scales_offset =
+            kernel_config->one_scale ? 0 : ggml_qlutattn_get_scales_size(kernel_config, m, K) * chunk_outer;
+
+        for (int32_t n_outer = 0; n_outer < N; n_outer++) {
+            const int64_t qlut_offset       = K * n_outer * 4;
+            const int64_t lut_scales_offset = K / act_group_size * n_outer;
+            const int64_t dst_offset        = M * n_outer + chunk_outer * chunk_size0;
+
+            int8_t *          lut        = (int8_t *) QLUT + qlut_offset;
+            uint8_t *         a          = (uint8_t *) qweights + w_offset;
+            tmac_float_type * scales     = (tmac_float_type *) Scales + scales_offset;
+            tmac_float_type * lut_scales = (tmac_float_type *) LUT_Scales + lut_scales_offset;
+            tmac_float_type * lut_biases = (tmac_float_type *) LUT_Biases + lut_scales_offset;
+            tmac_float_type * act_output = (tmac_float_type *) C + dst_offset;
+
+            ggml::cpu::qlutattn::qgemm_lut_int8_g4(a, lut, scales, lut_scales, lut_biases, act_output, bm, K, N,
+                                                   kernel_config);
+        }
+        /* One Block */
+    }
+}
+
 void ggml_vec_dot_qlutattn_kv4_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, size_t bs, const uint8_t * GGML_RESTRICT x,
                                        size_t bx, const ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
     GGML_ASSERT(bx % 128 == 0 && by % 128 == 0 && "Must be multiple of 128 for QLUTATTN KV4 128x128");

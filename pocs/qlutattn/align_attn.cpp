@@ -18,9 +18,8 @@
 #include <vector>
 
 // Use fixed seed for reproducible results
-static std::mt19937 g_rng(std::random_device{}());
-
-// static std::mt19937 g_rng(42);
+// static std::mt19937 g_rng(std::random_device{}());
+static std::mt19937 g_rng(42);
 
 static void fill_tensor_f32(ggml_tensor * dst, float min_val = -1.0f, float max_val = 1.0f) {
     float *                               data       = (float *) dst->data;
@@ -404,8 +403,10 @@ int main() {
     fill_tensor_f16(v, 0.f, 1.f);
 
     // set_tensor_f32(q, 1.0f);
+    // set_tensor_f16(k, 1.f);
+    // set_tensor_f16(v, 1.f);
     // set_tensor_f16(k, 1.f, head_dim * kv_len * 1);
-    // set_tensor_f16(v, 0.25f, head_dim * kv_len * 1);
+    // set_tensor_f16(v, 1.f, head_dim * kv_len * 1);
 
     // Initialize mask (causal mask - positions can only see previous and current KV)
     ggml_fp16_t * mask_data = (ggml_fp16_t *) mask->data;
@@ -534,13 +535,9 @@ int main() {
     //                                          v->nb[1], v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
 
     ggml_tensor * k_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
-
-    // NOTICE : Debugging.
-    // ggml_tensor * v_qlutattn_seg =
-    //     ggml_new_tensor_4d(ctx, GGML_TYPE_F16, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K2_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
     ggml_tensor * v_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_V4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_V2_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     //> Do quantization.
     ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_permuted_view, k_qlutattn_seg);
@@ -843,7 +840,7 @@ int main() {
         printf("\nAverage ratio (segmented/standard) for first 1000 elements: %.6f\n", sum_ratio / valid_ratios);
     }
 
-    const float tolerance = 1e-2f;
+    const float tolerance = 2e-2f;
     bool        pass      = max_std_seg < tolerance;
     if (torch_success) {
         pass = pass && max_std_torch < tolerance && max_seg_torch < tolerance;

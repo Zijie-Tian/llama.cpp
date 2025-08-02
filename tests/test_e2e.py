@@ -131,6 +131,7 @@ def print_binary(array):
 
 
 np.random.seed(21)
+np.set_printoptions(precision=2, suppress=True)
 
 # # 参数设置
 # bits = 2
@@ -166,7 +167,7 @@ np.random.seed(21)
 # zero_point = False
 # m_groups = -1
 
-bits = 4
+bits = 2
 M = 128 * bits
 N = 1
 K = 128  # > K >= g * kfactor && K >= act_group_size && K >= group_size
@@ -204,8 +205,8 @@ def dequantize_weight_per_tensor(weight_int8, scales):
     return weight_int8.astype(np.float16) * scales
 
 
-# weight = np.random.randn(M // bits, K).astype(out_dtype)      # FP16
-weight = np.ones((M // bits, K)).astype(out_dtype)
+weight = np.random.randn(M // bits, K).astype(out_dtype)  # FP16
+# weight = np.ones((M // bits, K)).astype(out_dtype)
 activation = np.random.randn(N, K).astype(out_dtype)  # FP16
 
 weight_quant, scales = quantize_weight_per_tensor(weight, bits=bits)

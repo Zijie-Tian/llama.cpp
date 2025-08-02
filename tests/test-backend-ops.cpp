@@ -3356,7 +3356,9 @@ struct test_qlutattn_ext : public test_case {
         permute(permute) {}
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
-        GGML_ASSERT(type_K == GGML_TYPE_QLUTATTN_K4_128x128 || type_V == GGML_TYPE_QLUTATTN_V4_128x128);
+        GGML_ASSERT((type_K == GGML_TYPE_QLUTATTN_K4_128x128 && type_V == GGML_TYPE_QLUTATTN_V4_128x128) ||
+                    (type_K == GGML_TYPE_QLUTATTN_K2_128x128 && type_V == GGML_TYPE_QLUTATTN_V2_128x128) || 
+                    (type_K == GGML_TYPE_QLUTATTN_K1_128x128 && type_V == GGML_TYPE_QLUTATTN_V1_128x128));
 
         const int64_t PACK_SIZE       = 128;  //> 128x128
         const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
@@ -4716,17 +4718,20 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
                 test_cases.emplace_back(new test_qlutattn_ext(hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_MIXED,
                                                               GGML_TYPE_QLUTATTN_K4_128x128,
                                                               GGML_TYPE_QLUTATTN_V4_128x128));
+                test_cases.emplace_back(new test_qlutattn_ext(hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_MIXED,
+                                                              GGML_TYPE_QLUTATTN_K2_128x128,
+                                                              GGML_TYPE_QLUTATTN_V2_128x128));
 
                 // // NOTE: Original flash attn perf.
-                // test_cases.emplace_back(new test_flash_attn_ext(
-                //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
-                //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
+                test_cases.emplace_back(new test_flash_attn_ext(
+                    //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
+                    hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
                 // test_cases.emplace_back(new test_flash_attn_ext(
                 //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
                 //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0));
-                // test_cases.emplace_back(new test_flash_attn_ext(
-                //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
-                //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
+                test_cases.emplace_back(new test_flash_attn_ext(
+                    //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
+                    hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
                 // test_cases.emplace_back(new test_flash_attn_ext(
                 //     //> n_k_head,   n_v_head,   n_head, n_repeat,   n_kv,   n_batch,    mask,   max_bias,   logit_softcap,  prec,           type_KV
                 //     hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q2_K));

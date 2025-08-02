@@ -1856,8 +1856,6 @@ void quantize_block_qlutattn_v4_128x128(const float * GGML_RESTRICT x, void * GG
 }
 
 
-
-
 //> Following just use the reference implementation.
 
 void quantize_row_qlutattn_w1g128(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
