@@ -535,9 +535,9 @@ int main() {
     //                                          v->nb[1], v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
 
     ggml_tensor * k_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K2_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K1_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
     ggml_tensor * v_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_V2_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_V1_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     //> Do quantization.
     ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_permuted_view, k_qlutattn_seg);
