@@ -168,7 +168,7 @@ np.set_printoptions(precision=2, suppress=True)
 # m_groups = -1
 
 bits = 2
-M = 128 * bits
+M = 256 * bits
 N = 1
 K = 128  # > K >= g * kfactor && K >= act_group_size && K >= group_size
 g = 4
@@ -180,7 +180,7 @@ act_group_size = 4  # > act_group_size >= g
 group_size = 128
 out_dtype = "float16"
 dtype = "int8"
-zero_point = False
+zero_point = True
 m_groups = -1
 
 
@@ -205,19 +205,58 @@ def dequantize_weight_per_tensor(weight_int8, scales):
     return weight_int8.astype(np.float16) * scales
 
 
+def quantize_weight_per_group(weight_fp16, bits=2):
+    """
+    q_max = 2 ** (bits - 1) - 1
+
+    scale = max(abs(weight)) / q_max
+    weight = round(weight / scale) * scale
+
+    weight_int8 in [-q_max, q_max]
+    """
+    q_max = 2**(
+        bits - 1
+    ) - 1  # NOTE: We limit in range [ - 2 ** (bits - 1), 2 ** (bits - 1) - 1 ]
+
+    gmin, gmax = weight_fp16.min(axis=-1), weight_fp16.max(axis=-1)
+    scales = np.expand_dims(np.clip((gmax - gmin) / (q_max * 2), 1e-5, None),
+                            axis=-1)
+    zero_point = np.expand_dims(gmin, axis=-1)
+    weight_int8 = np.round(
+        (weight_fp16 - zero_point) / scales).clip(-q_max,
+                                                  q_max).astype(np.int8)
+
+    return weight_int8, scales, zero_point
+
+
+def dequantize_weight_per_group(weight_int8, scales, zero_point):
+    return weight_int8.astype(np.float16) * scales + zero_point
+
+
 weight = np.random.randn(M // bits, K).astype(out_dtype)  # FP16
 # weight = np.ones((M // bits, K)).astype(out_dtype)
 activation = np.random.randn(N, K).astype(out_dtype)  # FP16
 
-weight_quant, scales = quantize_weight_per_tensor(weight, bits=bits)
-print("weight_quant:", weight_quant)
-print("scales:", scales)
+weight_quant_pg, scales_pg, zero_point_pg = quantize_weight_per_group(
+    weight, bits=bits)
 
-dequantized_weight = dequantize_weight_per_tensor(weight_quant, scales)
-print("dequantized_weight:", dequantized_weight)
+dequantized_weight_pg = dequantize_weight_per_group(weight_quant_pg, scales_pg,
+                                                    zero_point_pg)
 
-qweight = weight_quant
-scale = scales * np.ones((M // bits, K // group_size))
+qweight = weight_quant_pg
+scales = scales_pg
+zero_points = zero_point_pg
+
+# weight_quant, scales = quantize_weight_per_tensor(weight, bits=bits)
+# print("weight_quant:", weight_quant)
+# print("scales:", scales)
+#
+# dequantized_weight = dequantize_weight_per_tensor(weight_quant, scales)
+# print("dequantized_weight:", dequantized_weight)
+
+# qweight = weight_quant
+# scale = scales * np.ones((M // bits, K // group_size))
+
 Bref = activation
 
 # weight = np.load("weight.npy").astype(out_dtype)
@@ -228,9 +267,9 @@ Bref = activation
 # scale = scale * np.ones((M // bits, K // group_size), dtype=out_dtype)
 
 Aref = np.round(qweight + 2**(bits - 1)).astype("uint8")
-Sref = (scale * np.ones((M // bits, K // group_size))).astype(out_dtype)
+Sref = (scales).astype(out_dtype)
 Bref = activation
-Zref = None
+Zref = zero_points
 
 if m_groups == -1:
     Adq = Aref.T.reshape(K // group_size, group_size,
@@ -253,7 +292,7 @@ Cref = Bref.dot(Adq)
 A_t, Scales_t = preprocess_weights(
     Aref,
     Sref,
-    None,
+    Zref,
     bits=bits,
     g=g,
     bm=bm,
@@ -372,9 +411,14 @@ def qgemm_reference(
                         for ng in range(_ngroups_per_elem)],
                        axis=-1)
 
-    #! 注意这地方其实没啥问题，因为TMAC应该没有对weight进行group的量化，是per tensor的量化。
-    scales = scales.reshape(M // bm, K // group_size, bm // bits // simd_n_out,
-                            simd_n_out)
+    if not zero_point:
+        #! 注意这地方其实没啥问题，因为TMAC应该没有对weight进行group的量化，是per tensor的量化。
+        scales = scales.reshape(M // bm, K // group_size,
+                                bm // bits // simd_n_out, simd_n_out)
+    else:
+        #! 注意这地方其实没啥问题，因为TMAC应该没有对weight进行group的量化，是per tensor的量化。
+        scales = scales.reshape(M // bm, K // group_size,
+                                bm // bits // simd_n_out, 2, simd_n_out)
 
     # import pdb; pdb.set_trace()
     for n in range(N):
