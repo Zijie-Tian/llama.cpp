@@ -193,7 +193,7 @@ simd_n_in = 16
 simd_n_out = 8
 kfactor = 16
 act_group_size = 4  # > act_group_size >= g
-group_size = 128
+group_size = 4  # Changed from 128 to 4 for multi-channel quantization
 out_dtype = "float16"
 dtype = "int8"
 zero_point = True
@@ -249,19 +249,88 @@ def dequantize_weight_per_group(weight_int8, scales, zero_point):
     return weight_int8.astype(np.float16) * scales + zero_point
 
 
+def quantize_weight_multi_channel(weight_fp16, bits=2, group_size=4):
+    """
+    Multi-channel quantization: all M rows share the same scales and zero_points
+
+    Parameters:
+    -----------
+    weight_fp16: np.ndarray of shape (M, K)
+    bits: int, number of bits for quantization
+    group_size: int, size of each group along K dimension
+
+    Returns:
+    --------
+    weight_int8: quantized weights of shape (M, K)
+    scales: scales of shape (1, K//group_size)
+    zero_points: zero_points of shape (1, K//group_size)
+    """
+    M, K = weight_fp16.shape
+    assert K % group_size == 0, f"K={K} must be divisible by group_size={group_size}"
+
+    q_max = 2**(bits - 1) - 1
+
+    # Reshape to (M, K//group_size, group_size)
+    weight_reshaped = weight_fp16.reshape(M, K // group_size, group_size)
+
+    # Compute min/max across all M rows and within each group
+    # Shape: (K//group_size,)
+    gmin = weight_reshaped.min(axis=(0, 2))
+    gmax = weight_reshaped.max(axis=(0, 2))
+
+    # Compute scales and zero_points, shape: (1, K//group_size)
+    scales = np.expand_dims(np.clip((gmax - gmin) / (q_max * 2), 1e-5, None),
+                            axis=0)
+    zero_points = np.expand_dims(gmin, axis=0)
+
+    # Expand for quantization
+    scales_expanded = np.repeat(scales, group_size, axis=1)  # (1, K)
+    zero_points_expanded = np.repeat(zero_points, group_size, axis=1)  # (1, K)
+
+    # Quantize
+    weight_int8 = np.round(
+        (weight_fp16 - zero_points_expanded) / scales_expanded).clip(
+            -q_max, q_max).astype(np.int8)
+
+    return weight_int8, scales, zero_points
+
+
+def dequantize_weight_multi_channel(weight_int8,
+                                    scales,
+                                    zero_points,
+                                    group_size=4):
+    """
+    Dequantize multi-channel quantized weights
+    """
+    # Expand scales and zero_points
+    scales_expanded = np.repeat(scales, group_size, axis=1)
+    zero_points_expanded = np.repeat(zero_points, group_size, axis=1)
+
+    return weight_int8.astype(
+        np.float16) * scales_expanded + zero_points_expanded
+
+
 weight = np.random.randn(M // bits, K).astype(out_dtype)  # FP16
 # weight = np.ones((M // bits, K)).astype(out_dtype)
 activation = np.random.randn(N, K).astype(out_dtype)  # FP16
 
-weight_quant_pg, scales_pg, zero_point_pg = quantize_weight_per_group(
-    weight, bits=bits)
+# Use multi-channel quantization instead of per-group
+weight_quant_mc, scales_mc, zero_point_mc = quantize_weight_multi_channel(
+    weight, bits=bits, group_size=group_size)
 
-dequantized_weight_pg = dequantize_weight_per_group(weight_quant_pg, scales_pg,
-                                                    zero_point_pg)
+dequantized_weight_mc = dequantize_weight_multi_channel(weight_quant_mc,
+                                                        scales_mc,
+                                                        zero_point_mc,
+                                                        group_size=group_size)
 
-qweight = weight_quant_pg
-scales = scales_pg
-zero_points = zero_point_pg
+print(f"Multi-channel quantization:")
+print(f"  Scales shape: {scales_mc.shape}")  # Should be (1, K//group_size)
+print(f"  Zero points shape: {zero_point_mc.shape}"
+      )  # Should be (1, K//group_size)
+
+qweight = weight_quant_mc
+scales = scales_mc
+zero_points = zero_point_mc
 
 # weight_quant, scales = quantize_weight_per_tensor(weight, bits=bits)
 # print("weight_quant:", weight_quant)
@@ -288,13 +357,28 @@ Bref = activation
 Zref = zero_points
 
 if m_groups == -1:
-    Adq = Aref.T.reshape(K // group_size, group_size,
-                         M // bits).astype(out_dtype) - (2**(bits - 1))
-    # > [group_size, K // group_size, M // bits] * [K // group_size, M // bits]
-    Adq = Adq.transpose(1, 0, 2) * Sref.T
-    if zero_point:
-        Adq = Adq - Zref.T
-    Adq = Adq.transpose(1, 0, 2).reshape(K, M // bits)
+    # Handle multi-channel case where scales/zeros shape is (1, K//group_size)
+    if scales.shape[0] == 1:
+        # Multi-channel quantization
+        Adq = Aref.T.reshape(K // group_size, group_size,
+                             M // bits).astype(out_dtype) - (2**(bits - 1))
+        # Transpose to (group_size, K//group_size, M//bits)
+        Adq = Adq.transpose(1, 0, 2)
+        # Apply scales: Sref.T shape is (K//group_size, 1), broadcast to each group
+        Adq = Adq * Sref.T.reshape(1, K // group_size, 1)
+        if zero_point:
+            # Apply zero_points (subtract, same as per-group case)
+            Adq = Adq + Zref.T.reshape(1, K // group_size, 1)
+        # Transpose back and reshape
+        Adq = Adq.transpose(1, 0, 2).reshape(K, M // bits)
+    else:
+        # Original per-group quantization
+        Adq = Aref.T.reshape(K // group_size, group_size,
+                             M // bits).astype(out_dtype) - (2**(bits - 1))
+        Adq = Adq.transpose(1, 0, 2) * Sref.T
+        if zero_point:
+            Adq = Adq - Zref.T
+        Adq = Adq.transpose(1, 0, 2).reshape(K, M // bits)
 else:
     Adq = (Aref.T.astype(out_dtype) - (2**(bits - 1))) * Sref[0]
 
@@ -304,6 +388,14 @@ else:
 
 Y_ref = weight.dot(activation.T)
 Cref = Bref.dot(Adq)
+
+# Compare with dequantized result
+Y_dequant = activation.dot(dequantized_weight_mc.T)
+print(f"\nComparison:")
+print(f"  Y_ref vs Y_dequant NMSE: {nmse(Y_ref, Y_dequant):.6f}")
+print(f"  Cref vs Y_dequant allclose: {np.allclose(Cref, Y_dequant)}")
+
+__import__('pdb').set_trace()
 
 # Expand scales and zero_points to [M//bits, K] from any shape
 target_M = M // bits
@@ -542,7 +634,7 @@ def qgemm_reference(
                             zp = scales[mo, k * g // group_size, scales_mi, 1,
                                         scales_e]
                         cbits[n,
-                              m] += (LUT_Biases[n, k * g // act_group_size] *
+                              m] += (-LUT_Biases[n, k * g // act_group_size] *
                                      (1 / alphas[0]) * zp)
 
     c = (cbits.reshape(
@@ -571,10 +663,26 @@ C = qgemm_reference(
     kfactor=kfactor,
 )
 
-print("Non-quantized Y_ref:", Y_ref.flatten())
-print("Reference C:", Cref.flatten())
-print("Simulated C:", C.flatten())
+print("\n" + "=" * 60)
+print("Results comparison:")
+print("=" * 60)
+print(f"Y_ref (FP16) first 10 elements: {Y_ref.flatten()[:10]}")
+print(f"Cref (Dequantized) first 10 elements: {Cref.flatten()[:10]}")
+print(f"C (LUT) first 10 elements: {C.flatten()[:10]}")
 
-NMSE = nmse(Cref, C)
+# Calculate various error metrics
+NMSE_ref_to_dequant = nmse(Y_ref, Cref)
+NMSE_dequant_to_lut = nmse(Cref, C)
 
-print("NMSE :", NMSE)
+print(f"\nError Metrics:")
+print(f"  Y_ref vs Cref NMSE: {NMSE_ref_to_dequant:.6f}")
+print(f"  Cref vs C (LUT) NMSE: {NMSE_dequant_to_lut:.6f}")
+print(f"  Cref vs C allclose: {np.allclose(Cref, C, rtol=1e-3)}")
+
+# Check if Adq matches dequantized weight
+Y_check = activation.dot(dequantized_weight_mc.T)
+print(f"\nVerification:")
+print(
+    f"  Cref equals activation.dot(dequantized_weight.T): {np.allclose(Cref, Y_check)}"
+)
+print(f"  Max difference between Cref and C: {np.max(np.abs(Cref - C)):.6f}")
