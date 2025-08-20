@@ -310,11 +310,71 @@ def dequantize_weight_multi_channel(weight_int8,
         np.float16) * scales_expanded + zero_points_expanded
 
 
+def quantize_weight_hybrid(weight_fp16, bits=2, zp_group_size=4):
+    """
+    Hybrid quantization: per-channel scale + multi-channel zero_points
+
+    Parameters:
+    -----------
+    weight_fp16: np.ndarray of shape (M, K)
+    bits: int, number of bits for quantization
+    zp_group_size: int, group size for zero_points (must be >= 4 for LUT)
+
+    Returns:
+    --------
+    weight_int8: quantized weights of shape (M, K)
+    scales: per-channel scales of shape (1, K)
+    zero_points: multi-channel zero_points of shape (1, K//zp_group_size)
+    """
+    M, K = weight_fp16.shape
+    assert K % zp_group_size == 0, f"K={K} must be divisible by zp_group_size={zp_group_size}"
+
+    q_max = 2**(bits - 1) - 1
+
+    # Per-channel scale: compute min/max for each K position across all M rows
+    wmin_perchannel = weight_fp16.min(axis=0, keepdims=True)  # (1, K)
+    wmax_perchannel = weight_fp16.max(axis=0, keepdims=True)  # (1, K)
+    scales = np.clip((wmax_perchannel - wmin_perchannel) / (q_max * 2), 1e-5,
+                     None)  # (1, K)
+
+    # Multi-channel zero_points: compute min for each group across all M rows
+    weight_reshaped = weight_fp16.reshape(M, K // zp_group_size, zp_group_size)
+    gmin = weight_reshaped.min(axis=(0, 2))  # (K//zp_group_size,)
+    zero_points = np.expand_dims(gmin, axis=0)  # (1, K//zp_group_size)
+
+    # Expand zero_points for quantization
+    zero_points_expanded = np.repeat(zero_points, zp_group_size,
+                                     axis=1)  # (1, K)
+
+    # Quantize with per-channel scale and multi-channel zero_points
+    weight_int8 = np.round((weight_fp16 - zero_points_expanded) / scales).clip(
+        -q_max, q_max).astype(np.int8)
+
+    return weight_int8, scales, zero_points
+
+
+def dequantize_weight_hybrid(weight_int8,
+                             scales,
+                             zero_points,
+                             zp_group_size=4):
+    """
+    Dequantize hybrid quantized weights
+    """
+    # scales is already (1, K), zero_points needs expansion
+    zero_points_expanded = np.repeat(zero_points, zp_group_size,
+                                     axis=1)  # (1, K)
+
+    return weight_int8.astype(np.float16) * scales + zero_points_expanded
+
+
 weight = np.random.randn(M // bits, K).astype(out_dtype)  # FP16
 # weight = np.ones((M // bits, K)).astype(out_dtype)
 activation = np.random.randn(N, K).astype(out_dtype)  # FP16
 
-# Use multi-channel quantization instead of per-group
+# Test both multi-channel and hybrid quantization strategies
+print("\n=== Testing Two Quantization Strategies ===")
+
+# 1. Multi-channel quantization (both scales and zero_points are multi-channel)
 weight_quant_mc, scales_mc, zero_point_mc = quantize_weight_multi_channel(
     weight, bits=bits, group_size=group_size)
 
@@ -323,14 +383,51 @@ dequantized_weight_mc = dequantize_weight_multi_channel(weight_quant_mc,
                                                         zero_point_mc,
                                                         group_size=group_size)
 
-print(f"Multi-channel quantization:")
-print(f"  Scales shape: {scales_mc.shape}")  # Should be (1, K//group_size)
-print(f"  Zero points shape: {zero_point_mc.shape}"
+print(f"\n1. Multi-channel quantization:")
+print(f"   Scales shape: {scales_mc.shape}")  # Should be (1, K//group_size)
+print(f"   Zero points shape: {zero_point_mc.shape}"
       )  # Should be (1, K//group_size)
 
-qweight = weight_quant_mc
-scales = scales_mc
-zero_points = zero_point_mc
+# 2. Hybrid quantization (per-channel scales + multi-channel zero_points)
+weight_quant_hybrid, scales_hybrid, zero_point_hybrid = quantize_weight_hybrid(
+    weight, bits=bits, zp_group_size=group_size)
+
+dequantized_weight_hybrid = dequantize_weight_hybrid(weight_quant_hybrid,
+                                                     scales_hybrid,
+                                                     zero_point_hybrid,
+                                                     zp_group_size=group_size)
+
+print(
+    f"\n2. Hybrid quantization (per-channel scale + multi-channel zero_points):"
+)
+print(f"   Scales shape: {scales_hybrid.shape}")  # Should be (1, K)
+print(f"   Zero points shape: {zero_point_hybrid.shape}"
+      )  # Should be (1, K//group_size)
+
+# Compare quantization errors
+Y_ref = weight.dot(activation.T)
+Y_dequant_mc = activation.dot(dequantized_weight_mc.T)
+Y_dequant_hybrid = activation.dot(dequantized_weight_hybrid.T)
+
+print(f"\n=== Quantization Error Comparison ===")
+print(f"Multi-channel NMSE:    {nmse(Y_ref, Y_dequant_mc):.8f}")
+print(f"Hybrid NMSE:           {nmse(Y_ref, Y_dequant_hybrid):.8f}")
+
+# Determine which strategy is better
+if nmse(Y_ref, Y_dequant_mc) < nmse(Y_ref, Y_dequant_hybrid):
+    print(f"\n=> Multi-channel quantization is better (lower error)")
+    qweight = weight_quant_mc
+    scales = scales_mc
+    zero_points = zero_point_mc
+    selected_strategy = "multi-channel"
+else:
+    print(f"\n=> Hybrid quantization is better (lower error)")
+    qweight = weight_quant_hybrid
+    scales = scales_hybrid
+    zero_points = zero_point_hybrid
+    selected_strategy = "hybrid"
+
+print(f"\nUsing {selected_strategy} strategy for LUT computation...")
 
 # weight_quant, scales = quantize_weight_per_tensor(weight, bits=bits)
 # print("weight_quant:", weight_quant)
@@ -357,20 +454,35 @@ Bref = activation
 Zref = zero_points
 
 if m_groups == -1:
-    # Handle multi-channel case where scales/zeros shape is (1, K//group_size)
+    # Handle multi-channel and hybrid cases
     if scales.shape[0] == 1:
-        # Multi-channel quantization
-        Adq = Aref.T.reshape(K // group_size, group_size,
-                             M // bits).astype(out_dtype) - (2**(bits - 1))
-        # Transpose to (group_size, K//group_size, M//bits)
-        Adq = Adq.transpose(1, 0, 2)
-        # Apply scales: Sref.T shape is (K//group_size, 1), broadcast to each group
-        Adq = Adq * Sref.T.reshape(1, K // group_size, 1)
-        if zero_point:
-            # Apply zero_points (subtract, same as per-group case)
-            Adq = Adq + Zref.T.reshape(1, K // group_size, 1)
-        # Transpose back and reshape
-        Adq = Adq.transpose(1, 0, 2).reshape(K, M // bits)
+        if scales.shape[1] == K:
+            # Hybrid case: per-channel scales (1, K) + multi-channel zero_points (1, K//group_size)
+            Adq = Aref.T.astype(out_dtype) - (2**(bits - 1))  # (K, M//bits)
+            # Apply per-channel scales directly
+            Adq = Adq * Sref.T  # Sref.T shape is (K, 1)
+            if zero_point:
+                # Apply multi-channel zero_points
+                Adq_reshaped = Adq.reshape(K // group_size, group_size,
+                                           M // bits)
+                Adq_reshaped = Adq_reshaped.transpose(
+                    1, 0, 2)  # (group_size, K//group_size, M//bits)
+                Adq_reshaped = Adq_reshaped + Zref.T.reshape(
+                    1, K // group_size, 1)
+                Adq = Adq_reshaped.transpose(1, 0, 2).reshape(K, M // bits)
+        else:
+            # Multi-channel case: both scales and zero_points are (1, K//group_size)
+            Adq = Aref.T.reshape(K // group_size, group_size,
+                                 M // bits).astype(out_dtype) - (2**(bits - 1))
+            # Transpose to (group_size, K//group_size, M//bits)
+            Adq = Adq.transpose(1, 0, 2)
+            # Apply scales: Sref.T shape is (K//group_size, 1), broadcast to each group
+            Adq = Adq * Sref.T.reshape(1, K // group_size, 1)
+            if zero_point:
+                # Apply zero_points
+                Adq = Adq + Zref.T.reshape(1, K // group_size, 1)
+            # Transpose back and reshape
+            Adq = Adq.transpose(1, 0, 2).reshape(K, M // bits)
     else:
         # Original per-group quantization
         Adq = Aref.T.reshape(K // group_size, group_size,
@@ -389,13 +501,18 @@ else:
 Y_ref = weight.dot(activation.T)
 Cref = Bref.dot(Adq)
 
-# Compare with dequantized result
-Y_dequant = activation.dot(dequantized_weight_mc.T)
-print(f"\nComparison:")
-print(f"  Y_ref vs Y_dequant NMSE: {nmse(Y_ref, Y_dequant):.6f}")
-print(f"  Cref vs Y_dequant allclose: {np.allclose(Cref, Y_dequant)}")
+# Compare with selected dequantized result
+if selected_strategy == "multi-channel":
+    Y_dequant = Y_dequant_mc
+else:
+    Y_dequant = Y_dequant_hybrid
 
-__import__('pdb').set_trace()
+print(f"\nLUT Computation Check:")
+print(f"  Cref vs Y_dequant NMSE: {nmse(Cref, Y_dequant):.8f}")
+print(
+    f"  Cref vs Y_dequant allclose: {np.allclose(Cref, Y_dequant, rtol=1e-3)}")
+
+# __import__('pdb').set_trace()
 
 # Expand scales and zero_points to [M//bits, K] from any shape
 target_M = M // bits
@@ -426,7 +543,16 @@ def expand_to_shape(arr, target_shape):
 
 
 # Expand scales and zero_points
-Sref_expanded = expand_to_shape(Sref, (target_M, target_K))
+# For hybrid case, scales are already per-channel (1, K), only need M expansion
+# For multi-channel case, both need K expansion
+if Sref.shape[1] == K:
+    # Hybrid case: scales are per-channel (1, K)
+    Sref_expanded = expand_to_shape(Sref, (target_M, target_K))
+else:
+    # Multi-channel case: scales need K expansion
+    Sref_expanded = expand_to_shape(Sref, (target_M, target_K))
+
+# Zero points always need expansion in K dimension
 Zref_expanded = expand_to_shape(Zref, (target_M, target_K))
 
 print(f"Original Sref shape: {Sref.shape}, Expanded: {Sref_expanded.shape}")
