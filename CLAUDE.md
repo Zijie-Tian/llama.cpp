@@ -108,3 +108,37 @@ The current branch (`tzj/qlutattn`) is implementing a **Mixed Precision KV Cache
 ## Claude Memory
 
 - 请你将当前的知识全部存储下来: A request to store all current knowledge comprehensively
+
+## LUT-based Quantization Knowledge
+
+### Current Branch: tzj/qlutattn
+Working on Mixed Precision KV Cache with LUT-based quantization for attention.
+
+### Key Concepts
+
+1. **LUT (Look-Up Table) Mechanism**:
+   - Groups weights into chunks of size g=4
+   - Pre-computes dot products for all 2^g bit patterns
+   - Each group is processed atomically as a unit
+
+2. **Quantization Strategies**:
+   - **Multi-channel**: Scales shape (1, K//group_size), all M rows share the same grouped scales
+   - **Per-channel**: Scales shape (1, K), all M rows share per-channel scales
+   - Both use zero points shape (M, K//group_size) or (1, K//group_size) depending on requirements
+
+3. **Critical Constraint**: 
+   - For LUT compatibility, weight quantization group_size must be >= g (typically 4)
+   - This is because LUT processes g elements as an atomic unit
+
+4. **Important Implementation Details**:
+   - LUT_Biases compensates for quantization errors and handles zero point contributions
+   - The 1/alphas[0] factor corrects for bit-position weighting in multi-bit quantization
+   - Symmetric quantization (no zero point) often works better for per-channel mode
+
+### Test Files
+- `test_e2e.py`: Complete end-to-end LUT implementation with mixed quantization support
+- Test parameters: bits=2, g=4, group_size varies (8, 16, 32, 128)
+
+### Current Understanding
+- The LUT mechanism requires careful alignment between quantization groups and LUT processing units
+- Trade-off exists between quantization granularity (accuracy) and LUT compatibility (efficiency)

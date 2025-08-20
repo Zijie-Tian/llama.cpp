@@ -87,7 +87,23 @@ def preprocess_weights(
     # input size of current TVM API
     w = w.reshape(M // bm, K // g, bm // ngroups_per_elem)
 
-    if scales.size >= M // bits:
+    # Check if scales shape is [M//bits, K] (per-channel)
+    if scales.shape[1] == K:
+        # Per-channel scales case [M//bits, K]
+        scales = scales.reshape(M // bm, bm // bits, K).transpose(0, 2, 1)
+        scales = scales.reshape(M // bm, K, bm // bits // simd_n_out,
+                                simd_n_out)
+
+        if zeros is not None:
+            # zeros also has shape [M//bits, K]
+            zeros = zeros.reshape(M // bm, bm // bits, K).transpose(0, 2, 1)
+            zeros = zeros.reshape(M // bm, K, bm // bits // simd_n_out,
+                                  simd_n_out)
+            scales = np.stack([scales, zeros], axis=-2)
+        # Final reshape
+        scales = scales.reshape(M // bm, K, -1)
+    elif scales.size >= M // bits:
+        # Original per-group case [M//bits, K//group_size]
         group_size = K // scales.shape[1]
         scales = scales.reshape(M // bm, bm // bits,
                                 K // group_size).transpose(0, 2, 1)
@@ -289,10 +305,53 @@ else:
 Y_ref = weight.dot(activation.T)
 Cref = Bref.dot(Adq)
 
+# Expand scales and zero_points to [M//bits, K] from any shape
+target_M = M // bits
+target_K = K
+
+
+# Function to expand any shaped array to target shape
+def expand_to_shape(arr, target_shape):
+    """Expand array to target shape by repeating elements."""
+    current_shape = arr.shape
+    target_M, target_K = target_shape
+
+    # Calculate repeat factors for each dimension
+    repeat_M = target_M // current_shape[0] if target_M % current_shape[
+        0] == 0 else 1
+    repeat_K = target_K // current_shape[1] if target_K % current_shape[
+        1] == 0 else 1
+
+    # Expand along M dimension if needed
+    if current_shape[0] < target_M:
+        arr = np.repeat(arr, repeat_M, axis=0)
+
+    # Expand along K dimension if needed
+    if current_shape[1] < target_K:
+        arr = np.repeat(arr, repeat_K, axis=1)
+
+    return arr
+
+
+# Expand scales and zero_points
+Sref_expanded = expand_to_shape(Sref, (target_M, target_K))
+Zref_expanded = expand_to_shape(Zref, (target_M, target_K))
+
+print(f"Original Sref shape: {Sref.shape}, Expanded: {Sref_expanded.shape}")
+print(f"Original Zref shape: {Zref.shape}, Expanded: {Zref_expanded.shape}")
+
+# Verify the expansion is correct
+assert Sref_expanded.shape == (
+    target_M, target_K
+), f"Sref expansion failed: {Sref_expanded.shape} != {(target_M, target_K)}"
+assert Zref_expanded.shape == (
+    target_M, target_K
+), f"Zref expansion failed: {Zref_expanded.shape} != {(target_M, target_K)}"
+
 A_t, Scales_t = preprocess_weights(
     Aref,
-    Sref,
-    Zref,
+    Sref_expanded,
+    Zref_expanded,
     bits=bits,
     g=g,
     bm=bm,
@@ -301,7 +360,9 @@ A_t, Scales_t = preprocess_weights(
     simd_n_out=simd_n_out,
 )
 
-__import__("pdb").set_trace()
+# Debug output to verify shapes
+print(f"A_t shape: {A_t.shape}")
+print(f"Scales_t shape: {Scales_t.shape}")
 
 #! ========================================================================================================================
 
@@ -411,14 +472,23 @@ def qgemm_reference(
                         for ng in range(_ngroups_per_elem)],
                        axis=-1)
 
-    if not zero_point:
-        #! 注意这地方其实没啥问题，因为TMAC应该没有对weight进行group的量化，是per tensor的量化。
-        scales = scales.reshape(M // bm, K // group_size,
-                                bm // bits // simd_n_out, simd_n_out)
+    # Check if scales are per-channel (shape includes K dimension)
+    if scales.shape[1] == K:
+        # Per-channel scales [M//bm, K, ...]
+        if not zero_point:
+            scales = scales.reshape(M // bm, K, bm // bits // simd_n_out,
+                                    simd_n_out)
+        else:
+            scales = scales.reshape(M // bm, K, bm // bits // simd_n_out, 2,
+                                    simd_n_out)
     else:
-        #! 注意这地方其实没啥问题，因为TMAC应该没有对weight进行group的量化，是per tensor的量化。
-        scales = scales.reshape(M // bm, K // group_size,
-                                bm // bits // simd_n_out, 2, simd_n_out)
+        # Original per-group scales [M//bm, K//group_size, ...]
+        if not zero_point:
+            scales = scales.reshape(M // bm, K // group_size,
+                                    bm // bits // simd_n_out, simd_n_out)
+        else:
+            scales = scales.reshape(M // bm, K // group_size,
+                                    bm // bits // simd_n_out, 2, simd_n_out)
 
     # import pdb; pdb.set_trace()
     for n in range(N):
@@ -440,12 +510,21 @@ def qgemm_reference(
                 # import pdb; pdb.set_trace()
 
                 if m_groups == -1:
-                    if zero_point:
-                        s = scales[mo, k * g // group_size, scales_mi, 0,
-                                   scales_e]
+                    # Check if per-channel or per-group scales
+                    if scales.shape[1] == K:
+                        # Per-channel scales
+                        if zero_point:
+                            s = scales[mo, k * g, scales_mi, 0, scales_e]
+                        else:
+                            s = scales[mo, k * g, scales_mi, scales_e]
                     else:
-                        s = scales[mo, k * g // group_size, scales_mi,
-                                   scales_e]
+                        # Per-group scales
+                        if zero_point:
+                            s = scales[mo, k * g // group_size, scales_mi, 0,
+                                       scales_e]
+                        else:
+                            s = scales[mo, k * g // group_size, scales_mi,
+                                       scales_e]
                 else:
                     m_group_size = M // m_groups
                     s = scales[m // m_group_size]
@@ -456,11 +535,15 @@ def qgemm_reference(
                         == 0) and ((((m % bm) // simd_n_out) % bits) == 0):
                     cbits[n, m] += LUT_Biases[n, k * g // act_group_size] * s
                     if zero_point:
+                        # Check if per-channel or per-group scales for zero_point
+                        if scales.shape[1] == K:
+                            zp = scales[mo, k * g, scales_mi, 1, scales_e]
+                        else:
+                            zp = scales[mo, k * g // group_size, scales_mi, 1,
+                                        scales_e]
                         cbits[n,
                               m] += (LUT_Biases[n, k * g // act_group_size] *
-                                     (1 / alphas[0]) *
-                                     scales[mo, k * g // group_size, scales_mi,
-                                            1, scales_e])
+                                     (1 / alphas[0]) * zp)
 
     c = (cbits.reshape(
         (N, M // simd_n_out // bits, bits,
