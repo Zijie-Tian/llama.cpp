@@ -1,6 +1,3 @@
-#include "ggml.h"
-#include "ggml-cpu.h"
-
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -9,6 +6,9 @@
 #include <map>
 #include <string>
 #include <vector>
+
+#include "ggml-cpu.h"
+#include "ggml.h"
 
 // This is a simple model with two tensors a and b
 struct simple_model {
@@ -23,17 +23,17 @@ struct simple_model {
 void load_model(simple_model & model, float * a, float * b, int rows_A, int cols_A, int rows_B, int cols_B) {
     size_t ctx_size = 0;
     {
-        ctx_size += rows_A * cols_A * ggml_type_size(GGML_TYPE_F32); // tensor a
-        ctx_size += rows_B * cols_B * ggml_type_size(GGML_TYPE_F32); // tensor b
-        ctx_size += 2 * ggml_tensor_overhead(), // tensors
-        ctx_size += ggml_graph_overhead(); // compute graph
-        ctx_size += 1024; // some overhead
+        ctx_size += rows_A * cols_A * ggml_type_size(GGML_TYPE_F32);  // tensor a
+        ctx_size += rows_B * cols_B * ggml_type_size(GGML_TYPE_F32);  // tensor b
+        ctx_size += 2 * ggml_tensor_overhead(),                       // tensors
+            ctx_size += ggml_graph_overhead();                        // compute graph
+        ctx_size += 1024;                                             // some overhead
     }
 
-    struct ggml_init_params params {
-            /*.mem_size   =*/ ctx_size,
-            /*.mem_buffer =*/ NULL,
-            /*.no_alloc   =*/ false, // NOTE: this should be false when using the legacy API
+    struct ggml_init_params params{
+        /*.mem_size   =*/ctx_size,
+        /*.mem_buffer =*/NULL,
+        /*.no_alloc   =*/false,  // NOTE: this should be false when using the legacy API
     };
 
     // create context
@@ -48,8 +48,8 @@ void load_model(simple_model & model, float * a, float * b, int rows_A, int cols
 }
 
 // build the compute graph to perform a matrix multiplication
-struct ggml_cgraph * build_graph(const simple_model& model) {
-    struct ggml_cgraph  * gf = ggml_new_graph(model.ctx);
+struct ggml_cgraph * build_graph(const simple_model & model) {
+    struct ggml_cgraph * gf = ggml_new_graph(model.ctx);
 
     // result = a*b^T
     struct ggml_tensor * result = ggml_mul_mat(model.ctx, model.a, model.b);
@@ -62,7 +62,7 @@ struct ggml_cgraph * build_graph(const simple_model& model) {
 struct ggml_tensor * compute(const simple_model & model) {
     struct ggml_cgraph * gf = build_graph(model);
 
-    int n_threads = 1; // number of threads to perform some operations with multi-threading
+    int n_threads = 1;  // number of threads to perform some operations with multi-threading
 
     ggml_graph_compute_with_ctx(model.ctx, gf, n_threads);
 
@@ -76,23 +76,14 @@ int main(void) {
     // initialize data of matrices to perform matrix multiplication
     const int rows_A = 4, cols_A = 2;
 
-    float matrix_A[rows_A * cols_A] = {
-        2, 8,
-        5, 1,
-        4, 2,
-        8, 6
-    };
+    float matrix_A[rows_A * cols_A] = { 2, 8, 5, 1, 4, 2, 8, 6 };
 
     const int rows_B = 3, cols_B = 2;
     /* Transpose([
         10, 9, 5,
         5, 9, 4
     ]) 2 rows, 3 cols */
-    float matrix_B[rows_B * cols_B] = {
-        10, 5,
-        9, 9,
-        5, 4
-    };
+    float     matrix_B[rows_B * cols_B] = { 10, 5, 9, 9, 5, 4 };
 
     simple_model model;
     load_model(model, matrix_A, matrix_B, rows_A, cols_A, rows_B, cols_B);
