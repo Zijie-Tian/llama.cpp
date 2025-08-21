@@ -111,34 +111,116 @@ The current branch (`tzj/qlutattn`) is implementing a **Mixed Precision KV Cache
 
 ## LUT-based Quantization Knowledge
 
-### Current Branch: tzj/qlutattn
-Working on Mixed Precision KV Cache with LUT-based quantization for attention.
+### Current Branch: tzj/opt_tmac
+Working on TMAC (Table-based Matrix Acceleration) - LUT-based quantization for efficient matrix multiplication.
 
-### Key Concepts
+### TMAC Architecture Overview
 
-1. **LUT (Look-Up Table) Mechanism**:
-   - Groups weights into chunks of size g=4
+TMAC is a sophisticated LUT-based quantization system integrated into llama.cpp through the extra_buffer mechanism. It transforms traditional matrix multiplication into efficient table lookup operations.
+
+### Core Design Components
+
+1. **Extra Buffer Type Mechanism**:
+   - Extends `ggml::cpu::extra_buffer_type` to create specialized TMAC buffer type
+   - Implements `supports_op()` to identify TMAC-compatible operations
+   - Stores TMAC-specific metadata (scales, quantized weights) via `tensor->extra` field
+   - Minimal intrusion into existing ggml architecture
+
+2. **LUT (Look-Up Table) Core Concepts**:
+   - **g=4**: Each LUT group processes 4 elements atomically
+   - **ngroups_per_elem**: Typically 2 (8 bits / 4 bits per group)
    - Pre-computes dot products for all 2^g bit patterns
-   - Each group is processed atomically as a unit
+   - Transforms matrix multiplication into table lookups
 
-2. **Quantization Strategies**:
-   - **Multi-channel**: Scales shape (1, K//group_size), all M rows share the same grouped scales
-   - **Per-channel**: Scales shape (1, K), all M rows share per-channel scales
-   - Both use zero points shape (M, K//group_size) or (1, K//group_size) depending on requirements
+3. **Weight Transformation Pipeline**:
+   - `ggml_backend_tmac_buffer_set_tensor()`: Intercepts weight setting operations
+   - `ggml_tmac_transform_tensor()`: Performs complex weight permutation
+   - Optimizes layout for SIMD instructions and memory access patterns
+   - Supports both in-place and out-of-place transformations
 
-3. **Critical Constraint**: 
-   - For LUT compatibility, weight quantization group_size must be >= g (typically 4)
-   - This is because LUT processes g elements as an atomic unit
+4. **Kernel Configuration System**:
+   ```cpp
+   struct tmac_kernel_config {
+       int32_t g;                 // Group size for LUT (typically 4)
+       int32_t ngroups_per_elem;  // Groups per element (8/g)
+       int32_t q_group_size;      // Quantization group size (64/128)
+       int32_t act_group_size;    // Activation group size
+       int32_t bm;                // Block size (256/512/1024/2048)
+       int32_t kfactor;           // K-dimension unrolling factor
+       int32_t simd_n_in;         // SIMD input width
+       int32_t simd_n_out;        // SIMD output width
+       bool has_scale;            // Whether scales are used
+       bool has_zero_point;       // Whether zero points are used
+       bool one_scale;            // Single scale for all weights
+   }
+   ```
 
-4. **Important Implementation Details**:
-   - LUT_Biases compensates for quantization errors and handles zero point contributions
-   - The 1/alphas[0] factor corrects for bit-position weighting in multi-bit quantization
-   - Symmetric quantization (no zero point) often works better for per-channel mode
+5. **Quantization Type Support**:
+   - **2-bit types**: 
+     - TMAC_W2G64_0/1 (64-element groups, with/without zero point)
+     - TMAC_W2G128_0/1 (128-element groups, with/without zero point)
+     - TMAC_BN_0 (BitNet-style, single scale)
+   - **4-bit types**:
+     - TMAC_W4G64_0/1 (64-element groups)
+     - TMAC_W4G128_0/1 (128-element groups)
+   - **Compatible types**: Q4_0, TQ1_0, TQ2_0
 
-### Test Files
-- `test_e2e.py`: Complete end-to-end LUT implementation with mixed quantization support
-- Test parameters: bits=2, g=4, group_size varies (8, 16, 32, 128)
+6. **Auto-tuning System**:
+   - Dynamically searches optimal kernel configurations
+   - Tests different bm values: {256, 512, 1024, 2048, 320, 640, 1280}
+   - Evaluates kfactor options: {8, 16}
+   - Caches configurations per (M, K, bits) combination
+   - Uses performance microbenchmarks for selection
+
+7. **Parallel Execution Strategy**:
+   - Chunk-based work distribution
+   - Supports multi-threading with atomic operations
+   - Separates LUT construction (init phase) from computation
+   - Efficient barrier synchronization
+
+### Implementation Details
+
+1. **Memory Layout Optimization**:
+   - Weight permutation follows pattern: (M, K) → (M/bm, bm/bits, K/g)
+   - SIMD-friendly layout with interleaved bit planes
+   - Aligned memory allocation (64-byte alignment)
+
+2. **Scale Storage Strategy**:
+   - **Multi-channel**: Scales shape (M, K/group_size)
+   - **Per-channel**: Scales shape (M, K)
+   - **BitNet mode**: Single scale for entire tensor
+   - Zero points stored separately when enabled
+
+3. **Critical Constraints**:
+   - Weight quantization group_size must be ≥ g (typically 4)
+   - LUT processes g elements as atomic unit
+   - Activation group size must be multiple of g
+   - M dimension must be divisible by bm/bits
+
+4. **Performance Optimizations**:
+   - Pre-computed LUT tables reduce runtime computation
+   - SIMD instructions for parallel processing
+   - Cache-friendly memory access patterns
+   - Minimal data movement through in-place operations
+
+### File Structure
+
+- `tmac.h/cpp`: Main TMAC buffer type implementation and integration
+- `lut_mul_mat.h/cpp`: Core matrix multiplication logic and weight transformation
+- `lut_ctor.h/cpp`: LUT construction utilities
+- `tbl.h/cpp`: Table-based computation kernels
+
+### Key Functions
+
+- `ggml_backend_tmac_buffer_type()`: Returns TMAC buffer type singleton
+- `ggml_tmac_transform_tensor()`: Transforms weights to TMAC format
+- `ggml_tmac_tune_kernel_config()`: Auto-tunes kernel parameters
+- `ggml_backend_tmac_mul_mat()`: Main matrix multiplication entry point
+- `qgemm_lut_int8_g4()`: Core LUT-based GEMM implementation
 
 ### Current Understanding
-- The LUT mechanism requires careful alignment between quantization groups and LUT processing units
+- TMAC achieves efficiency by converting matrix multiplication to table lookups
+- The extra_buffer mechanism allows seamless integration without modifying core ggml
+- Auto-tuning ensures optimal performance across different tensor shapes
 - Trade-off exists between quantization granularity (accuracy) and LUT compatibility (efficiency)
+- The system is designed for minimal code intrusion while maximizing performance gains
