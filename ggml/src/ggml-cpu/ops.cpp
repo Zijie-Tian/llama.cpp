@@ -7533,8 +7533,6 @@ static void ggml_compute_forward_flash_attn_ext_f16(const ggml_compute_params * 
     GGML_ASSERT((q_to_vec_dot) && "fattn: unsupported K-type");
     GGML_ASSERT((v->type == GGML_TYPE_F32 || v_to_float) && "fattn: unsupported V-type");
 
-    // GGML_ASSERT
-
     // loop over n_batch and n_head
     for (int ir = ir0; ir < ir1; ++ir) {
         // q indices

@@ -3357,7 +3357,7 @@ struct test_qlutattn_ext : public test_case {
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
         GGML_ASSERT((type_K == GGML_TYPE_QLUTATTN_K4_128x128 && type_V == GGML_TYPE_QLUTATTN_V4_128x128) ||
-                    (type_K == GGML_TYPE_QLUTATTN_K2_128x128 && type_V == GGML_TYPE_QLUTATTN_V2_128x128) || 
+                    (type_K == GGML_TYPE_QLUTATTN_K2_128x128 && type_V == GGML_TYPE_QLUTATTN_V2_128x128) ||
                     (type_K == GGML_TYPE_QLUTATTN_K1_128x128 && type_V == GGML_TYPE_QLUTATTN_V1_128x128));
 
         const int64_t PACK_SIZE       = 128;  //> 128x128
@@ -4712,7 +4712,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
              }) {
             // NOTE: nr is the ratio of `n_q_heads` to `n_kv_heads`
             for (int nr : {
-                     1,
+                     128,
                  }) {
                 // NOTE: Mixed precision.
                 test_cases.emplace_back(new test_qlutattn_ext(hs, hs, 8, nr, kv, 1, true, 0, 0, GGML_PREC_MIXED,
