@@ -50,11 +50,6 @@ target_include_directories(
 target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
 target_compile_features(${TARGET} PRIVATE cxx_std_11)
 
-set(TARGET bench_tmac_gemv)
-add_executable(${TARGET} bench_tmac_gemv.cpp)
-target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
-target_compile_features(${TARGET} PRIVATE cxx_std_11)
-
 set(TARGET bench_qlutattn_gemv)
 add_executable(${TARGET} bench_qlutattn_gemv.cpp)
 target_link_libraries(${TARGET} PRIVATE common llama ${CMAKE_THREAD_LIBS_INIT})
