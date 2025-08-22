@@ -174,7 +174,6 @@ node_modules/
 # Task files
 # tasks.json
 # tasks/ 
-.taskmaster
-.claude
+# .claude
 .env.example
-.mcp.json
+# .mcp.json
