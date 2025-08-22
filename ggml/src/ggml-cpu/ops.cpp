@@ -15,7 +15,7 @@
 #include "ggml-impl.h"
 #include "ggml.h"
 #include "qlutattn/qlut_ctor.h"
-#include "qlutattn/qlutattn.h"  // NOTICE: This include should not be here.
+#include "qlutattn/qlutattn-config.h"  // Global config access for QLUTATTN
 #include "unary-ops.h"
 #include "vec.h"
 
@@ -514,34 +514,26 @@ struct qlutattn_pack_params {
 };
 
 // NOTE: Wrapper for quantization - separates quantization from packing
-static void qlutattn_quantize_block(
-    const ggml_from_float_t quantize_fn,
-    const float* src_f32,
-    char* qweight_ptr,
-    int size
-) {
+static void qlutattn_quantize_block(const ggml_from_float_t quantize_fn, const float * src_f32, char * qweight_ptr,
+                                    int size) {
     // EXPLAIN: Simple quantization without any permutation
     // Scales and zero points are extracted by the quantize function
     quantize_fn(src_f32, qweight_ptr, size);
 }
 
 // NOTE: Pack quantized weights for LUT optimization
-static void qlutattn_pack_weights(
-    const uint8_t* qweight_ptr,
-    uint8_t* qweights_out,
-    uint8_t* repack_ws,  // Temporary workspace for intermediate results
-    int m, int k, int bits, int g,
-    const struct qlutattn_pack_params* params
-) {
+static void qlutattn_pack_weights(const uint8_t * qweight_ptr, uint8_t * qweights_out,
+                                  uint8_t * repack_ws,  // Temporary workspace for intermediate results
+                                  int m, int k, int bits, int g, const struct qlutattn_pack_params * params) {
     GGML_ASSERT(params != NULL);
     const int ngroups_per_elem = params->ngroups_per_elem;
-    const int bm = params->bm;
-    const int simd_n_in = params->simd_n_in;
-    const int simd_n_out = params->simd_n_out;
-    const int kfactor = params->kfactor;
-    const int mgroup = params->mgroup;
-    const int nelem_per_byte = params->nelem_per_byte;
-    
+    const int bm               = params->bm;
+    const int simd_n_in        = params->simd_n_in;
+    const int simd_n_out       = params->simd_n_out;
+    const int kfactor          = params->kfactor;
+    const int mgroup           = params->mgroup;
+    const int nelem_per_byte   = params->nelem_per_byte;
+
     //> ===================================================================================================
     //> Stage 1: Bit-plane separation
     //> ===================================================================================================
@@ -560,16 +552,16 @@ static void qlutattn_pack_weights(
             } else {
                 GGML_ABORT("Invalid bits");
             }
-            
+
             // NOTE: Separate bits and pack into groups for LUT
             for (int ib = 0; ib < bits; ib++) {
-                int new_ik = ik / g;      // Group index
-                int shft_left = ik % g;   // Position within group
+                int new_ik    = ik / g;  // Group index
+                int shft_left = ik % g;  // Position within group
                 repack_ws[im * bits * k / g + ib * k / g + new_ik] += ((v >> ib) & 1) << shft_left;
             }
         }
     }
-    
+
     //> ===================================================================================================
     //> Stage 2: SIMD layout permutation
     //> ===================================================================================================
@@ -578,46 +570,45 @@ static void qlutattn_pack_weights(
     // 1. Reshape for SIMD width: (M/bits/simd_n_out, simd_n_out, bits, K/g)
     // 2. Group-wise reshape: (M/mgroup, ngroups_per_elem, simd_n_in, K/g)
     // 3. Block-wise reshape: (M/bm, bm/mgroup, simd_n_in, ngroups_per_elem, K/g/kfactor, kfactor)
-    
+
     memset(qweights_out, 0, m * k / g / nelem_per_byte);
     for (int im = 0; im < m / bits; im++) {
         for (int ib = 0; ib < bits; ib++) {
             for (int ik = 0; ik < k / g; ik++) {
                 // NOTE: Stage 1 - Reshape for SIMD width
-                int new_im = im / simd_n_out;
+                int new_im   = im / simd_n_out;
                 int new_isno = im % simd_n_out;
-                int new_idx = new_im * bits * simd_n_out * k / g + ib * simd_n_out * k / g +
-                             new_isno * k / g + ik;
-                
+                int new_idx  = new_im * bits * simd_n_out * k / g + ib * simd_n_out * k / g + new_isno * k / g + ik;
+
                 // NOTE: Stage 2 - Group-wise reshape
-                int nb2 = k / g;
-                int nb1 = simd_n_in * nb2;
-                int nb0 = ngroups_per_elem * nb1;
-                new_im = new_idx / nb0;
-                int new_ing = (new_idx % nb0) / nb1;
+                int nb2      = k / g;
+                int nb1      = simd_n_in * nb2;
+                int nb0      = ngroups_per_elem * nb1;
+                new_im       = new_idx / nb0;
+                int new_ing  = (new_idx % nb0) / nb1;
                 int new_isni = (new_idx % nb1) / nb2;
-                int new_ik = (new_idx % nb2);
-                new_idx = new_im * ngroups_per_elem * simd_n_in * k / g +
-                         new_isni * ngroups_per_elem * k / g + new_ing * k / g + new_ik;
-                
-                // NOTE: Stage 3 - Block-wise reshape for cache optimization  
-                int nb4 = kfactor;
-                int nb3 = k / g / kfactor * nb4;
-                nb2 = ngroups_per_elem * nb3;
-                nb1 = simd_n_in * nb2;
-                nb0 = bm / mgroup * nb1;
-                new_im = new_idx / nb0;
+                int new_ik   = (new_idx % nb2);
+                new_idx      = new_im * ngroups_per_elem * simd_n_in * k / g + new_isni * ngroups_per_elem * k / g +
+                          new_ing * k / g + new_ik;
+
+                // NOTE: Stage 3 - Block-wise reshape for cache optimization
+                int nb4     = kfactor;
+                int nb3     = k / g / kfactor * nb4;
+                nb2         = ngroups_per_elem * nb3;
+                nb1         = simd_n_in * nb2;
+                nb0         = bm / mgroup * nb1;
+                new_im      = new_idx / nb0;
                 int new_ibm = (new_idx % nb0) / nb1;
-                new_isni = (new_idx % nb1) / nb2;
-                new_ing = (new_idx % nb2) / nb3;
-                new_ik = (new_idx % nb3) / nb4;
+                new_isni    = (new_idx % nb1) / nb2;
+                new_ing     = (new_idx % nb2) / nb3;
+                new_ik      = (new_idx % nb3) / nb4;
                 int new_ikf = (new_idx % nb4);
-                new_idx = new_im * k / g / kfactor * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
-                         new_ik * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
-                         new_ibm * kfactor * simd_n_in * ngroups_per_elem +
-                         new_ikf * simd_n_in * ngroups_per_elem + new_isni * ngroups_per_elem + new_ing;
+                new_idx     = new_im * k / g / kfactor * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
+                          new_ik * bm / mgroup * kfactor * simd_n_in * ngroups_per_elem +
+                          new_ibm * kfactor * simd_n_in * ngroups_per_elem + new_ikf * simd_n_in * ngroups_per_elem +
+                          new_isni * ngroups_per_elem + new_ing;
                 new_idx = new_idx / ngroups_per_elem;
-                
+
                 // NOTE: Accumulate the permuted bits
                 qweights_out[new_idx] += repack_ws[im * bits * k / g + ib * k / g + ik] << (new_ing * g);
             }
@@ -626,18 +617,12 @@ static void qlutattn_pack_weights(
 }
 
 // NOTE: Pack scales with optimized layout
-static void qlutattn_pack_scales(
-    const float* scale_ptr,
-    const float* zero_ptr,
-    ggml_fp16_t* scales_out,
-    int m, int k, int bits, int group_size,
-    int scales_size, int bm, int simd_n_out
-) {
-    
+static void qlutattn_pack_scales(const float * scale_ptr, const float * zero_ptr, ggml_fp16_t * scales_out, int m,
+                                 int k, int bits, int group_size, int scales_size, int bm, int simd_n_out) {
     if (scales_size < m / bits) {
         // NOTE: BitNet-like scale (single scale for all groups)
         for (int i = 0; i < scales_size; i++) {
-            scales_out[i] = (float)scale_ptr[i];
+            scales_out[i] = (float) scale_ptr[i];
         }
     } else {
         // NOTE: Per-group scales with layout transformation for SIMD access
@@ -645,39 +630,39 @@ static void qlutattn_pack_scales(
         for (int im = 0; im < m / bits; im++) {
             for (int ik = 0; ik < k; ik += group_size) {
                 int idx = im * k + ik;
-                
+
                 // NOTE: Extract scale and zero point based on bit width
                 ggml_fp16_t scale, zero_point;
                 if (bits == 1) {
-                    scale = QlutattnI1TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                    scale      = QlutattnI1TypeAccessor::get_scale(scale_ptr, idx, group_size);
                     zero_point = QlutattnI1TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
                 } else if (bits == 2) {
-                    scale = QlutattnI2TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                    scale      = QlutattnI2TypeAccessor::get_scale(scale_ptr, idx, group_size);
                     zero_point = QlutattnI2TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
                 } else if (bits == 4) {
-                    scale = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
+                    scale      = QlutattnI4TypeAccessor::get_scale(scale_ptr, idx, group_size);
                     zero_point = QlutattnI4TypeAccessor::get_zero_point(zero_ptr, idx, group_size);
                 } else {
                     GGML_ABORT("Invalid bits");
                 }
-                
+
                 // EXPLAIN: Transform scale layout for SIMD-friendly access pattern
                 // Scales are interleaved with zero points for better cache locality
-                idx = idx / group_size;
-                int nb1 = k / group_size;
-                int nb0 = bm / bits * nb1;
-                int new_im = idx / nb0;
+                idx         = idx / group_size;
+                int nb1     = k / group_size;
+                int nb0     = bm / bits * nb1;
+                int new_im  = idx / nb0;
                 int new_ibm = (idx % nb0) / nb1;
-                int new_ik = (idx % nb1);
-                
-                int new_isimd = new_ibm % simd_n_out;
-                int new_idx_outer = new_im * bm / bits * k / group_size / simd_n_out +
-                                   new_ik * bm / bits / simd_n_out + new_ibm / simd_n_out;
+                int new_ik  = (idx % nb1);
+
+                int new_isimd     = new_ibm % simd_n_out;
+                int new_idx_outer = new_im * bm / bits * k / group_size / simd_n_out + new_ik * bm / bits / simd_n_out +
+                                    new_ibm / simd_n_out;
                 int new_idx_scale = new_idx_outer * (simd_n_out * 2) + new_isimd;
-                int new_idx_zero = new_idx_outer * (simd_n_out * 2) + simd_n_out + new_isimd;
-                
+                int new_idx_zero  = new_idx_outer * (simd_n_out * 2) + simd_n_out + new_isimd;
+
                 scales_out[new_idx_scale] = scale;
-                scales_out[new_idx_zero] = zero_point;
+                scales_out[new_idx_zero]  = zero_point;
             }
         }
     }
@@ -695,7 +680,7 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
     GGML_TENSOR_UNARY_OP_LOCALS
 
     const int64_t PACK_SIZE       = 128;  // head_dim
-    const int64_t PACK_CHUNK_SIZE = 128;  // tokens per chunk  
+    const int64_t PACK_CHUNK_SIZE = 128;  // tokens per chunk
     const int     ith             = params->ith;
     const int     nth             = params->nth;
     const int     n_kv_heads      = ne00 / (PACK_SIZE * PACK_CHUNK_SIZE);
@@ -726,8 +711,16 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 GGML_ASSERT(n_kv_heads > 0 && "Invalid number of KV heads");
                 GGML_ASSERT(m % 128 == 0 && "m must be a multiple of 128");
 
-                struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(ne01, ne00, bits);
-                GGML_ASSERT(kernel_config != nullptr && "Kernel config not found");
+                // Initialize config system if needed (only happens once)
+                if (!ggml_qlutattn_config_is_initialized()) {
+                    ggml_qlutattn_config_init();
+                }
+                
+                const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(ne01, ne00, bits);
+                if (kernel_config == nullptr) {
+                    GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for M=%d K=%d bits=%d\n", ne01, ne00, bits);
+                    GGML_ABORT("Kernel config not found");
+                }
 
                 // NOTE: load kernel configs.
                 const int g                = kernel_config->g;
@@ -795,28 +788,24 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                             ggml_fp16_t * scales = (ggml_fp16_t *) (qweights + m / bits * k / nelem_per_byte);
 
                             // NOTE: Pseudo quantization and simple pack.
-                            qlutattn_quantize_block(quantize_block_q, src0_f32, (char *) qweight_ptr, 
-                                                   PACK_CHUNK_SIZE * PACK_SIZE);
+                            qlutattn_quantize_block(quantize_block_q, src0_f32, (char *) qweight_ptr,
+                                                    PACK_CHUNK_SIZE * PACK_SIZE);
 
                             // SPLIT: Pack weights with bit-plane separation and SIMD permutation
-                            struct qlutattn_pack_params pack_params = {
-                                .simd_n_out = simd_n_out,
-                                .simd_n_in = simd_n_in,
-                                .ngroups_per_elem = ngroups_per_elem,
-                                .bm = bm,
-                                .kfactor = kfactor,
-                                .mgroup = ngroups_per_elem * simd_n_in,
-                                .nelem_per_byte = nelem_per_byte
-                            };
-                            
+                            struct qlutattn_pack_params pack_params = { .simd_n_out       = simd_n_out,
+                                                                        .simd_n_in        = simd_n_in,
+                                                                        .ngroups_per_elem = ngroups_per_elem,
+                                                                        .bm               = bm,
+                                                                        .kfactor          = kfactor,
+                                                                        .mgroup         = ngroups_per_elem * simd_n_in,
+                                                                        .nelem_per_byte = nelem_per_byte };
+
                             memset(qweights, 0, m * k / g / nelem_per_byte);
-                            qlutattn_pack_weights(qweight_ptr, qweights, repack_ws, 
-                                                m, k, bits, g, &pack_params);
+                            qlutattn_pack_weights(qweight_ptr, qweights, repack_ws, m, k, bits, g, &pack_params);
 
                             // NOTE: Pack scales with appropriate permutation for SIMD access
-                            qlutattn_pack_scales(scale_ptr, zero_ptr, scales, 
-                                               m, k, bits, group_size, 
-                                               scales_size, bm, simd_n_out);
+                            qlutattn_pack_scales(scale_ptr, zero_ptr, scales, m, k, bits, group_size, scales_size, bm,
+                                                 simd_n_out);
 
                         }  //> End of ih loop.
                     }  //> End of ne02 loop.
@@ -841,8 +830,16 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                 GGML_ASSERT(n_kv_heads > 0 && "Invalid number of KV heads");
                 GGML_ASSERT(m % 128 == 0 && "m must be a multiple of 128");
 
-                struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(ne01, ne00, bits);
-                GGML_ASSERT(kernel_config != nullptr && "Kernel config not found");
+                // Initialize config system if needed (only happens once)
+                if (!ggml_qlutattn_config_is_initialized()) {
+                    ggml_qlutattn_config_init();
+                }
+                
+                const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(ne01, ne00, bits);
+                if (kernel_config == nullptr) {
+                    GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for M=%d K=%d bits=%d\n", ne01, ne00, bits);
+                    GGML_ABORT("Kernel config not found");
+                }
 
                 // NOTE: load kernel configs.
                 const int g                = kernel_config->g;
@@ -919,28 +916,24 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
                             ggml_fp16_t * scales = (ggml_fp16_t *) (qweights + m / bits * k / nelem_per_byte);
 
                             // NOTE: Pseudo quantization and simple pack.
-                            qlutattn_quantize_block(quantize_block_q, src0_f32, (char *) qweight_ptr, 
-                                                   PACK_CHUNK_SIZE * PACK_SIZE);
+                            qlutattn_quantize_block(quantize_block_q, src0_f32, (char *) qweight_ptr,
+                                                    PACK_CHUNK_SIZE * PACK_SIZE);
 
                             // SPLIT: Pack weights with bit-plane separation and SIMD permutation
-                            struct qlutattn_pack_params pack_params = {
-                                .simd_n_out = simd_n_out,
-                                .simd_n_in = simd_n_in,
-                                .ngroups_per_elem = ngroups_per_elem,
-                                .bm = bm,
-                                .kfactor = kfactor,
-                                .mgroup = ngroups_per_elem * simd_n_in,
-                                .nelem_per_byte = nelem_per_byte
-                            };
-                            
+                            struct qlutattn_pack_params pack_params = { .simd_n_out       = simd_n_out,
+                                                                        .simd_n_in        = simd_n_in,
+                                                                        .ngroups_per_elem = ngroups_per_elem,
+                                                                        .bm               = bm,
+                                                                        .kfactor          = kfactor,
+                                                                        .mgroup         = ngroups_per_elem * simd_n_in,
+                                                                        .nelem_per_byte = nelem_per_byte };
+
                             memset(qweights, 0, m * k / g / nelem_per_byte);
-                            qlutattn_pack_weights(qweight_ptr, qweights, repack_ws, 
-                                                m, k, bits, g, &pack_params);
+                            qlutattn_pack_weights(qweight_ptr, qweights, repack_ws, m, k, bits, g, &pack_params);
 
                             // NOTE: Pack scales with appropriate permutation for SIMD access
-                            qlutattn_pack_scales(scale_ptr, zero_ptr, scales, 
-                                               m, k, bits, group_size, 
-                                               scales_size, bm, simd_n_out);
+                            qlutattn_pack_scales(scale_ptr, zero_ptr, scales, m, k, bits, group_size, scales_size, bm,
+                                                 simd_n_out);
 
                         }  //> End of ih loop.
                     }  //> End of ne02 loop.
@@ -7758,10 +7751,16 @@ static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params *
     const ggml_to_float_t   v_to_float     = ggml_get_type_traits(v->type)->to_float;
 
     // NOTE: Mixed precision MUL_MAT
-    struct qlutattn_kernel_config * kernel_config =
-        find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
-    GGML_ASSERT(kernel_config != nullptr &&
-                "Failed to find qlutattn kernel config for 128x128x4, please check the kernel config");
+    // Initialize config system if needed (only happens once)
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(1, 1, 4);  // NOTE: Just for test
+    if (kernel_config == nullptr) {
+        GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for 128x128x4\n");
+        GGML_ABORT("Kernel config not found");
+    }
     const int64_t ACT_GROUP_SIZE = kernel_config->act_group_size;
 
     const int64_t QLUT_SIZE       = DK / 4 * 16 * sizeof(uint8_t);
@@ -7963,10 +7962,16 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                                                  float * dst_data, void * workspace, const float scale,
                                                  const float max_bias, const float logit_softcap) {
     // NOTE: Mixed precision MUL_MAT
-    struct qlutattn_kernel_config * kernel_config =
-        find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
-    GGML_ASSERT(kernel_config != nullptr &&
-                "Failed to find qlutattn kernel config for 128x128x4, please check the kernel config");
+    // Initialize config system if needed (only happens once)
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(1, 1, 4);  // NOTE: Just for test
+    if (kernel_config == nullptr) {
+        GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for 128x128x4\n");
+        GGML_ABORT("Kernel config not found");
+    }
 
     GGML_TENSOR_LOCALS(int64_t, neq, q, ne)
     GGML_TENSOR_LOCALS(size_t, nbq, q, nb)
@@ -8573,7 +8578,15 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     GGML_TENSOR_LOCALS(int64_t, ne, dst, ne)
     GGML_TENSOR_LOCALS(size_t, nb, dst, nb)
 
-    qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    const qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(1, 1, 4);  // NOTE: Just for test
+    if (kernel_config == nullptr) {
+        GGML_LOG_ERROR("Failed to find kernel config for flash_attn_ext_mixed\n");
+        return;
+    }
 
     int ith = params->ith;
     int nth = params->nth;
@@ -8665,8 +8678,8 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
 
     // Process FP16 segment first
     if (k_fp16 && v_fp16 && k_fp16->ne[1] > 0) {
-        // ggml_flash_attn_ext_qlutattn_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16,
-        //                                          (void *) workspace, scale, max_bias, logit_softcap);
+        ggml_flash_attn_ext_qlutattn_f16_segment(params, q, k_fp16, v_fp16, mask_fp16, (float *) imm_buffer_fp16,
+                                                 (void *) workspace, scale, max_bias, logit_softcap);
     }
 
     if (k_quant && v_quant && k_quant->ne[1] > 0) {
@@ -8697,8 +8710,21 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
         float M_quant = ws_state_thread_quant[2 * state_idx + 0];
         float S_quant = ws_state_thread_quant[2 * state_idx + 1];
 
-        float M = MAX(M_fp16, M_quant);
-        float S = S_fp16 * expf(M_fp16 - M) + S_quant * expf(M_quant - M);
+        // Handle the case where one segment is completely masked out
+        float M, S;
+        if (M_fp16 == -INFINITY && S_fp16 == 0.0f) {
+            // FP16 segment is completely masked out, use only quant segment
+            M = M_quant;
+            S = S_quant;
+        } else if (M_quant == -INFINITY && S_quant == 0.0f) {
+            // Quant segment is completely masked out, use only FP16 segment
+            M = M_fp16;
+            S = S_fp16;
+        } else {
+            // Both segments have valid values, merge them
+            M = MAX(M_fp16, M_quant);
+            S = S_fp16 * expf(M_fp16 - M) + S_quant * expf(M_quant - M);
+        }
 
         float * imm_fp16_vec  = (float *) ((uint8_t *) imm_buffer_fp16 + (iq3 * ne2 * ne1 + iq2 + iq1 * ne1) * nb1);
         float * imm_quant_vec = (float *) ((uint8_t *) imm_buffer_quant + (iq3 * ne2 * ne1 + iq2 + iq1 * ne1) * nb1);

@@ -34,25 +34,8 @@ static inline float _mm256_addv_ps(const __m256 v);
     snprintf(buf, sizeof(buf), s, __VA_ARGS__); \
     my_fputs(buf);
 
-struct qlutattn_kernel_config {
-    int32_t g;
-    int32_t ngroups_per_elem;
-    int32_t q_group_size;
-    int32_t act_group_size;
-
-    bool has_scale;
-    int  kfactor;
-    int  bits;
-    int  actk;  // should be equal to (act_group_size / g).
-    bool has_zero_point;
-    bool one_scale;
-
-    int32_t  bm;
-    uint32_t simd_n_in;
-    uint32_t simd_n_out;
-
-    int32_t chunk_n;
-};
+// Include the config header to get qlutattn_kernel_config definition
+#include "qlutattn-config.h"
 
 namespace ggml::cpu::qlutattn {
 

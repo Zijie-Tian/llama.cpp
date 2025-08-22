@@ -1,4 +1,5 @@
 #include "qlutattn.h"
+#include "qlutattn-config.h"
 
 #include <chrono>
 #include <cstdint>
@@ -146,7 +147,8 @@ static inline bool get_type_is_one_scale(enum ggml_type type) {
 //> QLUTATTN kernel config management
 //> ===================================================================================================
 
-static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
+// Moved to qlutattn-config.cpp for global access
+// static std::unordered_map<std::string, struct qlutattn_kernel_config> qlutattn_kernel_config;
 
 static std::string ggml_vec_dot_qlutattn_kv4_128x128_kernel_config_key(int M, int K, int bits) {
     return "M" + std::to_string(M) + "_K" + std::to_string(K) + "_b" + std::to_string(bits);
@@ -160,36 +162,11 @@ static std::string ggml_vec_dot_qlutattn_kv4_128x128_kernel_config_key(int M, in
 //     return &final_tmac_kernel_config[key];
 // }
 
-struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K, int bits) {
-    if (qlutattn_kernel_config.count("test") == 0) {
-        struct qlutattn_kernel_config kernel_config{
-            .g                = 4,
-            .ngroups_per_elem = 2,  // NOTE: Must 8 // g, in tmac Kernel g is set to 4.
-            .q_group_size     = 128,
-            .act_group_size   = 64,
-            .has_scale        = true,
-            .kfactor          = 16,
-            .bits             = bits,
-            .actk             = 16,  // should be equal to (act_group_size / g).
-            .has_zero_point   = true,
-            .one_scale        = false,
-            .bm               = 128 * bits,
-            .simd_n_in        = 16,
-            .simd_n_out       = 8,
-            .chunk_n          = 8  // useless for QLUTATTN.
-        };
+// Function moved to qlutattn-config.cpp for global access
+// struct qlutattn_kernel_config * find_qlutattn_128x128_kernel_config(int M, int K, int bits) {...}
 
-        qlutattn_kernel_config["test"] = kernel_config;
-    }
-
-    return &qlutattn_kernel_config["test"];
-}
-
-static void insert_or_assign_qlutattn_kv4_128x128_kernel_config(int M, int K, int bits,
-                                                                struct qlutattn_kernel_config kernel_config) {
-    std::string key = ggml_vec_dot_qlutattn_kv4_128x128_kernel_config_key(M, K, bits);
-    qlutattn_kernel_config.insert_or_assign(key, kernel_config);
-}
+// Function moved to use global config system
+// static void insert_or_assign_qlutattn_kv4_128x128_kernel_config(...)
 
 //
 // static inline void ggml_tmac_forward_mul_mat(void * A, void * B, void * C, void * QLUT, void * LUT_Scales,
@@ -242,7 +219,12 @@ static void insert_or_assign_qlutattn_kv4_128x128_kernel_config(int M, int K, in
 // t-mac llama.cpp n and m swapped
 void ggml_qlutattn_mul_mat_task_init(void * src1, void * qlut, void * lut_scales, void * lut_biases, int n, int k,
                                      int m, int bits) {
-    struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, k, bits);
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(n, k, bits);
     if (kernel_config == nullptr) {
         throw std::runtime_error("ggml_tmac_mul_mat_task_init: Failed to find kernel config for m" + std::to_string(n) +
                                  "_k" + std::to_string(k) + "_b" + std::to_string(bits));
@@ -252,7 +234,12 @@ void ggml_qlutattn_mul_mat_task_init(void * src1, void * qlut, void * lut_scales
 
 void ggml_qlutattn_mul_mat_task_compute(void * src0, void * scales, void * qlut, void * lut_scales, void * lut_biases,
                                         void * dst, int n, int k, int m, int bits) {
-    struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, k, bits);
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(n, k, bits);
     if (kernel_config == nullptr) {
         GGML_LOG_INFO("Failed to find kernel config for m%d_k%d_b%d\n", n, k, bits);
         throw std::runtime_error("ggml_qlutattn_mul_mat_task_compute: Failed to find kernel config for m" +
@@ -266,8 +253,16 @@ void ggml_vec_dot_qlutattn_kv1_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, siz
                                        size_t bx, const ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
     GGML_ASSERT(bx % 128 == 0 && by % 128 == 0 && "Must be multiple of 128 for QLUTATTN KV1 128x128");
 
-    // NOTE: This function is for 2-bit QLUTATTN KV.
-    struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, nrc, 1);
+    // NOTE: This function is for 1-bit QLUTATTN KV.
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(n, nrc, 1);
+    if (kernel_config == nullptr) {
+        GGML_LOG_ERROR("Failed to find kernel config for KV1 n=%d nrc=%d\n", n, nrc);
+        return;
+    }
 
     int bits           = kernel_config->bits;
     int bm             = kernel_config->bm;
@@ -330,7 +325,15 @@ void ggml_vec_dot_qlutattn_kv2_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, siz
     GGML_ASSERT(bx % 128 == 0 && by % 128 == 0 && "Must be multiple of 128 for QLUTATTN KV2 128x128");
 
     // NOTE: This function is for 2-bit QLUTATTN KV.
-    struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, nrc, 2);
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(n, nrc, 2);
+    if (kernel_config == nullptr) {
+        GGML_LOG_ERROR("Failed to find kernel config for KV2 n=%d nrc=%d\n", n, nrc);
+        return;
+    }
 
     int bits           = kernel_config->bits;
     int bm             = kernel_config->bm;
@@ -391,7 +394,15 @@ void ggml_vec_dot_qlutattn_kv2_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, siz
 void ggml_vec_dot_qlutattn_kv4_128x128(int n, ggml_fp16_t * GGML_RESTRICT C, size_t bs, const uint8_t * GGML_RESTRICT x,
                                        size_t bx, const ggml_fp16_t * GGML_RESTRICT y, size_t by, int nrc) {
     GGML_ASSERT(bx % 128 == 0 && by % 128 == 0 && "Must be multiple of 128 for QLUTATTN KV4 128x128");
-    struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(n, nrc, 4);
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(n, nrc, 4);
+    if (kernel_config == nullptr) {
+        GGML_LOG_ERROR("Failed to find kernel config for KV4 n=%d nrc=%d\n", n, nrc);
+        return;
+    }
 
     int bits           = kernel_config->bits;
     int bm             = kernel_config->bm;

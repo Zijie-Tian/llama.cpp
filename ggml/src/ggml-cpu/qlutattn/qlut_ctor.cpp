@@ -1,5 +1,6 @@
 #include "qlut_ctor.h"
 
+#include <cassert>
 #include <algorithm>
 
 namespace ggml::cpu::qlutattn {
@@ -261,6 +262,9 @@ void qlutattn_lut_ctor_int8_g4(void * B, void * LUT_Scales, void * LUT_Biases, v
     int bits           = kernel_config->bits;
 
     int kk_outer_max = K / act_group_size;
+
+    assert(act_group_size != 0);
+
     for (int32_t kk_outer = 0; kk_outer < kk_outer_max; ++kk_outer) {
         qlutattn_partial_max_reset((&(((tmac_float_type *) LUT_Scales)[kk_outer])));
         for (int32_t k_outer = 0; k_outer < act_group_size / 32; ++k_outer) {

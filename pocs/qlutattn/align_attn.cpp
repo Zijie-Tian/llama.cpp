@@ -395,27 +395,49 @@ int main() {
     print_tensor_info("Mask", mask);
     print_tensor_info("State", state);
 
-    // Fill with FIXED reproducible data
-    printf("\nGenerating fixed test data (seed=42)...\n");
-    // fill_tensor_f32(q, 0.f, 0.8f);
-    fake_rand_tensor_f32(q);
-    fill_tensor_f16(k, 0.f, 1.f);
-    fill_tensor_f16(v, 0.f, 1.f);
+    // Fill with FIXED values for debugging
+    printf("\nGenerating fixed test data for debugging...\n");
+    
+    // Set Q to 1.0 for simple calculation
+    set_tensor_f32(q, 1.0f);
+    
+    // Set different values for FP16 and quantized segments
+    // FP16 segment (first kv_segment_len positions): K=0.5, V=0.5
+    for (int h = 0; h < n_kv_heads; h++) {
+        for (int pos = 0; pos < kv_segment_len; pos++) {
+            for (int d = 0; d < head_dim; d++) {
+                ggml_fp16_t* k_data = (ggml_fp16_t*)k->data;
+                ggml_fp16_t* v_data = (ggml_fp16_t*)v->data;
+                int idx = d + pos * head_dim + h * head_dim * kv_len;
+                k_data[idx] = ggml_fp32_to_fp16(0.5f);
+                v_data[idx] = ggml_fp32_to_fp16(0.5f);
+            }
+        }
+    }
+    
+    // Quantized segment (remaining positions): K=1.0, V=2.0
+    for (int h = 0; h < n_kv_heads; h++) {
+        for (int pos = kv_segment_len; pos < kv_len; pos++) {
+            for (int d = 0; d < head_dim; d++) {
+                ggml_fp16_t* k_data = (ggml_fp16_t*)k->data;
+                ggml_fp16_t* v_data = (ggml_fp16_t*)v->data;
+                int idx = d + pos * head_dim + h * head_dim * kv_len;
+                k_data[idx] = ggml_fp32_to_fp16(1.0f);
+                v_data[idx] = ggml_fp32_to_fp16(2.0f);
+            }
+        }
+    }
+    
+    printf("Debug values set: Q=1.0, FP16 segment K=0.5 V=0.5, Quant segment K=1.0 V=2.0\n");
 
-    // set_tensor_f32(q, 1.0f);
-    // set_tensor_f16(k, 1.f);
-    // set_tensor_f16(v, 1.f);
-    // set_tensor_f16(k, 1.f, head_dim * kv_len * 1);
-    // set_tensor_f16(v, 1.f, head_dim * kv_len * 1);
-
-    // Initialize mask (causal mask - positions can only see previous and current KV)
+    // Initialize mask - mask out FP16 segment, only keep quantized segment for testing
     ggml_fp16_t * mask_data = (ggml_fp16_t *) mask->data;
     memset(mask_data, 0, ggml_nbytes(mask));
     for (int i = 0; i < padded_seq_len; i++) {
         for (int j = 0; j < padded_kv_len; j++) {
-            // For testing: allow all query positions to see all KV positions < kv_len
-            // This ensures both segments have valid attention weights
-            if (i < seq_len && kv_segment_len < j && j < kv_len) {
+            // Only allow attention to quantized segment (positions >= kv_segment_len)
+            // Mask out FP16 segment (positions < kv_segment_len)
+            if (i < seq_len && j >= kv_segment_len && j < kv_len) {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(0.0f);
             } else {
                 mask_data[i * padded_kv_len + j] = ggml_fp32_to_fp16(-INFINITY);
@@ -535,9 +557,9 @@ int main() {
     //                                          v->nb[1], v->nb[2], v->nb[3], kv_segment_len * v->nb[1]);
 
     ggml_tensor * k_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K1_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_K4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
     ggml_tensor * v_qlutattn_seg =
-        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_V1_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
+        ggml_new_tensor_4d(ctx, GGML_TYPE_QLUTATTN_V4_128x128, head_dim * PACK_CHUNK_SIZE * n_kv_heads, n_chunks, 1, 1);
 
     //> Do quantization.
     ggml_tensor * k_qlutattn_seg_quant = ggml_cpy(ctx, k_permuted_view, k_qlutattn_seg);
@@ -549,40 +571,28 @@ int main() {
     ggml_graph_compute_with_ctx(ctx, gf, 4);
 
     const int     padded_segment_len = GGML_PAD(kv_segment_len, 64);
-    ggml_tensor * mask_fp16_seg      = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, kv_segment_len, padded_seq_len);
+    ggml_tensor * mask_fp16_seg      = ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_segment_len, padded_seq_len);
     ggml_tensor * mask_quant_seg =
-        ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_kv_len - kv_segment_len, padded_seq_len);
+        ggml_new_tensor_2d(ctx, GGML_TYPE_F16, padded_kv_len - padded_segment_len, padded_seq_len);
 
     ggml_fp16_t * mask_fp16_data  = (ggml_fp16_t *) mask_fp16_seg->data;
     ggml_fp16_t * mask_quant_data = (ggml_fp16_t *) mask_quant_seg->data;
-    // // memset(mask_data, 0, ggml_nbytes(mask_fp16_seg));
-    // // memset(mask_data, 0, ggml_nbytes(mask_quant_seg));
-    // for (int i = 0; i < padded_seq_len; i++) {
-    //     for (int j = 0; j < kv_segment_len; j++) {
-
-    //         mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
-
-    //         // Causal masking - positions can only see up to their position
-    //         // if (i < seq_len && j < kv_len) {
-    //         //     // Mask out future positions with -INFINITY
-    //         //     mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(0.0f);
-    //         // } else {
-    //         //     // Mask out future positions with -INFINITY
-    //         //     mask_fp16_data[i * kv_segment_len + j] = ggml_fp32_to_fp16(-INFINITY);
-    //         // }
-    //     }
-    // }
-
+    
+    // Initialize with -INFINITY (masked out)
+    for (int i = 0; i < padded_seq_len * padded_segment_len; i++) {
+        mask_fp16_data[i] = ggml_fp32_to_fp16(-INFINITY);
+    }
+    for (int i = 0; i < padded_seq_len * (padded_kv_len - padded_segment_len); i++) {
+        mask_quant_data[i] = ggml_fp32_to_fp16(-INFINITY);
+    }
+    
     for (int i = 0; i < padded_seq_len; i++) {
         for (int j = 0; j < padded_kv_len; j++) {
-            // Causal masking - positions can only see up to their position
-            // The actual KV position in the full sequence is j + kv_segment_len
-            int actual_kv_pos = j + kv_segment_len;
-
+            // Split the mask into two segments
             if (j < kv_segment_len) {
-                mask_fp16_data[i * kv_segment_len + j] = mask_data[i * padded_kv_len + j];
-            } else {
-                mask_quant_data[i * (padded_kv_len - kv_segment_len) + j] = mask_data[i * padded_kv_len + j];
+                mask_fp16_data[i * padded_segment_len + j] = mask_data[i * padded_kv_len + j];
+            } else if (j < kv_len) {
+                mask_quant_data[i * (padded_kv_len - padded_segment_len) + (j - kv_segment_len)] = mask_data[i * padded_kv_len + j];
             }
         }
     }
@@ -590,8 +600,8 @@ int main() {
     print_tensor_summary(q, "Q");
     print_tensor_summary(k_fp16_seg, "K_FP16_SEG");
     print_tensor_summary(v_fp16_seg, "V_FP16_SEG");
-    print_tensor_summary(k_permuted_view, "K_QUANT_SEG");
-    print_tensor_summary(v_permuted_view, "V_QUANT_SEG");
+    print_tensor_summary(k_qlutattn_seg, "K_QUANT_SEG");
+    print_tensor_summary(v_qlutattn_seg, "V_QUANT_SEG");
     print_tensor_summary(mask_fp16_seg, "MASK_FP16_SEG");
     print_tensor_summary(mask_quant_seg, "MASK_QUANT_SEG");
 
@@ -599,7 +609,11 @@ int main() {
         "+-----------------------+---------------------------------------+---------------------------------------------"
         "-----+----------+------------+\n");
 
-    ggml_print_mask(mask_fp16_seg, kv_len, seq_len);
+    printf("\n--- Mask for FP16 segment (should be all -INFINITY): ---\n");
+    ggml_print_mask(mask_fp16_seg, kv_segment_len, seq_len);
+    
+    printf("\n--- Mask for Quantized segment (should have valid positions): ---\n");
+    ggml_print_mask(mask_quant_seg, kv_len - kv_segment_len, seq_len);
 
     ggml_tensor * result_seg =
         ggml_flash_attn_mixed(ctx, q_fp16, k_fp16_seg, v_fp16_seg, mask_fp16_seg, k_qlutattn_seg, v_qlutattn_seg,
@@ -690,8 +704,8 @@ int main() {
             for (int s = 0; s < seq_len; ++s) {
                 for (int d = 0; d < head_dim; ++d) {
                     int ti                = h * seq_len * head_dim + s * head_dim + d;
-                    torch_result_data[ci] = trd[ti];
                     int ci                = d + s * head_dim + h * head_dim * seq_len;
+                    torch_result_data[ci] = trd[ti];
                 }
             }
         }

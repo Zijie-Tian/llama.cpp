@@ -747,7 +747,7 @@ int32_t tbl_int16_reset(int32_t m, int16_t * c) {
 }
 
 void qgemm_lut_int8_g4(void * A, void * LUT, void * Scales, void * LUT_Scales, void * LUT_Biases, void * C, int bm,
-                       int K, int N, struct qlutattn_kernel_config * kernel_config) {
+                       int K, int N, const struct qlutattn_kernel_config * kernel_config) {
     // TODO: support N > 1
     if (N != 1) {
         throw std::runtime_error("N > 1 is not supported yet");

@@ -224,3 +224,25 @@ TMAC is a sophisticated LUT-based quantization system integrated into llama.cpp 
 - Auto-tuning ensures optimal performance across different tensor shapes
 - Trade-off exists between quantization granularity (accuracy) and LUT compatibility (efficiency)
 - The system is designed for minimal code intrusion while maximizing performance gains
+
+## Comment Format Standards
+
+Use the following comment format standards throughout the codebase:
+
+```cpp
+// TODO: Description of task to be done
+// NOTE: Important note or observation
+// NOTICE: Warning or important notice
+// WHY: Explanation of why something is done this way
+// EXPLAIN: Detailed explanation of complex logic
+// HACK: Temporary workaround that needs improvement
+//> ===================================================================================================
+//> Section or module separator description
+//> ===================================================================================================
+```
+
+Pragma directives:
+```cpp
+#pragma unroll count
+for (int i = 0; i < N; i++) {}
+```

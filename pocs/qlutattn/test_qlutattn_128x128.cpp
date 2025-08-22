@@ -14,6 +14,7 @@
 #include <limits>
 #include <random>
 
+#include "qlutattn-config.h"  // Include this first to define qlutattn_kernel_config
 #include "qlut_ctor.h"
 #include "qlutattn.h"
 #include "tbl.h"
@@ -420,10 +421,15 @@ int main() {
     //> ===================================================================================================
 
     // NOTE: Mixed precision MUL_MAT
-    struct qlutattn_kernel_config * kernel_config =
-        find_qlutattn_128x128_kernel_config(1, 1, 4);  // NOTE: Just for test
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    
+    const struct qlutattn_kernel_config * kernel_config =
+        ggml_qlutattn_get_config(1, 1, 4);  // NOTE: Just for test
     if (kernel_config == nullptr) {
-        fprintf(stderr, "Failed to find qlutattn kernel config for %d x %d x %d\n", head_dim, head_dim, nbits);
+        fprintf(stderr, "Failed to find qlutattn kernel config for %lld x %lld x %d\n", head_dim, head_dim, nbits);
         return 1;
     }
     ggml_fp16_t * ret    = (ggml_fp16_t *) aligned_malloc(PACK_CHUNK_SIZE * n_kv_heads * n_chunk * sizeof(ggml_fp16_t));

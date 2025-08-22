@@ -19,6 +19,7 @@
 #include "ggml.h"
 
 // Include QLUTATTN headers
+#include "../../ggml/src/ggml-cpu/qlutattn/qlutattn-config.h"
 #include "../../ggml/src/ggml-cpu/qlutattn/qlut_ctor.h"
 #include "../../ggml/src/ggml-cpu/qlutattn/qlutattn.h"
 #include "../../ggml/src/ggml-cpu/qlutattn/tbl.h"
@@ -152,7 +153,11 @@ class QLUTATTNBenchmark {
         const int elem_per_byte  = 8 / bits;
 
         // Get kernel configuration
-        struct qlutattn_kernel_config * kernel_config = find_qlutattn_128x128_kernel_config(M, K, bits);
+        // Initialize config system if needed
+        if (!ggml_qlutattn_config_is_initialized()) {
+            ggml_qlutattn_config_init();
+        }
+        const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(M, K, bits);
         if (!kernel_config) {
             printf("ERROR: Failed to get kernel config for M=%d, K=%d, bits=%d\n", M, K, bits);
             return;
