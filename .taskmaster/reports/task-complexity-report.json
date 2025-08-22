@@ -1,0 +1,101 @@
+{
+	"meta": {
+		"generatedAt": "2025-08-22T18:36:20.273Z",
+		"tasksAnalyzed": 11,
+		"totalTasks": 11,
+		"analysisCount": 11,
+		"thresholdScore": 5,
+		"projectName": "Taskmaster",
+		"usedResearch": false
+	},
+	"complexityAnalysis": [
+		{
+			"taskId": 1,
+			"taskTitle": "分析现有QLUTATTN实现和kernel_config调用链",
+			"complexityScore": 7,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "将任务分解为：1) 分析配置结构体定义和初始化流程 2) 追踪ops.cpp中的pack函数调用路径 3) 分析tbl.cpp中的查表计算逻辑 4) 绘制完整的kernel_config调用关系图 5) 识别所有硬编码值和PACK相关定义",
+			"reasoning": "需要分析14个文件中的kernel_config引用，理解qlutattn和tmac两个目录的实现差异，追踪配置在ops.cpp、tbl.cpp等核心文件中的使用。涉及多个模块的交叉分析，需要深入理解量化格式和配置传递机制"
+		},
+		{
+			"taskId": 2,
+			"taskTitle": "统一kernel_config管理机制",
+			"complexityScore": 8,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "分解为：1) 设计统一的配置获取接口 2) 实现配置缓存机制避免重复计算 3) 修改ops.cpp中ggml_compute_forward_dup_f16_qlutattn的配置获取 4) 统一qlutattn_pack_weights和qlutattn_pack_scales的配置使用 5) 确保tbl.cpp查表计算使用相同配置 6) 添加配置一致性验证和测试",
+			"reasoning": "需要重构14个文件中的kernel_config使用，设计新的统一接口，修改多个关键函数的实现。涉及缓存机制设计、接口统一、向后兼容性保证，工作量较大且需要仔细测试"
+		},
+		{
+			"taskId": 3,
+			"taskTitle": "清理调试代码和硬编码值",
+			"complexityScore": 4,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "分解为：1) 使用grep批量搜索并移除printf/fprintf调试语句 2) 识别并替换所有硬编码数值为配置参数 3) 清理未使用的临时变量和注释代码，规范错误处理",
+			"reasoning": "当前只发现1处DEBUG相关代码，清理工作相对简单。主要是系统性搜索和替换，涉及代码规范化，但不涉及复杂的逻辑修改"
+		},
+		{
+			"taskId": 4,
+			"taskTitle": "统一PACK_SIZE和PACK_CHUNK_SIZE定义",
+			"complexityScore": 5,
+			"recommendedSubtasks": 4,
+			"expansionPrompt": "分解为：1) 在qlutattn-config.h创建统一的宏定义 2) 替换ops.cpp和ggml-cpu.c中的本地定义 3) 添加编译时检查确保值一致性 4) 为不同量化格式配置特定的pack size",
+			"reasoning": "需要修改ops.cpp和ggml-cpu.c两个核心文件，统一宏定义，确保所有使用点引用相同定义。涉及预处理器检查和多种量化格式的支持，中等复杂度"
+		},
+		{
+			"taskId": 5,
+			"taskTitle": "重构permute函数实现",
+			"complexityScore": 6,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "分解为：1) 分析现有permute逻辑（如果存在） 2) 为六种量化格式创建专门的permute实现 3) 使用SIMD指令优化性能 4) 实现批处理和内存访问优化 5) 创建性能基准测试验证优化效果",
+			"reasoning": "搜索显示当前可能没有专门的permute函数，需要从零开始实现六种量化格式的permute操作，包括SIMD优化和性能测试，技术复杂度较高"
+		},
+		{
+			"taskId": 6,
+			"taskTitle": "实现六种量化格式的量化函数",
+			"complexityScore": 9,
+			"recommendedSubtasks": 7,
+			"expansionPrompt": "分解为：1) 实现K1/K2/K4量化函数基础框架 2) 实现V1/V2/V4量化函数基础框架 3) 实现量化scale计算逻辑 4) 优化位打包(bit packing)操作 5) 添加量化误差统计机制 6) 确保与TMAC逻辑兼容 7) 创建量化精度测试套件",
+			"reasoning": "需要在ggml-cpu.c、ggml-cpu-quants.c等多个文件中实现六种新的量化函数，涉及复杂的位操作、scale计算、与现有TMAC系统的兼容，是技术难度最高的任务"
+		},
+		{
+			"taskId": 7,
+			"taskTitle": "集成量化函数到ggml_compute_forward_dup",
+			"complexityScore": 7,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "分解为：1) 扩展类型判断支持六种新类型 2) 实现类型分发逻辑 3) 集成量化和pack操作 4) 优化内存布局提高缓存命中率 5) 添加性能监控和统计",
+			"reasoning": "需要修改ops.cpp中的核心dup函数，添加六种新类型的支持，集成量化和pack操作，确保与qlutattn_pack_weights的一致性，涉及性能优化"
+		},
+		{
+			"taskId": 8,
+			"taskTitle": "移除冗余函数和清理代码",
+			"complexityScore": 3,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "分解为：1) 标记并移除指定的冗余函数 2) 使用工具分析函数调用图识别孤立函数 3) 清理相关声明和include语句",
+			"reasoning": "主要是删除未使用的代码，使用工具分析调用图，工作量不大但需要仔细验证不破坏现有功能"
+		},
+		{
+			"taskId": 9,
+			"taskTitle": "优化ggml_flash_attn_ext_qlutattn实现",
+			"complexityScore": 7,
+			"recommendedSubtasks": 6,
+			"expansionPrompt": "分解为：1) 分析现有mixed精度attention实现 2) 优化sliding window KV cache内存访问 3) 实现分段计算负载均衡 4) 添加prefetch指令优化 5) 实现混合精度自适应策略 6) 优化批量查表操作",
+			"reasoning": "涉及ops.cpp中复杂的attention计算优化，需要理解mixed精度和segmented计算逻辑，优化内存访问模式和缓存性能，技术复杂度较高"
+		},
+		{
+			"taskId": 10,
+			"taskTitle": "完整测试和性能验证",
+			"complexityScore": 6,
+			"recommendedSubtasks": 5,
+			"expansionPrompt": "分解为：1) 运行align_attn基础功能测试 2) 创建六种量化格式的回归测试 3) 执行不同规模的性能基准测试 4) 运行内存泄漏和并发测试 5) 生成测试报告和CI脚本",
+			"reasoning": "已有align_attn、bench_qlutattn等测试工具，需要扩展测试覆盖所有新功能，进行全面的性能对比和稳定性测试，工作量适中"
+		},
+		{
+			"taskId": 11,
+			"taskTitle": "文档更新和代码审查准备",
+			"complexityScore": 3,
+			"recommendedSubtasks": 3,
+			"expansionPrompt": "分解为：1) 更新README和API文档说明新量化类型 2) 编写迁移指南和性能对比报告 3) 准备代码审查材料和已知限制说明",
+			"reasoning": "主要是文档编写工作，技术难度低但需要清晰准确地描述所有改动和使用方法"
+		}
+	]
+}

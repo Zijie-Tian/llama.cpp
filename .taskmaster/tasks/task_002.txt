@@ -1,0 +1,22 @@
+# Task ID: 2
+# Title: 统一kernel_config管理机制
+# Status: pending
+# Dependencies: 1
+# Priority: high
+# Description: 重构kernel_config的获取和管理，确保量化pack和查表计算使用一致的配置
+# Details:
+1. 创建统一的kernel_config获取接口：
+   ```cpp
+   struct qlutattn_kernel_config* get_unified_kernel_config(
+       enum ggml_type type,
+       int32_t k_size,
+       int32_t v_size);
+   ```
+2. 实现配置缓存机制，避免重复计算
+3. 修改ggml_compute_forward_dup_f16_qlutattn中的配置获取逻辑
+4. 修改qlutattn_pack_weights和qlutattn_pack_scales使用统一配置
+5. 确保tbl.cpp中的查表计算使用相同配置源
+6. 添加配置验证函数，检查配置一致性
+
+# Test Strategy:
+编写单元测试验证不同调用路径获取的kernel_config完全一致，使用align_attn测试重构后的功能正确性

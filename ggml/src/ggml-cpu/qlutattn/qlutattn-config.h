@@ -1,6 +1,17 @@
 #ifndef GGML_QLUTATTN_CONFIG_H
 #define GGML_QLUTATTN_CONFIG_H
 
+//> ===================================================================================================
+//> Unified PACK dimensions for QLUTATTN
+//> ===================================================================================================
+#define QLUTATTN_PACK_SIZE       128  // Fixed block size for QLUTATTN processing
+#define QLUTATTN_PACK_CHUNK_SIZE 128  // Fixed chunk size for QLUTATTN processing
+
+// Compile-time check to ensure consistency
+#if QLUTATTN_PACK_SIZE != 128 || QLUTATTN_PACK_CHUNK_SIZE != 128
+    #error "QLUTATTN currently requires PACK_SIZE and PACK_CHUNK_SIZE to be 128"
+#endif
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -49,6 +60,27 @@ bool ggml_qlutattn_config_is_initialized(void);
 
 // Cleanup (optional, for clean shutdown)
 void ggml_qlutattn_config_cleanup(void);
+
+//> ===================================================================================================
+//> Unified kernel config interface for QLUTATTN
+//> ===================================================================================================
+
+// Get kernel config from type info - main unified interface
+// This function determines M, K, bits from the type and dimensions
+// Returns NULL if type is not supported or config not found
+// type_bits: quantization bits (1, 2, or 4)
+// is_v_type: true for V-types (transposed), false for K-types
+const struct qlutattn_kernel_config * ggml_qlutattn_get_unified_config(
+    int32_t type_bits,   // Quantization bits (1, 2, or 4)
+    int32_t k_size,      // Key/Value dimension size
+    int32_t v_size       // Value dimension size (may differ from k_size)
+);
+
+// Validate that two configs are identical (for consistency checking)
+bool ggml_qlutattn_configs_equal(
+    const struct qlutattn_kernel_config * config1,
+    const struct qlutattn_kernel_config * config2
+);
 
 #ifdef __cplusplus
 }

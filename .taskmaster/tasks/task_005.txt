@@ -1,0 +1,24 @@
+# Task ID: 5
+# Title: 重构permute函数实现
+# Status: pending
+# Dependencies: 4
+# Priority: medium
+# Description: 按照要求重构permute函数，优化其性能和可读性
+# Details:
+1. 分析现有permute函数的实现逻辑
+2. 为六种量化格式创建专门的permute实现：
+   ```cpp
+   void qlutattn_permute_k1_128x128(...);
+   void qlutattn_permute_k2_128x128(...);
+   void qlutattn_permute_k4_128x128(...);
+   void qlutattn_permute_v1_128x128(...);
+   void qlutattn_permute_v2_128x128(...);
+   void qlutattn_permute_v4_128x128(...);
+   ```
+3. 使用SIMD指令优化permute操作
+4. 实现批处理优化减少内存访问
+5. 添加对齐检查和边界处理
+6. 创建permute函数的性能基准测试
+
+# Test Strategy:
+编写单元测试验证permute前后数据的正确性，使用性能测试对比重构前后的速度提升

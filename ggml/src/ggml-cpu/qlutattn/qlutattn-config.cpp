@@ -3,6 +3,7 @@
 #include <string>
 #include <mutex>
 #include <memory>
+#include <cstring>  // For memcmp
 
 //> ===================================================================================================
 //> Thread-safe global config management for QLUTATTN
@@ -178,6 +179,57 @@ bool ggml_qlutattn_config_is_initialized(void) {
 
 void ggml_qlutattn_config_cleanup(void) {
     QlutattnConfigManager::instance().cleanup();
+}
+
+//> ===================================================================================================
+//> Unified kernel config interface implementation
+//> ===================================================================================================
+
+const struct qlutattn_kernel_config * ggml_qlutattn_get_unified_config(
+    int32_t type_bits,   // Quantization bits (1, 2, or 4)
+    int32_t k_size,      // Key/Value dimension size
+    int32_t v_size       // Value dimension size (may differ from k_size)
+) {
+    // Initialize config system if needed
+    if (!ggml_qlutattn_config_is_initialized()) {
+        ggml_qlutattn_config_init();
+    }
+    
+    // For QLUTATTN, we use fixed 128x128 blocks currently
+    // TODO: In future, could derive M and K from k_size and v_size
+    int M = QLUTATTN_PACK_SIZE;
+    int K = QLUTATTN_PACK_CHUNK_SIZE;
+    
+    // Get config using the standard interface
+    return ggml_qlutattn_get_config(M, K, type_bits);
+}
+
+bool ggml_qlutattn_configs_equal(
+    const struct qlutattn_kernel_config * config1,
+    const struct qlutattn_kernel_config * config2
+) {
+    // NULL check
+    if (!config1 || !config2) {
+        return config1 == config2;  // Both NULL = equal, one NULL = not equal
+    }
+    
+    // Compare all fields
+    if (config1->g != config2->g) return false;
+    if (config1->ngroups_per_elem != config2->ngroups_per_elem) return false;
+    if (config1->q_group_size != config2->q_group_size) return false;
+    if (config1->act_group_size != config2->act_group_size) return false;
+    if (config1->has_scale != config2->has_scale) return false;
+    if (config1->kfactor != config2->kfactor) return false;
+    if (config1->bits != config2->bits) return false;
+    if (config1->actk != config2->actk) return false;
+    if (config1->has_zero_point != config2->has_zero_point) return false;
+    if (config1->one_scale != config2->one_scale) return false;
+    if (config1->bm != config2->bm) return false;
+    if (config1->simd_n_in != config2->simd_n_in) return false;
+    if (config1->simd_n_out != config2->simd_n_out) return false;
+    if (config1->chunk_n != config2->chunk_n) return false;
+    
+    return true;
 }
 
 } // extern "C"

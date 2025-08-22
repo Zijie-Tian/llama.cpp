@@ -1,0 +1,16 @@
+# Task ID: 11
+# Title: 文档更新和代码审查准备
+# Status: pending
+# Dependencies: 10
+# Priority: low
+# Description: 更新相关文档，准备代码审查所需材料
+# Details:
+1. 更新README.md添加QLUTATTN使用说明
+2. 创建API文档说明新的量化类型
+3. 编写迁移指南帮助用户从旧版本升级
+4. 准备代码审查checklist
+5. 创建性能对比报告
+6. 记录已知限制和未来改进方向
+
+# Test Strategy:
+文档审查，确保所有新功能都有对应的文档说明

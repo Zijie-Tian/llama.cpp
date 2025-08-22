@@ -3,6 +3,7 @@
 #include <arm_neon.h>
 
 #include "ggml-backend.h"  // 建议恢复，如果里面定义 ggml_fp16_t
+#include "qlutattn-config.h"  // For QLUTATTN_PACK_SIZE and QLUTATTN_PACK_CHUNK_SIZE
 
 #ifdef __cplusplus
 extern "C" {

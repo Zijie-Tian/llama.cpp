@@ -183,7 +183,6 @@ static void ggml_compute_forward_dup_f16(const ggml_compute_params * params, ggm
                         id += rs * (ne01 - ir1);  // NOTE : this thread only quantize specific rows.
                     }
                 }
-                // GGML_LOG_INFO("id = %ld, rs = %ld, ne00 = %ld, ne01 = %ld, ne02 = %ld, ne03 = %ld\n", id, rs, ne00, ne01, ne02, ne03);
             } else if (ggml_get_type_traits_cpu(dst->type)->from_float) {
                 // NOTICE: Do quant here.
                 const ggml_from_float_t quantize_row_q = ggml_get_type_traits_cpu(dst->type)->from_float;
@@ -210,8 +209,6 @@ static void ggml_compute_forward_dup_f16(const ggml_compute_params * params, ggm
                         id += rs * (ne01 - ir1);
                     }
                 }
-                GGML_LOG_INFO("DO QUANT: id=%ld, rs=%ld, ne00=%ld, ne01=%ld, ne02=%ld, ne03=%ld\n", id, rs, ne00, ne01,
-                              ne02, ne03);
             } else {
                 GGML_ABORT("fatal error");  // TODO: implement
             }
@@ -669,7 +666,6 @@ static void qlutattn_pack_scales(const float * scale_ptr, const float * zero_ptr
 }
 
 static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * params, ggml_tensor * dst) {
-    GGML_LOG_INFO("ggml_compute_forward_dup_f16_qlutattn");
 
     const ggml_tensor * src0 = dst->src[0];
 
@@ -679,8 +675,8 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
 
     GGML_TENSOR_UNARY_OP_LOCALS
 
-    const int64_t PACK_SIZE       = 128;  // head_dim
-    const int64_t PACK_CHUNK_SIZE = 128;  // tokens per chunk
+    const int64_t PACK_SIZE       = QLUTATTN_PACK_SIZE;       // head_dim
+    const int64_t PACK_CHUNK_SIZE = QLUTATTN_PACK_CHUNK_SIZE; // tokens per chunk
     const int     ith             = params->ith;
     const int     nth             = params->nth;
     const int     n_kv_heads      = ne00 / (PACK_SIZE * PACK_CHUNK_SIZE);
@@ -705,20 +701,16 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
         case GGML_TYPE_QLUTATTN_K2_128x128:
         case GGML_TYPE_QLUTATTN_K4_128x128:
             {
-                int k = PACK_SIZE;
-                int m = PACK_CHUNK_SIZE;
+                int k = QLUTATTN_PACK_SIZE;
+                int m = QLUTATTN_PACK_CHUNK_SIZE;
 
                 GGML_ASSERT(n_kv_heads > 0 && "Invalid number of KV heads");
                 GGML_ASSERT(m % 128 == 0 && "m must be a multiple of 128");
 
-                // Initialize config system if needed (only happens once)
-                if (!ggml_qlutattn_config_is_initialized()) {
-                    ggml_qlutattn_config_init();
-                }
-                
-                const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(ne01, ne00, bits);
+                // Get unified config - automatically handles initialization
+                const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_unified_config(bits, ne00, ne01);
                 if (kernel_config == nullptr) {
-                    GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for M=%d K=%d bits=%d\n", ne01, ne00, bits);
+                    GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for bits=%d k_size=%lld v_size=%lld\n", bits, ne00, ne01);
                     GGML_ABORT("Kernel config not found");
                 }
 
@@ -824,20 +816,16 @@ static void ggml_compute_forward_dup_f16_qlutattn(const ggml_compute_params * pa
         case GGML_TYPE_QLUTATTN_V2_128x128:
         case GGML_TYPE_QLUTATTN_V4_128x128:
             {
-                int k = PACK_SIZE;
-                int m = PACK_CHUNK_SIZE;
+                int k = QLUTATTN_PACK_SIZE;
+                int m = QLUTATTN_PACK_CHUNK_SIZE;
 
                 GGML_ASSERT(n_kv_heads > 0 && "Invalid number of KV heads");
                 GGML_ASSERT(m % 128 == 0 && "m must be a multiple of 128");
 
-                // Initialize config system if needed (only happens once)
-                if (!ggml_qlutattn_config_is_initialized()) {
-                    ggml_qlutattn_config_init();
-                }
-                
-                const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(ne01, ne00, bits);
+                // Get unified config - automatically handles initialization
+                const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_unified_config(bits, ne00, ne01);
                 if (kernel_config == nullptr) {
-                    GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for M=%d K=%d bits=%d\n", ne01, ne00, bits);
+                    GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for bits=%d k_size=%lld v_size=%lld\n", bits, ne00, ne01);
                     GGML_ABORT("Kernel config not found");
                 }
 
@@ -7752,11 +7740,8 @@ static void ggml_flash_attn_ext_qlutattn_f16_segment(const ggml_compute_params *
 
     // NOTE: Mixed precision MUL_MAT
     // Initialize config system if needed (only happens once)
-    if (!ggml_qlutattn_config_is_initialized()) {
-        ggml_qlutattn_config_init();
-    }
-    
-    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(1, 1, 4);  // NOTE: Just for test
+    // Get unified config for test (4-bit, 128x128)
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_unified_config(4, 128, 128);  // Using 4-bit test config
     if (kernel_config == nullptr) {
         GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for 128x128x4\n");
         GGML_ABORT("Kernel config not found");
@@ -7963,11 +7948,8 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                                                  const float max_bias, const float logit_softcap) {
     // NOTE: Mixed precision MUL_MAT
     // Initialize config system if needed (only happens once)
-    if (!ggml_qlutattn_config_is_initialized()) {
-        ggml_qlutattn_config_init();
-    }
-    
-    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(128, 128, 4);  // Use actual PACK_SIZE dimensions
+    // Get unified config for 128x128 4-bit 
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_unified_config(4, 128, 128);  // Use actual PACK_SIZE dimensions
     if (kernel_config == nullptr) {
         GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for 128x128x4\n");
         GGML_ABORT("Kernel config not found");
@@ -7980,8 +7962,8 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
     GGML_TENSOR_LOCALS(int64_t, nev, v, ne)
     GGML_TENSOR_LOCALS(size_t, nbv, v, nb)
 
-    const int64_t PACK_SIZE       = 128;  //> 128x128
-    const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+    const int64_t PACK_SIZE       = QLUTATTN_PACK_SIZE;       //> 128x128
+    const int64_t PACK_CHUNK_SIZE = QLUTATTN_PACK_CHUNK_SIZE; //> 128x128
 
     //> Output dimensions are derived from Q tensor
     const int64_t ne0 = PACK_SIZE;  // DV (head_dim)
@@ -8580,10 +8562,8 @@ void ggml_compute_forward_flash_attn_ext_mixed(const ggml_compute_params * param
     GGML_TENSOR_LOCALS(size_t, nb, dst, nb)
 
     // Initialize config system if needed
-    if (!ggml_qlutattn_config_is_initialized()) {
-        ggml_qlutattn_config_init();
-    }
-    const qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(1, 1, 4);  // NOTE: Just for test
+    // Get unified config for test (4-bit, 128x128)
+    const qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_unified_config(4, 128, 128);  // Using 4-bit test config
     if (kernel_config == nullptr) {
         GGML_LOG_ERROR("Failed to find kernel config for flash_attn_ext_mixed\n");
         return;

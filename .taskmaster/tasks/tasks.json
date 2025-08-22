@@ -1,0 +1,196 @@
+{
+  "master": {
+    "tasks": [
+      {
+        "id": 1,
+        "title": "分析现有QLUTATTN实现和kernel_config调用链",
+        "description": "深入理解ggml/src/ggml-cpu/qlutattn目录下的现有实现，分析kernel_config的全局调用情况，理清配置项的作用和来源",
+        "status": "done",
+        "dependencies": [],
+        "priority": "high",
+        "details": "1. 分析qlutattn-config.cpp/h中的配置结构体定义\n2. 追踪kernel_config在以下文件中的调用路径：\n   - qlutattn.cpp中的初始化和使用\n   - tbl.cpp中的查表计算\n   - ops.cpp中的量化pack函数\n3. 创建kernel_config调用关系图\n4. 识别并记录所有hardcoded的配置值\n5. 分析PACK_SIZE和PACK_CHUNK_SIZE的定义和使用场景\n6. 理解六种量化格式(K1/K2/K4, V1/V2/V4)的特性和差异",
+        "testStrategy": "使用grep和代码分析工具追踪kernel_config的所有引用，编写测试脚本验证配置项的读取和传递正确性",
+        "subtasks": []
+      },
+      {
+        "id": 2,
+        "title": "统一kernel_config管理机制",
+        "description": "重构kernel_config的获取和管理，确保量化pack和查表计算使用一致的配置",
+        "status": "done",
+        "dependencies": [
+          1
+        ],
+        "priority": "high",
+        "details": "1. 创建统一的kernel_config获取接口：\n   ```cpp\n   struct qlutattn_kernel_config* get_unified_kernel_config(\n       enum ggml_type type,\n       int32_t k_size,\n       int32_t v_size);\n   ```\n2. 实现配置缓存机制，避免重复计算\n3. 修改ggml_compute_forward_dup_f16_qlutattn中的配置获取逻辑\n4. 修改qlutattn_pack_weights和qlutattn_pack_scales使用统一配置\n5. 确保tbl.cpp中的查表计算使用相同配置源\n6. 添加配置验证函数，检查配置一致性",
+        "testStrategy": "编写单元测试验证不同调用路径获取的kernel_config完全一致，使用align_attn测试重构后的功能正确性",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "设计统一的kernel_config获取接口",
+            "description": "设计并实现get_unified_kernel_config函数接口，定义参数和返回值结构",
+            "dependencies": [],
+            "details": "1. 在qlutattn-config.h中声明get_unified_kernel_config函数\n2. 定义函数参数：enum ggml_type type, int32_t k_size, int32_t v_size\n3. 设计返回值结构体qlutattn_kernel_config的完整定义\n4. 考虑不同量化类型(K1/K2/K4, V1/V2/V4)的配置需求\n5. 确保接口设计支持未来扩展\n6. 添加必要的错误处理和参数验证",
+            "status": "done",
+            "testStrategy": ""
+          },
+          {
+            "id": 2,
+            "title": "实现配置缓存机制",
+            "description": "实现kernel_config的缓存系统，避免重复计算相同配置",
+            "dependencies": [
+              "2.1"
+            ],
+            "details": "1. 设计缓存key结构，基于type、k_size、v_size生成唯一标识\n2. 实现缓存存储结构(如hash map或静态数组)\n3. 添加缓存查找逻辑：先查缓存，未命中则计算并存储\n4. 实现缓存清理机制，防止内存泄漏\n5. 添加线程安全保护(mutex或atomic操作)\n6. 编写缓存命中率统计代码用于性能分析",
+            "status": "done",
+            "testStrategy": ""
+          },
+          {
+            "id": 3,
+            "title": "修改ops.cpp中的配置获取逻辑",
+            "description": "重构ggml_compute_forward_dup_f16_qlutattn函数使用统一配置接口",
+            "dependencies": [
+              "2.1",
+              "2.2"
+            ],
+            "details": "1. 定位ggml_compute_forward_dup_f16_qlutattn函数中的kernel_config使用\n2. 替换原有的配置获取代码为get_unified_kernel_config调用\n3. 修改相关的pack/unpack逻辑适配新配置\n4. 确保PACK_SIZE和PACK_CHUNK_SIZE使用统一定义\n5. 更新错误处理逻辑\n6. 添加配置验证断言",
+            "status": "done",
+            "testStrategy": ""
+          },
+          {
+            "id": 4,
+            "title": "统一pack函数的配置使用",
+            "description": "修改qlutattn_pack_weights和qlutattn_pack_scales使用统一配置",
+            "dependencies": [
+              "2.1",
+              "2.2"
+            ],
+            "details": "1. 分析qlutattn_pack_weights当前的配置获取方式\n2. 修改为调用get_unified_kernel_config获取配置\n3. 更新qlutattn_pack_scales的配置获取逻辑\n4. 确保pack_size、chunk_size等参数来自统一配置\n5. 验证量化格式特定的配置项正确传递\n6. 更新相关的内存分配和布局计算",
+            "status": "done",
+            "testStrategy": ""
+          },
+          {
+            "id": 5,
+            "title": "更新tbl.cpp查表计算配置",
+            "description": "确保tbl.cpp中的查表计算使用统一的kernel_config",
+            "dependencies": [
+              "2.1",
+              "2.2"
+            ],
+            "details": "1. 审查tbl.cpp中所有kernel_config的使用位置\n2. 替换本地配置获取为get_unified_kernel_config调用\n3. 验证查表计算的配置参数与pack时一致\n4. 更新相关的LUT构建逻辑\n5. 确保不同量化格式的查表配置正确\n6. 添加运行时配置一致性检查",
+            "status": "done",
+            "testStrategy": ""
+          },
+          {
+            "id": 6,
+            "title": "添加配置一致性验证和测试",
+            "description": "实现配置验证函数并编写全面的单元测试",
+            "dependencies": [
+              "2.3",
+              "2.4",
+              "2.5"
+            ],
+            "details": "1. 实现validate_kernel_config函数验证配置完整性\n2. 添加配置一致性检查：比较不同路径获取的配置\n3. 编写单元测试覆盖所有配置获取场景\n4. 测试缓存机制的正确性和性能\n5. 使用align_attn验证端到端功能\n6. 添加性能基准测试确保无性能退化",
+            "status": "done",
+            "testStrategy": ""
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "title": "清理调试代码和硬编码值",
+        "description": "系统性清理所有调试代码、printf语句、硬编码值和临时变量",
+        "status": "done",
+        "dependencies": [
+          2
+        ],
+        "priority": "medium",
+        "details": "1. 使用grep搜索并移除所有printf/fprintf调试语句\n2. 识别并替换硬编码的数值常量为配置参数：\n   - 查找128x128等硬编码维度\n   - 替换为配置结构体中的参数\n3. 移除未使用的临时变量和注释掉的代码\n4. 清理#ifdef DEBUG块中的测试代码\n5. 规范化错误处理和日志输出\n6. 使用GGML_ASSERT替代临时的断言代码",
+        "testStrategy": "使用静态代码分析工具检查代码清洁度，编译时开启所有警告选项(-Wall -Wextra)，确保无警告",
+        "subtasks": []
+      },
+      {
+        "id": 4,
+        "title": "统一PACK_SIZE和PACK_CHUNK_SIZE定义",
+        "description": "确保全局对PACK_SIZE和PACK_CHUNK_SIZE的认知一致，消除重复定义",
+        "status": "done",
+        "dependencies": [
+          3
+        ],
+        "priority": "high",
+        "details": "1. 在qlutattn-config.h中创建统一定义：\n   ```cpp\n   #define QLUTATTN_PACK_SIZE 128\n   #define QLUTATTN_PACK_CHUNK_SIZE 16\n   ```\n2. 替换ops.cpp中的本地定义\n3. 替换ggml-cpu.c中的相关定义\n4. 确保所有使用这些常量的地方引用统一定义\n5. 添加编译时检查确保值的一致性\n6. 为不同量化格式创建特定的pack size配置",
+        "testStrategy": "编写预处理器测试验证所有文件使用相同的PACK_SIZE值，运行align_attn验证pack/unpack操作正确",
+        "subtasks": []
+      },
+      {
+        "id": 5,
+        "title": "重构permute函数实现",
+        "description": "按照要求重构permute函数，优化其性能和可读性",
+        "status": "pending",
+        "dependencies": [
+          4
+        ],
+        "priority": "medium",
+        "details": "1. 分析现有permute函数的实现逻辑\n2. 为六种量化格式创建专门的permute实现：\n   ```cpp\n   void qlutattn_permute_k1_128x128(...);\n   void qlutattn_permute_k2_128x128(...);\n   void qlutattn_permute_k4_128x128(...);\n   void qlutattn_permute_v1_128x128(...);\n   void qlutattn_permute_v2_128x128(...);\n   void qlutattn_permute_v4_128x128(...);\n   ```\n3. 使用SIMD指令优化permute操作\n4. 实现批处理优化减少内存访问\n5. 添加对齐检查和边界处理\n6. 创建permute函数的性能基准测试",
+        "testStrategy": "编写单元测试验证permute前后数据的正确性，使用性能测试对比重构前后的速度提升",
+        "subtasks": []
+      },
+      {
+        "id": 8,
+        "title": "移除冗余函数和清理代码",
+        "description": "删除ggml_compute_forward_flash_attn_ext_f16_with_state等不必要的函数",
+        "status": "pending",
+        "dependencies": [
+          "5"
+        ],
+        "priority": "low",
+        "details": "1. 标记并移除ggml_compute_forward_flash_attn_ext_f16_with_state函数\n2. 检查并移除其他未使用的函数：\n   - 使用工具分析函数调用图\n   - 识别孤立函数\n3. 清理相关的函数声明和前向声明\n4. 更新相关文档和注释\n5. 移除未使用的include语句\n6. 简化函数调用链",
+        "testStrategy": "确保编译通过且无链接错误，运行完整测试套件验证功能未受影响",
+        "subtasks": []
+      },
+      {
+        "id": 9,
+        "title": "优化ggml_flash_attn_ext_qlutattn实现",
+        "description": "优化mixed精度和segmented的QLUTATTN attention计算逻辑",
+        "status": "pending",
+        "dependencies": [
+          8
+        ],
+        "priority": "medium",
+        "details": "1. 分析现有的ggml_compute_forward_flash_attn_ext_mixed实现\n2. 优化sliding window KV cache的内存访问模式\n3. 实现分段计算的负载均衡：\n   ```cpp\n   void optimize_segmented_attention(\n       int num_segments,\n       int segment_size,\n       // ...\n   );\n   ```\n4. 添加prefetch指令优化缓存性能\n5. 实现混合精度计算的自适应策略\n6. 优化查表操作的批处理",
+        "testStrategy": "创建不同规模的attention测试用例，验证优化后的正确性和性能提升",
+        "subtasks": []
+      },
+      {
+        "id": 10,
+        "title": "完整测试和性能验证",
+        "description": "执行完整的功能测试和性能基准测试，确保重构后系统正常工作",
+        "status": "pending",
+        "dependencies": [
+          9
+        ],
+        "priority": "high",
+        "details": "1. 运行align_attn测试确保误差在可接受范围：\n   ```bash\n   ./build-arm64/bin/align_attn\n   ```\n2. 创建回归测试套件覆盖所有量化格式\n3. 执行性能基准测试：\n   - 测试不同batch size\n   - 测试不同序列长度\n   - 对比重构前后性能\n4. 内存泄漏检测(valgrind/sanitizers)\n5. 多线程并发测试\n6. 编写测试报告和性能分析文档\n7. 创建CI/CD测试脚本",
+        "testStrategy": "使用自动化测试框架执行全面测试，生成测试覆盖率报告，确保覆盖率>90%",
+        "subtasks": []
+      },
+      {
+        "id": 11,
+        "title": "文档更新和代码审查准备",
+        "description": "更新相关文档，准备代码审查所需材料",
+        "status": "pending",
+        "dependencies": [
+          10
+        ],
+        "priority": "low",
+        "details": "1. 更新README.md添加QLUTATTN使用说明\n2. 创建API文档说明新的量化类型\n3. 编写迁移指南帮助用户从旧版本升级\n4. 准备代码审查checklist\n5. 创建性能对比报告\n6. 记录已知限制和未来改进方向",
+        "testStrategy": "文档审查，确保所有新功能都有对应的文档说明",
+        "subtasks": []
+      }
+    ],
+    "metadata": {
+      "created": "2025-08-22T18:28:38.625Z",
+      "updated": "2025-08-22T19:32:11.582Z",
+      "description": "Tasks for master context"
+    }
+  }
+}

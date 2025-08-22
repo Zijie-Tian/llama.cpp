@@ -1,0 +1,19 @@
+# Task ID: 1
+# Title: 分析现有QLUTATTN实现和kernel_config调用链
+# Status: pending
+# Dependencies: None
+# Priority: high
+# Description: 深入理解ggml/src/ggml-cpu/qlutattn目录下的现有实现，分析kernel_config的全局调用情况，理清配置项的作用和来源
+# Details:
+1. 分析qlutattn-config.cpp/h中的配置结构体定义
+2. 追踪kernel_config在以下文件中的调用路径：
+   - qlutattn.cpp中的初始化和使用
+   - tbl.cpp中的查表计算
+   - ops.cpp中的量化pack函数
+3. 创建kernel_config调用关系图
+4. 识别并记录所有hardcoded的配置值
+5. 分析PACK_SIZE和PACK_CHUNK_SIZE的定义和使用场景
+6. 理解六种量化格式(K1/K2/K4, V1/V2/V4)的特性和差异
+
+# Test Strategy:
+使用grep和代码分析工具追踪kernel_config的所有引用，编写测试脚本验证配置项的读取和传递正确性

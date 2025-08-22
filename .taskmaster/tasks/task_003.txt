@@ -1,0 +1,18 @@
+# Task ID: 3
+# Title: 清理调试代码和硬编码值
+# Status: pending
+# Dependencies: 2
+# Priority: medium
+# Description: 系统性清理所有调试代码、printf语句、硬编码值和临时变量
+# Details:
+1. 使用grep搜索并移除所有printf/fprintf调试语句
+2. 识别并替换硬编码的数值常量为配置参数：
+   - 查找128x128等硬编码维度
+   - 替换为配置结构体中的参数
+3. 移除未使用的临时变量和注释掉的代码
+4. 清理#ifdef DEBUG块中的测试代码
+5. 规范化错误处理和日志输出
+6. 使用GGML_ASSERT替代临时的断言代码
+
+# Test Strategy:
+使用静态代码分析工具检查代码清洁度，编译时开启所有警告选项(-Wall -Wextra)，确保无警告

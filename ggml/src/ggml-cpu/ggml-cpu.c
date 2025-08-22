@@ -2879,8 +2879,8 @@ struct ggml_cplan ggml_graph_plan(
                             node->type == GGML_TYPE_QLUTATTN_K2_128x128 ||
                             node->type == GGML_TYPE_QLUTATTN_K4_128x128) {
                             //> We need do block quantization.
-                            const int64_t PACK_SIZE         = 128;  //> 128x128
-                            const int64_t PACK_CHUNK_SIZE   = 128;  //> 128x128
+                            const int64_t PACK_SIZE         = QLUTATTN_PACK_SIZE;       //> 128x128
+                            const int64_t PACK_CHUNK_SIZE   = QLUTATTN_PACK_CHUNK_SIZE; //> 128x128
 
                             const int64_t PSEUDO_QUANT_SIZE = PACK_CHUNK_SIZE * PACK_SIZE * sizeof(uint8_t);
                             const int64_t PSEUDO_SCALE_SIZE = PACK_CHUNK_SIZE * sizeof(float) * 2;
@@ -3013,8 +3013,8 @@ struct ggml_cplan ggml_graph_plan(
                             cur = 2 * output_size + 2 * scratch_total;
 
                         }else if (mode == GGML_PREC_MIXED) {
-                            const int64_t PACK_SIZE       = 128;  //> 128x128
-                            const int64_t PACK_CHUNK_SIZE = 128;  //> 128x128
+                            const int64_t PACK_SIZE       = QLUTATTN_PACK_SIZE;       //> 128x128
+                            const int64_t PACK_CHUNK_SIZE = QLUTATTN_PACK_CHUNK_SIZE; //> 128x128
                             const int64_t BATCH_SIZE = node->src[0]->ne[3]; // n_batches
                             const int64_t N_Q_HEADS  = node->src[0]->ne[2]; // n_q_heads
                             const int64_t SEQ_LEN    = node->src[0]->ne[1]; // sequence length

@@ -1,0 +1,20 @@
+# Task ID: 4
+# Title: 统一PACK_SIZE和PACK_CHUNK_SIZE定义
+# Status: pending
+# Dependencies: 3
+# Priority: high
+# Description: 确保全局对PACK_SIZE和PACK_CHUNK_SIZE的认知一致，消除重复定义
+# Details:
+1. 在qlutattn-config.h中创建统一定义：
+   ```cpp
+   #define QLUTATTN_PACK_SIZE 128
+   #define QLUTATTN_PACK_CHUNK_SIZE 16
+   ```
+2. 替换ops.cpp中的本地定义
+3. 替换ggml-cpu.c中的相关定义
+4. 确保所有使用这些常量的地方引用统一定义
+5. 添加编译时检查确保值的一致性
+6. 为不同量化格式创建特定的pack size配置
+
+# Test Strategy:
+编写预处理器测试验证所有文件使用相同的PACK_SIZE值，运行align_attn验证pack/unpack操作正确

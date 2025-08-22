@@ -1,44 +1,79 @@
 <context>
 # Overview  
-[Provide a high-level overview of your product here. Explain what problem it solves, who it's for, and why it's valuable.]
+我正在实现一个新的Attention算子，并且集成到llama.cpp中。这个算子是基于QLUT（Quantized Look-Up Table）方法的，旨在提高大规模语言模型在CPU上的推理效率。该算子支持多种量化格式，包括K1、K2、K4和V1、V2、V4，每种格式对应不同的精度和存储需求。
+
+目前我正在进行算子的调试，目前来看算子是通了的，但是仍然需要很多的调试，并且完全集成到框架中。
 
 # Core Features  
-[List and describe the main features of your product. For each feature, include:
-- What it does
-- Why it's important
-- How it works at a high level]
+1. 多种量化格式支持：实现了K1、K2、K4和V1、V2、V4六种量化格式，满足不同应用场景的需求。
+2. 高效的查找表实现：利用查找表技术，显著减少了计算复杂度，提高了推理速度。
+3. 与llama.cpp的无缝集成：确保新算子能够与现有的llama.cpp框架兼容，方便用户使用。
+4. 可扩展性设计：为未来可能的量化格式和优化方法预留接口，便于后续扩展。
 
 # User Experience  
-[Describe the user journey and experience. Include:
-- User personas
-- Key user flows
-- UI/UX considerations]
+目前的ggml/src/ggml-cpu/qlutattn中，存在一个我之前完成的一个qlutattn的实现，其中主要代码全部借鉴tmac（其实我就是想修改优化一版tmac用做我自己的目的）。但是这里目前直接硬集成到了llama.cpp的cpu的backend中，但是如果这样修改的话，我就不得不去修改ggml_compute_forward_dup_f16_qlutattn函数，用于量化和pack，只有这样才能支持下面这些新的量化类型：
+    GGML_TYPE_QLUTATTN_K1_128x128 = 48,
+    GGML_TYPE_QLUTATTN_K2_128x128 = 49,
+    GGML_TYPE_QLUTATTN_K4_128x128 = 50,
+    GGML_TYPE_QLUTATTN_V1_128x128 = 51,
+    GGML_TYPE_QLUTATTN_V2_128x128 = 52,
+    GGML_TYPE_QLUTATTN_V4_128x128 = 53,
+没错，包括这些对应的量化函数也需要在llama.cpp的CPU backend下实现（不过目前我初步看起来，这些函数在外部实现是一个还算正确的选择，你可以就让他们在llama.cpp的CPUbackend的主buffer中）。
+
+我这里有以下的要求：
+1. 我的所有refactor全部集中到QLUTATTN_K/V|1/2/4_128x128的类型。
+2. 我不需要为这些类型实现反量化（也就是to_float函数）。
+3. 我希望这里的permute函数refactor一下。
+
 </context>
 <PRD>
 # Technical Architecture  
-[Outline the technical implementation details:
-- System components
-- Data models
-- APIs and integrations
-- Infrastructure requirements]
+ggml/src/ggml-cpu/qlutattn目录下的代码结构：
+- qlutattn-config.cpp/h: 定义了QLUT Attention的配置参数和结构体。
+- tbl.cpp/h: 实现了基于查找表的量化注意力机制的核心算法。
+- qlutattn.cpp/h: 提供了QLUT Attention的具体实现，包括前向和反向传播的计算逻辑。
+ggml/src/ggml-cpu/ops.cpp:
+- ggml_compute_forward_dup_f16_qlutattn: 负责处理QLUT Attention的前向计算逻辑。
+- qlutattn_pack_weights: 负责对QLUT Attention的权重进行pack。
+- qlutattn_pack_scales: 负责对QLUT Attention的scales进行pack。
+- ggml_compute_forward_dup_f16_qlutattn: 负责处理QLUT Attention的量化和 pack 逻辑。
+- ggml_flash_attn_ext_qlutattn_segmented: 负责处理分段的QLUT Attention计算逻辑。
+- ggml_compute_forward_flash_attn_ext_mixed: 负责处理混合精度的QLUT Attention计算逻辑, 是一种sliding window的KVcache的Attention。
+
+由于之前对于算子的调试过程中，大量使用了hardcode的方式进行调试，因此代码中存在一些需要清理和重构的部分。具体包括：
+1. kernel_config的调用需要理清楚，确保每个配置项都有明确的用途和来源。
+2. 确保进行量化pack和进行查表计算获取的kernel_config是一致的。
+3. 清理掉所有的debug代码，确保代码整洁且易于维护。
+4. 确保全局中对于PACK_SIZE和PACK_CHUNK_SIZE的认知是一样的。
+5. 清理没必要的代码，就比如ggml_compute_forward_flash_attn_ext_f16_with_state函数，这个函数其实是完全没必要的。
 
 # Development Roadmap  
-[Break down the development process into phases:
-- MVP requirements
-- Future enhancements
-- Do not think about timelines whatsoever -- all that matters is scope and detailing exactly what needs to be build in each phase so it can later be cut up into tasks]
+- Phase 1: Research and Planning
+    - Understand the existing QLUT Attention implementation，在ggml/src/ggml-cpu/qlutattn目录下。
+    - 查看全局中对于kernel_config的调用，了解其中的场景。
+    - 确定各个配置项的作用和来源。
+    - 查看是否需要使用PACK_SIZE和PACK_CHUNK_SIZE。
+    - 确定PLAN，明确重构的目标和步骤。
+
+- Phase 2: Refactoring
+    - 清理掉所有的debug代码，确保代码整洁且易于维护。
+    - 重构kernel_config的调用，确保每个配置项都有明确的用途和来源。
+    - 确保进行量化pack和进行查表计算获取的kernel_config是一致的。
+
+- Phase 3: Testing and Validation
+    - 编译代码，确保没有编译错误。
+    - 运行现有的测试命令：./build-arm64/bin/align_attn，确保其测试通过，一定要保证其中误差在可接受范围内。
+    - 编写新的测试用例，覆盖重构后的代码，确保其功能正确。
+
+- Phase 4: Clean-up and Documentation
+    - 清理没必要的代码，就比如ggml_compute_forward_flash_attn_ext_f16_with_state函数，这个函数其实是完全没必要的。
 
 # Logical Dependency Chain
-[Define the logical order of development:
-- Which features need to be built first (foundation)
-- Getting as quickly as possible to something usable/visible front end that works
-- Properly pacing and scoping each feature so it is atomic but can also be built upon and improved as development approaches]
+
 
 # Risks and Mitigations  
-[Identify potential risks and how they'll be addressed:
-- Technical challenges
-- Figuring out the MVP that we can build upon
-- Resource constraints]
+- Risk 1: 重构过程中可能引入新的bug，导致现有功能无法正常工作。
+    - Mitigation: 在每个重构阶段后进行测试./build-arm64/bin/align_attn，确保功能正确。
 
 # Appendix  
 
