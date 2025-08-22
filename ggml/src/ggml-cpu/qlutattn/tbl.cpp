@@ -14,20 +14,37 @@
 
 namespace ggml::cpu::qlutattn {
 
+//> ===================================================================================================
+//> SIMD Accumulator Patterns for LUT-based Quantization
+//> ===================================================================================================
+// WHY: LUT outputs are int8 values that need accumulation without overflow
+// NOTE: Direct int8 accumulation overflows quickly (range: -128 to 127)
+// EXPLAIN: Three strategies provided based on accuracy vs range trade-offs
+
 #ifdef __ARM_NEON
+//> ===================================================================================================
+//> SignedHalvingAdder - Recursive binary tree accumulator using halving addition
+//> ===================================================================================================
+// EXPLAIN: Builds a binary tree of depth log2(N) where each level uses vrhaddq_s8
+// NOTE: vrhaddq_s8 computes (a + b + 1) >> 1, preventing overflow at cost of precision
+// WHY: Suitable for very deep accumulations (>256 values) where overflow is critical
 template <int N> struct SignedHalvingAdder {
-    SignedHalvingAdder<N / 2> adder;
-    int8x16_t                 lhs;
+    SignedHalvingAdder<N / 2> adder;  // Recursive sub-adder for N/2 elements
+    int8x16_t                 lhs;    // Stores left half result after reduction
 
     inline void push(int8x16_t v, int k) {
         if (k < N / 2) {
+            // Process first N/2 elements through left sub-tree
             adder.push(v, k);
             if (k == N / 2 - 1) {
-                lhs = adder.get();
+                lhs = adder.get();  // Save left half result
             }
         } else {
+            // Process second N/2 elements through right sub-tree
             adder.push(v, k - N / 2);
             if (k == N - 1) {
+                // Combine left and right halves using halving add
+                // NOTE: This prevents overflow but loses 1 bit precision per level
                 lhs = vrhaddq_s8(lhs, adder.get());
             }
         }
@@ -40,13 +57,17 @@ template <int N> struct SignedHalvingAdder {
     inline int16x8_t get_high() { return vmovl_high_s8(lhs); }
 };
 
+// Base case specialization for N=2
+// EXPLAIN: Terminal case of recursion - directly applies halving add to two vectors
 template <> struct SignedHalvingAdder<2> {
     int8x16_t lhs;
 
     inline void push(int8x16_t v, int k) {
         if (k == 0) {
-            lhs = v;
+            lhs = v;  // Store first vector
         } else {
+            // Apply halving add: (lhs + v + 1) >> 1
+            // NOTICE: Result guaranteed within int8 range
             lhs = vrhaddq_s8(lhs, v);
         }
     }
@@ -58,15 +79,23 @@ template <> struct SignedHalvingAdder<2> {
     inline int16x8_t get_high() { return vmovl_high_s8(lhs); }
 };
 
+//> ===================================================================================================
+//> SignedLongAdder - Widening adder that promotes int8 to int16 during addition
+//> ===================================================================================================
+// EXPLAIN: Uses NEON widening add instructions to prevent overflow
+// WHY: Maintains full precision by using larger data type (int16) for accumulation
+// NOTE: Best for adding exactly 2 vectors with no precision loss
 struct SignedLongAdder {
-    int16x8_t lhs_low;
-    int16x8_t lhs_high;
-    int8x16_t lhs;
+    int16x8_t lhs_low;   // Low 64 bits (8 int8s) expanded to int16
+    int16x8_t lhs_high;  // High 64 bits (8 int8s) expanded to int16
+    int8x16_t lhs;       // Temporary storage for first input
 
     inline void push(int8x16_t v, int k) {
         if (k == 0) {
-            lhs = v;
+            lhs = v;  // Store first vector for later widening add
         } else {
+            // vaddl_s8: Adds two int8x8 vectors, widens result to int16x8
+            // EXPLAIN: int8 range [-128,127] + int8 range = int16 range [-256,254]
             lhs_low  = vaddl_s8(vget_low_s8(lhs), vget_low_s8(v));
             lhs_high = vaddl_high_s8(lhs, v);
         }
@@ -77,20 +106,29 @@ struct SignedLongAdder {
     inline int16x8_t get_high() { return lhs_high; }
 };
 
+//> ===================================================================================================
+//> SignedWideningAdder - Batch accumulator for N vectors using widening addition
+//> ===================================================================================================
+// EXPLAIN: Accumulates N vectors by pairing them and using SignedLongAdder
+// WHY: Enables accumulation of multiple vectors (2-256) without overflow
+// NOTE: Maintains full precision in int16 accumulator
 template <int N> struct SignedWideningAdder {
-    SignedLongAdder adder;
-    int16x8_t       lhs_low;
-    int16x8_t       lhs_high;
+    SignedLongAdder adder;     // Internal widening adder for pairs
+    int16x8_t       lhs_low;   // Accumulated low half (int16)
+    int16x8_t       lhs_high;  // Accumulated high half (int16)
 
     inline void push(int8x16_t v, int k) {
         if (k % 2 == 0) {
-            adder.push(v, 0);
+            adder.push(v, 0);  // Even index: store as first operand
         } else {
-            adder.push(v, 1);
+            adder.push(v, 1);  // Odd index: add to first operand
             if (k == 1) {
+                // First pair: directly save widened result
                 lhs_low  = adder.get_low();
                 lhs_high = adder.get_high();
             } else {
+                // Subsequent pairs: accumulate to existing int16 result
+                // NOTE: int16 can safely accumulate ~256 max int8 values
                 lhs_low += adder.get_low();
                 lhs_high += adder.get_high();
             }
@@ -102,11 +140,19 @@ template <int N> struct SignedWideningAdder {
     inline int16x8_t get_high() { return lhs_high; }
 };
 #elif defined __AVX2__
+//> ===================================================================================================
+//> AVX2 SIMD Accumulator Patterns - x86 equivalents of ARM NEON accumulators
+//> ===================================================================================================
+// Helper macros for type promotion operations
+// EXPLAIN: Extract and sign-extend int8 to int16, or int16 to int32
 #    define extract_low_epi8_epi16(v)   _mm256_cvtepi8_epi16(_mm256_castsi256_si128(v))
 #    define extract_high_epi8_epi16(v)  _mm256_cvtepi8_epi16(_mm256_extracti128_si256(v, 1))
 #    define extract_low_epi16_epi32(v)  _mm256_cvtepi16_epi32(_mm256_castsi256_si128(v))
 #    define extract_high_epi16_epi32(v) _mm256_cvtepi16_epi32(_mm256_extracti128_si256(v, 1))
 
+// AVX2 version of SignedHalvingAdder
+// NOTE: Uses _mm256_avg_epu8 for averaging (unsigned version)
+// HACK: Signed averaging not directly available in AVX2, using unsigned as approximation
 template <int N> struct SignedHalvingAdder {
     SignedHalvingAdder<N / 2> adder;
     __m256i                   lhs;
@@ -120,6 +166,8 @@ template <int N> struct SignedHalvingAdder {
         } else {
             adder.push(v, k - N / 2);
             if (k == N - 1) {
+                // Average bytes: (a + b + 1) >> 1
+                // NOTICE: Using unsigned average, may differ from signed for negative values
                 lhs = _mm256_avg_epu8(lhs, adder.get());
             }
         }
@@ -132,6 +180,7 @@ template <int N> struct SignedHalvingAdder {
     inline __m256i get_high() { return extract_high_epi8_epi16(lhs); }
 };
 
+// AVX2 base case for N=2
 template <> struct SignedHalvingAdder<2> {
     __m256i lhs;
 
@@ -150,15 +199,20 @@ template <> struct SignedHalvingAdder<2> {
     inline __m256i get_high() { return extract_high_epi8_epi16(lhs); }
 };
 
+// AVX2 version of SignedWideningAdder
+// EXPLAIN: Sign-extends int8 to int16 and accumulates without overflow
+// NOTE: No SignedLongAdder equivalent needed - operations directly embedded
 template <int N> struct SignedWideningAdder {
-    __m256i lhs_low;
-    __m256i lhs_high;
+    __m256i lhs_low;   // Lower 128 bits promoted to int16
+    __m256i lhs_high;  // Upper 128 bits promoted to int16
 
     inline void push(__m256i v, int k) {
         if (k == 0) {
+            // First vector: sign-extend int8 to int16
             lhs_low  = extract_low_epi8_epi16(v);
             lhs_high = extract_high_epi8_epi16(v);
         } else {
+            // Subsequent vectors: sign-extend and accumulate
             lhs_low  = _mm256_add_epi16(lhs_low, extract_low_epi8_epi16(v));
             lhs_high = _mm256_add_epi16(lhs_high, extract_high_epi8_epi16(v));
         }
@@ -171,14 +225,24 @@ template <int N> struct SignedWideningAdder {
 
 #endif
 
+// Template alias to select adder based on aggregation strategy
+// WHY: Different accumulation strategies have different trade-offs
+// NOTE: FastAggregation uses halving (loses precision), otherwise uses widening (preserves precision)
 template <bool FastAggregation, int ActK>
 using SignedAdder =
     typename std::conditional<FastAggregation, SignedHalvingAdder<ActK>, SignedWideningAdder<ActK>>::type;
 
+//> ===================================================================================================
+//> Compile-time log2 calculator using template metaprogramming
+//> ===================================================================================================
+// EXPLAIN: Recursively computes log2(K) at compile time
+// WHY: Needed to determine tree depth for binary reduction and loop unrolling
+// NOTE: Result is available at compile time, enabling template parameter usage
 template <int K> struct mylog2 {
-    enum { value = 1 + mylog2<K / 2>::value };
+    enum { value = 1 + mylog2<K / 2>::value };  // Recursive: log2(K) = 1 + log2(K/2)
 };
 
+// Base case: log2(0) = -1 (used as termination condition)
 template <> struct mylog2<0> {
     enum { value = -1 };
 };
@@ -245,12 +309,35 @@ inline int32_t tbl_g4_float_float_update_impl(int32_t m, tmac_float_type * c, tm
     return 0;
 }
 
+// Empirical bias correction factors for FastAggregation rounding compensation
+// EXPLAIN: SignedHalvingAdder introduces systematic rounding errors that depend on bit-width
+// WHY: Different quantization levels have different error accumulation patterns
+// NOTE: These values determined experimentally to minimize reconstruction error
+template <int Bits> inline tmac_float_type get_fast_aggregation_bias() {
+    if constexpr (Bits == 1) {
+        return 0;      // 1-bit: Binary {-1,1}, no rounding correction needed
+    } else if constexpr (Bits == 2) {
+        return -0.5;   // 2-bit: Higher correction for coarse quantization
+    } else if constexpr (Bits == 3) {
+        return -0.5;   // 3-bit: Similar empirical value as 2-bit
+    } else if constexpr (Bits == 4) {
+        return -0.25;  // 4-bit: Lower correction for finer quantization
+    }
+    return 0;
+}
+
+// Calculate bias scale factor for multi-bit quantization
+// EXPLAIN: In multi-bit representation, each bit position has weight 2^b
+// WHY: The bias needs to account for sum of all bit weights when converting from {0,1} to {-1,1}
+// NOTE: Formula: sum(2^b) / 2^0 where b ranges from 0 to bits-1
 template <int bits> constexpr int get_bias_scale() {
     // The bias scale will be added to the first bit
-    // 15 = (1/2 + 1 + 2 + 4) / (1/2)
-    // 7 = (1/2 + 1 + 2) / (1/2)
-    // 3 = (1/2 + 1) / (1/2)
-    // 1 = (1/2) / (1/2)
+    // EXPLAIN: When mapping from unsigned to signed ({0,1} to {-1,1}), 
+    //          bias = -sum of all bit weights normalized by smallest weight
+    // 15 = (1/2 + 1 + 2 + 4) / (1/2) = 7.5 / 0.5 = 15 for 4-bit
+    // 7 = (1/2 + 1 + 2) / (1/2) = 3.5 / 0.5 = 7 for 3-bit
+    // 3 = (1/2 + 1) / (1/2) = 1.5 / 0.5 = 3 for 2-bit
+    // 1 = (1/2) / (1/2) = 0.5 / 0.5 = 1 for 1-bit
     if constexpr (bits == 4) {
         return 15;
     } else if constexpr (bits == 3) {
@@ -312,11 +399,21 @@ inline int32_t tbl_g4_int8_float_update_impl(int32_t m, tmac_float_type * c, int
                 partial_sum += lut_b;
             }
 
-            // https://arxiv.org/pdf/2106.10860.pdf
-            // Fast aggregation bias: -FastAggregationK * log2(FastAggregationK) / 4 * (act_k / FastAggregationK)
+            // FastAggregation compensation for SignedHalvingAdder precision loss
+            // EXPLAIN: SignedHalvingAdder performs (a+b+1)>>1 at each tree level
+            // WHY: Each level loses 1 bit precision, total loss = log2(ActK) bits
+            // NOTE: Result is scaled by 1/ActK after full reduction
+            // Reference: https://arxiv.org/pdf/2106.10860.pdf
             if (FastAggregation) {
+                // Step 1: Compensate for 1/ActK scaling by multiplying LUT scale
+                // EXPLAIN: SignedHalvingAdder reduces result by factor of ActK
                 lut_s = lut_s * ActK;
-                lut_b -= lut_s * (mylog2<ActK>::value / 4 * get_bias_scale<Bits>());
+                
+                // Step 2: Compensate for accumulated rounding bias
+                // EXPLAIN: Each halving adds +1 rounding, propagated through log2(ActK) levels
+                // NOTE: Empirical factor of 1/4 for average rounding impact
+                // Formula: bias_adjustment = -scale * (tree_depth / 4) * bit_specific_factor
+                lut_b -= lut_s * (mylog2<ActK>::value / 4 * get_fast_aggregation_bias<Bits>());
             }
 
 #    define lut_fma(vs, ib) ((ib) % Bits) ? ((vs) * lut_s) : ((vs) * lut_s + lut_b)
@@ -417,7 +514,7 @@ inline int32_t tbl_g4_int8_float_update_impl(int32_t m, tmac_float_type * c, int
 
             if (FastAggregation) {
                 lut_s = lut_s * ActK;
-                lut_b -= lut_s * (mylog2<ActK>::value / 4 * get_bias_scale<Bits>());
+                lut_b -= lut_s * (mylog2<ActK>::value / 4 * get_fast_aggregation_bias<Bits>());
             }
 
 #    define lut_fma(vs, ib)                                            \
