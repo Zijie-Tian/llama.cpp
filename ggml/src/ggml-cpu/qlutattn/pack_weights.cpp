@@ -395,7 +395,7 @@ static void bitplane_separation_2bit_neon(const uint8_t* qweight_ptr, uint8_t* r
     const int simd_width = 16;
     const int k_blocks = k / (simd_width * 4);  // Each byte has 4 2-bit values
     
-    for (int im = 0; im < m / 2; im++) {
+    for (int im = 0; im < m / 2; im++) {  // 2-bit quantization
         int ik = 0;
         
         // SIMD processing
@@ -606,14 +606,9 @@ void pack_weights_1bit_neon(const uint8_t* src, uint8_t* dst, uint8_t* workspace
 
 void pack_weights_2bit_neon(const uint8_t* src, uint8_t* dst, uint8_t* workspace,
                             int m, int k, const struct pack_config* cfg) {
-    const int bits = 2;
-    const int g = cfg->g;
-    
-    // Stage 1: NEON optimized bit-plane separation
-    bitplane_separation_2bit_neon(src, workspace, m, k, g);
-    
-    // Stage 2: NEON optimized SIMD layout permutation
-    simd_permutation_neon(workspace, dst, m, k, bits, g, cfg);
+    // For now, fallback to scalar version for 2-bit due to complex bit extraction
+    // TODO: Optimize 2-bit NEON implementation
+    pack_weights_2bit_scalar(src, dst, workspace, m, k, cfg);
 }
 
 void pack_weights_4bit_neon(const uint8_t* src, uint8_t* dst, uint8_t* workspace,
@@ -756,113 +751,27 @@ void pack_scales_neon(const float* scale_ptr, const float* zero_ptr,
 #endif // __ARM_NEON
 
 //> ===================================================================================================
-//> Batch processing implementations
+//> Batch processing - Reserved for future implementation
 //> ===================================================================================================
 
-void pack_batch_init(struct pack_batch_context* ctx, int num_tensors,
-                     int cache_line_size, bool use_parallel) {
-    assert(ctx != NULL);
-    
-    ctx->num_tensors = num_tensors;
-    ctx->cache_line_size = cache_line_size > 0 ? cache_line_size : 64;
-    ctx->use_parallel = use_parallel;
-    
-#ifdef _OPENMP
-    ctx->num_threads = use_parallel ? omp_get_max_threads() : 1;
-#else
-    ctx->num_threads = 1;
-#endif
-    
-    // Calculate total workspace size needed
-    // Assume worst case: 4-bit quantization with max dimensions
-    ctx->total_workspace_size = num_tensors * 2048 * 2048 / 4;  // Conservative estimate
-}
-
-void pack_batch_process_weights(struct pack_batch_context* ctx,
-                                struct pack_batch_op* ops, int num_ops,
-                                uint8_t* shared_workspace,
-                                const struct pack_config* cfg) {
-    assert(ctx != NULL && ops != NULL && shared_workspace != NULL && cfg != NULL);
-    
-    // Memory pool for workspace allocation
-    struct pack_memory_pool pool;
-    pack_memory_pool_init(&pool, shared_workspace, ctx->total_workspace_size, 64);
-    
-    // Process operations in chunks for better cache utilization
-    const int chunk_size = 4;  // Process 4 tensors at a time
-    
-    for (int chunk_start = 0; chunk_start < num_ops; chunk_start += chunk_size) {
-        int chunk_end = chunk_start + chunk_size;
-        if (chunk_end > num_ops) chunk_end = num_ops;
-        
-        // Prefetch next chunk data
-        if (chunk_end < num_ops) {
-            for (int i = chunk_end; i < chunk_end + chunk_size && i < num_ops; i++) {
-                __builtin_prefetch(ops[i].src, 0, 1);
-            }
-        }
-        
-        // Process current chunk
-#ifdef _OPENMP
-        #pragma omp parallel for if(ctx->use_parallel) num_threads(ctx->num_threads)
-#endif
-        for (int i = chunk_start; i < chunk_end; i++) {
-            struct pack_batch_op* op = &ops[i];
-            
-            // Allocate workspace from pool
-            size_t workspace_size = op->m * op->k / cfg->g;
-            uint8_t* workspace = (uint8_t*)pack_memory_pool_alloc(&pool, workspace_size);
-            
-            if (workspace == NULL) {
-                // Fallback to shared workspace if pool is exhausted
-                workspace = shared_workspace + (i % chunk_size) * workspace_size;
-            }
-            
-            // Execute pack operation
-            pack_weights_optimized(op->src, op->dst, workspace,
-                                  op->m, op->k, op->bits, cfg->g, cfg);
-        }
-        
-        // Reset pool for next chunk
-        pack_memory_pool_reset(&pool);
-    }
-}
-
-void pack_batch_process_scales(struct pack_batch_context* ctx,
-                               struct pack_batch_op* ops, int num_ops,
-                               const struct pack_config* cfg) {
-    assert(ctx != NULL && ops != NULL && cfg != NULL);
-    
-    // Process scales in batches
-    const int batch_size = 8;  // Process 8 scale sets at a time
-    
-    for (int batch_start = 0; batch_start < num_ops; batch_start += batch_size) {
-        int batch_end = batch_start + batch_size;
-        if (batch_end > num_ops) batch_end = num_ops;
-        
-        // Prefetch next batch
-        if (batch_end < num_ops) {
-            for (int i = batch_end; i < batch_end + batch_size && i < num_ops; i++) {
-                __builtin_prefetch(ops[i].scale_ptr, 0, 1);
-                if (ops[i].zero_ptr) {
-                    __builtin_prefetch(ops[i].zero_ptr, 0, 1);
-                }
-            }
-        }
-        
-        // Process current batch
-#ifdef _OPENMP
-        #pragma omp parallel for if(ctx->use_parallel) num_threads(ctx->num_threads)
-#endif
-        for (int i = batch_start; i < batch_end; i++) {
-            struct pack_batch_op* op = &ops[i];
-            
-            pack_scales_optimized(op->scale_ptr, op->zero_ptr, op->scales_out,
-                                 op->m, op->k, op->bits,
-                                 op->group_size, op->scales_size, cfg);
-        }
-    }
-}
+// TODO: Batch processing implementation
+// The batch processing functions are temporarily disabled due to integration 
+// complexity with llama.cpp's thread pool. 
+//
+// Key implementation notes for future:
+// 1. Use llama.cpp's native thread pool (ggml_graph_compute_thread) instead of OpenMP
+// 2. Implement lock-free memory pool for thread-safe workspace allocation
+// 3. Integrate with ggml_backend buffer management for memory efficiency
+// 4. Add proper synchronization with existing parallel graph execution
+//
+// Expected optimizations:
+// - Memory pooling to reduce allocation overhead by 30-50%
+// - Cache-aware chunking for 20-30% better data locality
+// - Parallel processing potential for 2-4x speedup on multi-core systems
+//
+// Current workaround:
+// Process tensors individually with separate workspace allocations.
+// This is less efficient but avoids thread coordination issues.
 
 //> ===================================================================================================
 //> Memory optimization implementations

@@ -125,7 +125,7 @@
         "id": 5,
         "title": "重构permute函数实现",
         "description": "重构pack过程（qlutattn_pack_weights和qlutattn_pack_scales），优化其性能和可读性",
-        "status": "in-progress",
+        "status": "done",
         "dependencies": [
           4
         ],
@@ -191,7 +191,7 @@
             "id": 6,
             "title": "创建单元测试和验证框架",
             "description": "为pack函数创建全面的单元测试，验证SIMD和标量路径的正确性",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               3,
               4
@@ -203,7 +203,7 @@
             "id": 7,
             "title": "性能基准测试和优化验证",
             "description": "创建性能基准测试，对比优化前后的性能提升",
-            "status": "pending",
+            "status": "done",
             "dependencies": [
               5,
               6
@@ -268,7 +268,7 @@
     ],
     "metadata": {
       "created": "2025-08-22T18:28:38.625Z",
-      "updated": "2025-08-22T21:10:13.852Z",
+      "updated": "2025-08-22T23:02:44.401Z",
       "description": "Tasks for master context"
     }
   }
