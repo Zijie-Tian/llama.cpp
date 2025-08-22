@@ -151,3 +151,30 @@ breakdown_results
 breakdown_results/Meta-Llama-3.1-8B-Instruct-Q8_0
 breakdown_results_llamacpp/Meta-Llama-3.1-8B-Instruct-Q8_0
 breakdown_results_llamacpp/
+
+logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-debug.log
+# Dependency directories
+node_modules/
+# Environment variables
+.env
+# Editor directories and files
+.idea
+.vscode
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+# OS specific
+
+# Task files
+# tasks.json
+# tasks/ 
+.taskmaster
+.claude
+.env.example
+.mcp.json

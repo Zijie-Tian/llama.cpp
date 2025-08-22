@@ -843,42 +843,111 @@ int32_t tbl_int16_reset(int32_t m, int16_t * c) {
     return 0;
 }
 
+//> ===================================================================================================
+//> Quantized General Matrix Multiplication using Look-Up Tables
+//> 
+//> This function performs matrix multiplication C = A * B where:
+//> - A is quantized weight matrix (M x K) 
+//> - B is activation matrix that has been transformed into LUT format  
+//> - C is the output matrix (M x N)
+//> 
+//> The computation uses pre-computed look-up tables (LUTs) to accelerate 
+//> low-bit quantized matrix multiplication by replacing MAC operations with table lookups.
+//> ===================================================================================================
 void qgemm_lut_int8_g4(void * A, void * LUT, void * Scales, void * LUT_Scales, void * LUT_Biases, void * C, int bm,
                        int K, int N, const struct qlutattn_kernel_config * kernel_config) {
-    // TODO: support N > 1
+    //> ===================================================================================================
+    //> Input validation and constraints
+    //> ===================================================================================================
+    
+    // TODO: Extend support for batch processing (N > 1)
+    // NOTE: Current implementation optimized for single-vector case (N=1)
     if (N != 1) {
         throw std::runtime_error("N > 1 is not supported yet");
     }
 
-    const int g                = kernel_config->g;
-    const int ngroups_per_elem = 8 / g;
-    int       q_group_size     = kernel_config->q_group_size;
-    int       act_group_size   = kernel_config->act_group_size;
-    bool      has_scale        = kernel_config->has_scale;
-    int       kfactor          = kernel_config->kfactor;
-    int       bits             = kernel_config->bits;
-    int       actk             = kernel_config->actk;
-    bool      has_zero_point   = kernel_config->has_zero_point;
-    bool      one_scale        = kernel_config->one_scale;
-    int       m                = bm / bits;
+    //> ===================================================================================================
+    //> Extract kernel configuration parameters
+    //> ===================================================================================================
+    
+    // Core LUT parameters
+    const int g                = kernel_config->g;              // Group size for LUT (typically 4)
+    const int ngroups_per_elem = 8 / g;                         // Number of groups per byte element
+    
+    // Quantization parameters
+    int       q_group_size     = kernel_config->q_group_size;   // Weight quantization group size
+    int       act_group_size   = kernel_config->act_group_size; // Activation quantization group size
+    int       bits             = kernel_config->bits;           // Quantization bit width (1/2/4)
+    
+    // Computation parameters
+    int       kfactor          = kernel_config->kfactor;        // K-dimension unrolling factor (8/16)
+    int       actk             = kernel_config->actk;           // Activation K-dimension chunk size
+    
+    // Scale configuration
+    bool      has_scale        = kernel_config->has_scale;      // Whether weights have scales
+    bool      has_zero_point   = kernel_config->has_zero_point; // Whether weights have zero points
+    bool      one_scale        = kernel_config->one_scale;      // Single scale for entire tensor
+    
+    // Derived parameters
+    int       m                = bm / bits;                     // Actual M dimension after bit-packing
 
+    //> ===================================================================================================
+    //> Allocate intermediate buffers for accumulation
+    //> ===================================================================================================
+    
+    // CBits: Accumulator for bit-sliced intermediate results
+    // WHY: LUT operations produce bit-sliced outputs that need accumulation
     tmac_float_type * CBits    = new tmac_float_type[bm];
+    
+    // C_global: Temporary buffer for final aggregation
     tmac_float_type * C_global = new tmac_float_type[m];
+    
+    // Initialize accumulator to zero
     tbl_int32_reset(bm * sizeof(tmac_float_type) / sizeof(int32_t), (&(((int32_t *) CBits)[0])));
 
+    //> ===================================================================================================
+    //> Main computation loop over K dimension chunks
+    //> ===================================================================================================
+    
+    // Process K dimension in chunks of size (kfactor * g)
+    // WHY: This chunking aligns with SIMD width and cache line boundaries
     int32_t k_outer_max = K / (kfactor * g);
+    
     for (int32_t k_outer = 0; k_outer < k_outer_max; k_outer++) {
-        uint8_t *         a = ((uint8_t *) A) + k_outer * bm * kfactor / ngroups_per_elem;
+        //> ===============================================================================================
+        //> Calculate pointers for current chunk
+        //> ===============================================================================================
+        
+        // Weight matrix pointer for current chunk
+        // NOTE: Weights are bit-packed, so division by ngroups_per_elem
+        uint8_t * a = ((uint8_t *) A) + k_outer * bm * kfactor / ngroups_per_elem;
+        
+        // Scale pointer calculation based on scale configuration
+        // EXPLAIN: Three cases for scale storage:
+        // 1. one_scale: Single scale for entire tensor
+        // 2. has_zero_point: Interleaved scales and zero points (2x storage)
+        // 3. default: Per-group scales only
         tmac_float_type * scales =
             one_scale      ? (tmac_float_type *) Scales :
             has_zero_point ? ((tmac_float_type *) Scales) + (k_outer * act_group_size / q_group_size) * m * 2 :
                              ((tmac_float_type *) Scales) + (k_outer * act_group_size / q_group_size) * m;
-        int8_t *          lut = ((int8_t *) LUT) + k_outer * kfactor * int(pow(2, g));
-        tmac_float_type * lut_scales =
-            ((tmac_float_type *) LUT_Scales) + k_outer;  // k_outer * kfactor * g / act_group_size == k_outer
-        tmac_float_type * lut_biases =
-            ((tmac_float_type *) LUT_Biases) + k_outer;  // k_outer * kfactor * g / act_group_size == k_outer
+        
+        // LUT pointer for current chunk (2^g entries per group)
+        int8_t * lut = ((int8_t *) LUT) + k_outer * kfactor * int(pow(2, g));
+        
+        // LUT scale/bias pointers
+        // NOTE: Simplified indexing as kfactor*g/act_group_size = 1 for typical configs
+        tmac_float_type * lut_scales = ((tmac_float_type *) LUT_Scales) + k_outer;
+        tmac_float_type * lut_biases = ((tmac_float_type *) LUT_Biases) + k_outer;
 
+        //> ===============================================================================================
+        //> Dispatch to specialized kernel based on configuration
+        //> ===============================================================================================
+        
+        // WHY: Template specialization enables compiler optimizations for each configuration
+        // NOTE: Each branch handles specific (kfactor, bits, actk, zero_point, scale_type) combination
+        
+        // 2-bit quantization kernels
         if (has_scale && kfactor == 8 && bits == 2 && actk == 8 && has_zero_point && !one_scale) {
             tbl_g4_int8_float_update_impl<true, 8, 2, 8, false, true, false>((int32_t) bm, CBits, lut, a, scales,
                                                                              lut_scales, lut_biases);
@@ -898,7 +967,7 @@ void qgemm_lut_int8_g4(void * A, void * LUT, void * Scales, void * LUT_Scales, v
             tbl_g4_int8_float_update_impl<true, 16, 2, 16, false, false, true>((int32_t) bm, CBits, lut, a, scales,
                                                                                lut_scales, lut_biases);
         }
-
+        // 4-bit quantization kernels
         else if (has_scale && kfactor == 8 && bits == 4 && actk == 8 && has_zero_point && !one_scale) {
             tbl_g4_int8_float_update_impl<true, 8, 4, 8, false, true, false>((int32_t) bm, CBits, lut, a, scales,
                                                                              lut_scales, lut_biases);
@@ -918,16 +987,10 @@ void qgemm_lut_int8_g4(void * A, void * LUT, void * Scales, void * LUT_Scales, v
             tbl_g4_int8_float_update_impl<true, 16, 4, 16, false, false, true>((int32_t) bm, CBits, lut, a, scales,
                                                                                lut_scales, lut_biases);
         }
+        // NOTE: Additional bit widths (1, 3) can be added here following the same pattern
     }
-    // if (!(((uint8_t *)A)[0] == 0 && ((uint8_t *)A)[1] == 0 && ((uint8_t *)A)[2] == 0 && ((uint8_t *)A)[3] == 0
-    //     && ((uint8_t *)A)[4] == 0 && ((uint8_t *)A)[5] == 0 && ((uint8_t *)A)[6] == 0 && ((uint8_t *)A)[7] == 0)) {
-    //     printf("\n\n\n\nCBits:\n\n\n");
-    //     for (int i = 0; i < bm; i++) {
-    //         printf("%f ", CBits[i]);
-    //     }
-    //     printf("\n");
-    // }
 
+    // Debug: Print CBits values to check for zero patterns
     if (bits == 1) {
         tbl_g4_int8_float_gather_bit1_impl(m, C_global, CBits, (tmac_float_type *) C);
     } else if (bits == 2) {

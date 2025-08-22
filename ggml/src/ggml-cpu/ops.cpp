@@ -7967,7 +7967,7 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
         ggml_qlutattn_config_init();
     }
     
-    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(1, 1, 4);  // NOTE: Just for test
+    const struct qlutattn_kernel_config * kernel_config = ggml_qlutattn_get_config(128, 128, 4);  // Use actual PACK_SIZE dimensions
     if (kernel_config == nullptr) {
         GGML_LOG_ERROR("Failed to find QLUTATTN kernel config for 128x128x4\n");
         GGML_ABORT("Kernel config not found");
@@ -8152,7 +8152,8 @@ static void ggml_flash_attn_ext_qlutattn_segment(const ggml_compute_params * par
                                                            kernel_config);
 
             pv_vec_dot_fp16(PACK_SIZE, VKQ16, PACK_SIZE,
-                            (const uint8_t *) v->data + idx_chunk * nbv1 + iv_head * type_size, PACK_SIZE, qlut_ptr,
+                            (const uint8_t *) v->data + idx_chunk * nbv1 + iv_head * type_size, PACK_SIZE, 
+                            (const ggml_fp16_t *) pth_qLUT_buffer,  // Pass the entire buffer, not just qlut_ptr
                             PACK_SIZE, PACK_SIZE);
 
             for (int i = 0; i < PACK_CHUNK_SIZE; ++i) {
