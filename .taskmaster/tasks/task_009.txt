@@ -1,0 +1,23 @@
+# Task ID: 9
+# Title: 优化ggml_flash_attn_ext_qlutattn实现
+# Status: pending
+# Dependencies: 8
+# Priority: medium
+# Description: 优化mixed精度和segmented的QLUTATTN attention计算逻辑
+# Details:
+1. 分析现有的ggml_compute_forward_flash_attn_ext_mixed实现
+2. 优化sliding window KV cache的内存访问模式
+3. 实现分段计算的负载均衡：
+   ```cpp
+   void optimize_segmented_attention(
+       int num_segments,
+       int segment_size,
+       // ...
+   );
+   ```
+4. 添加prefetch指令优化缓存性能
+5. 实现混合精度计算的自适应策略
+6. 优化查表操作的批处理
+
+# Test Strategy:
+创建不同规模的attention测试用例，验证优化后的正确性和性能提升

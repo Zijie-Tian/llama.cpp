@@ -1,6 +1,6 @@
 # Task ID: 4
 # Title: 统一PACK_SIZE和PACK_CHUNK_SIZE定义
-# Status: pending
+# Status: done
 # Dependencies: 3
 # Priority: high
 # Description: 确保全局对PACK_SIZE和PACK_CHUNK_SIZE的认知一致，消除重复定义

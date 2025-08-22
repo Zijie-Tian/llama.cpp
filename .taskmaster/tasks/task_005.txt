@@ -3,22 +3,107 @@
 # Status: pending
 # Dependencies: 4
 # Priority: medium
-# Description: 按照要求重构permute函数，优化其性能和可读性
+# Description: 重构pack过程（qlutattn_pack_weights和qlutattn_pack_scales），优化其性能和可读性
 # Details:
-1. 分析现有permute函数的实现逻辑
-2. 为六种量化格式创建专门的permute实现：
-   ```cpp
-   void qlutattn_permute_k1_128x128(...);
-   void qlutattn_permute_k2_128x128(...);
-   void qlutattn_permute_k4_128x128(...);
-   void qlutattn_permute_v1_128x128(...);
-   void qlutattn_permute_v2_128x128(...);
-   void qlutattn_permute_v4_128x128(...);
-   ```
-3. 使用SIMD指令优化permute操作
-4. 实现批处理优化减少内存访问
-5. 添加对齐检查和边界处理
-6. 创建permute函数的性能基准测试
+重构pack过程的实现，包括qlutattn_pack_weights和qlutattn_pack_scales函数的优化。
+
+注意：伪量化和Bit-plane separation过程将作为独立任务处理，它们在type_traits_cpu数组中对应量化类型的from_float函数中实现（如quantize_block_qlutattn_k1/2/4_128x128_ref）。
+
+本任务专注于pack过程的优化：
+1. 分析现有qlutattn_pack_weights和qlutattn_pack_scales的实现逻辑
+2. 为六种量化格式创建优化的pack实现
+3. 使用ARM NEON SIMD指令优化pack操作
+4. 实现标量fallback以支持非SIMD环境
+5. 实现批处理优化减少内存访问
+6. 添加对齐检查和边界处理
+7. 创建pack函数的性能基准测试
 
 # Test Strategy:
-编写单元测试验证permute前后数据的正确性，使用性能测试对比重构前后的速度提升
+编写单元测试验证pack前后数据的正确性，测试SIMD和标量路径，使用性能测试对比重构前后的速度提升
+
+# Subtasks:
+## 1. 分析现有pack实现并设计新架构 [pending]
+### Dependencies: None
+### Description: 深入分析qlutattn_pack_weights和qlutattn_pack_scales的实现逻辑，设计优化架构
+### Details:
+1. 搜索并分析qlutattn_pack_weights的现有实现
+2. 搜索并分析qlutattn_pack_scales的现有实现
+3. 理解pack过程的数据重排逻辑
+4. 研究六种量化格式(k1/k2/k4, v1/v2/v4)在pack过程中的特点
+5. 设计SIMD优化的数据访问模式
+6. 规划标量fallback的实现策略
+7. 创建pack函数的详细设计文档
+
+## 2. 实现pack函数的基础版本 [pending]
+### Dependencies: 5.1
+### Description: 重构qlutattn_pack_weights和qlutattn_pack_scales的基础实现，确保功能正确性
+### Details:
+1. 重构qlutattn_pack_weights基础版本
+2. 重构qlutattn_pack_scales基础版本
+3. 为六种量化格式适配pack逻辑
+4. 实现清晰的数据重排算法
+5. 添加参数验证和边界检查
+6. 确保与现有代码的兼容性
+7. 添加详细的代码注释说明pack逻辑
+
+## 3. ARM NEON SIMD优化实现 [pending]
+### Dependencies: 5.2
+### Description: 使用ARM NEON指令集优化pack操作，提升性能
+### Details:
+1. 使用NEON向量加载/存储指令优化内存访问
+2. 实现向量化的数据重排操作（vld1q, vst1q等）
+3. 使用NEON shuffle指令优化数据重组
+4. 优化pack_weights的SIMD实现
+5. 优化pack_scales的SIMD实现
+6. 添加内存对齐检查选择最优路径
+7. 使用预取指令优化cache性能
+
+## 4. 实现标量fallback路径 [pending]
+### Dependencies: 5.2
+### Description: 为不支持SIMD的环境实现高效的标量计算路径
+### Details:
+1. 实现标量版本的pack_weights
+2. 实现标量版本的pack_scales
+3. 优化标量循环展开提升性能
+4. 添加编译时检测自动选择SIMD或标量路径
+5. 确保标量路径的结果与SIMD路径完全一致
+6. 实现运行时CPU特性检测
+7. 添加fallback路径的性能优化
+
+## 5. 批处理优化和内存访问优化 [pending]
+### Dependencies: 5.3, 5.4
+### Description: 实现批处理机制，优化内存访问模式以提升性能
+### Details:
+1. 实现批量pack处理减少函数调用开销
+2. 优化内存访问顺序提升cache命中率
+3. 实现分块处理适应不同cache大小
+4. 添加内存池管理减少分配开销
+5. 优化数据布局提升带宽利用率
+6. 实现并行化pack处理（如果适用）
+
+## 6. 创建单元测试和验证框架 [pending]
+### Dependencies: 5.3, 5.4
+### Description: 为pack函数创建全面的单元测试，验证SIMD和标量路径的正确性
+### Details:
+1. 创建pack测试数据生成器
+2. 实现pack结果验证函数
+3. 测试SIMD路径的正确性
+4. 测试标量fallback路径的正确性
+5. 验证SIMD和标量结果的一致性
+6. 测试各种输入尺寸和边界条件
+7. 测试非对齐内存访问场景
+8. 添加错误注入测试
+
+## 7. 性能基准测试和优化验证 [pending]
+### Dependencies: 5.5, 5.6
+### Description: 创建性能基准测试，对比优化前后的性能提升
+### Details:
+1. 创建pack性能基准测试框架
+2. 测试不同数据尺寸的性能表现
+3. 对比SIMD优化前后的速度提升
+4. 对比标量优化前后的性能
+5. 测量内存带宽利用率
+6. 生成详细的性能分析报告
+7. 识别性能瓶颈并进一步优化
+8. 对比不同量化格式的pack性能
+

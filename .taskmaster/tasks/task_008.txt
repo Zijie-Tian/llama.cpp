@@ -1,7 +1,7 @@
 # Task ID: 8
 # Title: 移除冗余函数和清理代码
 # Status: pending
-# Dependencies: 7
+# Dependencies: 5
 # Priority: low
 # Description: 删除ggml_compute_forward_flash_attn_ext_f16_with_state等不必要的函数
 # Details:

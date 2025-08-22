@@ -1,6 +1,6 @@
 # Task ID: 2
 # Title: 统一kernel_config管理机制
-# Status: pending
+# Status: done
 # Dependencies: 1
 # Priority: high
 # Description: 重构kernel_config的获取和管理，确保量化pack和查表计算使用一致的配置
@@ -20,3 +20,71 @@
 
 # Test Strategy:
 编写单元测试验证不同调用路径获取的kernel_config完全一致，使用align_attn测试重构后的功能正确性
+
+# Subtasks:
+## 1. 设计统一的kernel_config获取接口 [done]
+### Dependencies: None
+### Description: 设计并实现get_unified_kernel_config函数接口，定义参数和返回值结构
+### Details:
+1. 在qlutattn-config.h中声明get_unified_kernel_config函数
+2. 定义函数参数：enum ggml_type type, int32_t k_size, int32_t v_size
+3. 设计返回值结构体qlutattn_kernel_config的完整定义
+4. 考虑不同量化类型(K1/K2/K4, V1/V2/V4)的配置需求
+5. 确保接口设计支持未来扩展
+6. 添加必要的错误处理和参数验证
+
+## 2. 实现配置缓存机制 [done]
+### Dependencies: 2.1
+### Description: 实现kernel_config的缓存系统，避免重复计算相同配置
+### Details:
+1. 设计缓存key结构，基于type、k_size、v_size生成唯一标识
+2. 实现缓存存储结构(如hash map或静态数组)
+3. 添加缓存查找逻辑：先查缓存，未命中则计算并存储
+4. 实现缓存清理机制，防止内存泄漏
+5. 添加线程安全保护(mutex或atomic操作)
+6. 编写缓存命中率统计代码用于性能分析
+
+## 3. 修改ops.cpp中的配置获取逻辑 [done]
+### Dependencies: 2.1, 2.2
+### Description: 重构ggml_compute_forward_dup_f16_qlutattn函数使用统一配置接口
+### Details:
+1. 定位ggml_compute_forward_dup_f16_qlutattn函数中的kernel_config使用
+2. 替换原有的配置获取代码为get_unified_kernel_config调用
+3. 修改相关的pack/unpack逻辑适配新配置
+4. 确保PACK_SIZE和PACK_CHUNK_SIZE使用统一定义
+5. 更新错误处理逻辑
+6. 添加配置验证断言
+
+## 4. 统一pack函数的配置使用 [done]
+### Dependencies: 2.1, 2.2
+### Description: 修改qlutattn_pack_weights和qlutattn_pack_scales使用统一配置
+### Details:
+1. 分析qlutattn_pack_weights当前的配置获取方式
+2. 修改为调用get_unified_kernel_config获取配置
+3. 更新qlutattn_pack_scales的配置获取逻辑
+4. 确保pack_size、chunk_size等参数来自统一配置
+5. 验证量化格式特定的配置项正确传递
+6. 更新相关的内存分配和布局计算
+
+## 5. 更新tbl.cpp查表计算配置 [done]
+### Dependencies: 2.1, 2.2
+### Description: 确保tbl.cpp中的查表计算使用统一的kernel_config
+### Details:
+1. 审查tbl.cpp中所有kernel_config的使用位置
+2. 替换本地配置获取为get_unified_kernel_config调用
+3. 验证查表计算的配置参数与pack时一致
+4. 更新相关的LUT构建逻辑
+5. 确保不同量化格式的查表配置正确
+6. 添加运行时配置一致性检查
+
+## 6. 添加配置一致性验证和测试 [done]
+### Dependencies: 2.3, 2.4, 2.5
+### Description: 实现配置验证函数并编写全面的单元测试
+### Details:
+1. 实现validate_kernel_config函数验证配置完整性
+2. 添加配置一致性检查：比较不同路径获取的配置
+3. 编写单元测试覆盖所有配置获取场景
+4. 测试缓存机制的正确性和性能
+5. 使用align_attn验证端到端功能
+6. 添加性能基准测试确保无性能退化
+

@@ -1,6 +1,6 @@
 # Task ID: 1
 # Title: 分析现有QLUTATTN实现和kernel_config调用链
-# Status: pending
+# Status: done
 # Dependencies: None
 # Priority: high
 # Description: 深入理解ggml/src/ggml-cpu/qlutattn目录下的现有实现，分析kernel_config的全局调用情况，理清配置项的作用和来源

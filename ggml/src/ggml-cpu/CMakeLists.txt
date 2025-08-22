@@ -103,7 +103,7 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
 
     if (GGML_QLUTATTN)
         target_compile_definitions(${GGML_CPU_NAME} PRIVATE GGML_USE_QLUTATTN)
-        target_include_directories(${GGML_CPU_NAME} PRIVATE ggml-cpu/qlutattn)
+        target_include_directories(${GGML_CPU_NAME} PRIVATE ggml-cpu/qlutattn .. ../include)
 
         # Add qlutattn source files only when GGML_qlutattn is enabled
         list(APPEND GGML_CPU_SOURCES
@@ -115,6 +115,8 @@ function(ggml_add_cpu_backend_variant_impl tag_name)
             ggml-cpu/qlutattn/qlut_ctor.h
             ggml-cpu/qlutattn/tbl.cpp
             ggml-cpu/qlutattn/tbl.h
+            ggml-cpu/qlutattn/pack_weights.cpp
+            ggml-cpu/qlutattn/pack_weights.h
         )
 
         get_target_property(cdefs ${GGML_CPU_NAME} COMPILE_DEFINITIONS)

@@ -124,15 +124,94 @@
       {
         "id": 5,
         "title": "重构permute函数实现",
-        "description": "按照要求重构permute函数，优化其性能和可读性",
-        "status": "pending",
+        "description": "重构pack过程（qlutattn_pack_weights和qlutattn_pack_scales），优化其性能和可读性",
+        "status": "in-progress",
         "dependencies": [
           4
         ],
         "priority": "medium",
-        "details": "1. 分析现有permute函数的实现逻辑\n2. 为六种量化格式创建专门的permute实现：\n   ```cpp\n   void qlutattn_permute_k1_128x128(...);\n   void qlutattn_permute_k2_128x128(...);\n   void qlutattn_permute_k4_128x128(...);\n   void qlutattn_permute_v1_128x128(...);\n   void qlutattn_permute_v2_128x128(...);\n   void qlutattn_permute_v4_128x128(...);\n   ```\n3. 使用SIMD指令优化permute操作\n4. 实现批处理优化减少内存访问\n5. 添加对齐检查和边界处理\n6. 创建permute函数的性能基准测试",
-        "testStrategy": "编写单元测试验证permute前后数据的正确性，使用性能测试对比重构前后的速度提升",
-        "subtasks": []
+        "details": "重构pack过程的实现，包括qlutattn_pack_weights和qlutattn_pack_scales函数的优化。\n\n注意：伪量化和Bit-plane separation过程将作为独立任务处理，它们在type_traits_cpu数组中对应量化类型的from_float函数中实现（如quantize_block_qlutattn_k1/2/4_128x128_ref）。\n\n本任务专注于pack过程的优化：\n1. 分析现有qlutattn_pack_weights和qlutattn_pack_scales的实现逻辑\n2. 为六种量化格式创建优化的pack实现\n3. 使用ARM NEON SIMD指令优化pack操作\n4. 实现标量fallback以支持非SIMD环境\n5. 实现批处理优化减少内存访问\n6. 添加对齐检查和边界处理\n7. 创建pack函数的性能基准测试\n<info added on 2025-08-22T20:24:19.099Z>\n## 量化实现细节补充\n\n### Pack 过程的具体实现要求\n\n基于研究分析，pack过程需要特别注意以下实现细节：\n\n1. **Bit-plane Separation 边界**：\n   - 伪量化和Bit-plane separation已在type_traits_cpu的from_float函数中完成\n   - pack函数仅需处理已分离的bit-plane数据重排\n   - 输入数据格式：已完成bit-plane分离的uint8_t数组\n\n2. **NEON SIMD 优化要点**：\n   ```cpp\n   // 使用vld2q/vst2q指令对进行交错存取\n   // 使用vzip指令进行数据重排\n   // 批量处理128字节对齐的数据块\n   ```\n\n3. **Pack Chunk Size 配置**：\n   - K量化（per-token）：256字节chunk，优化token级别的连续访问\n   - V量化（per-channel）：512字节chunk，适应channel维度的访问模式\n\n4. **内存访问优化策略**：\n   - 实现2级分块：外层按cache line（64字节），内层按SIMD宽度（16字节）\n   - 使用__builtin_prefetch预取下一个块\n   - 确保写入目标地址128字节对齐\n\n5. **性能目标量化**：\n   - Pack吞吐量目标：ARM平台达到10GB/s\n   - SIMD路径相比标量路径：4-6x加速\n   - Cache miss率：控制在5%以下\n\n6. **边界处理注意事项**：\n   - 非128倍数的维度需要padding处理\n   - 保存原始维度信息用于unpack\n   - 使用mask指令处理尾部数据\n\n7. **与现有代码的集成点**：\n   - pack函数将被ggml_backend_tmac_buffer_set_tensor调用\n   - 需要与tmac_kernel_config的block_size和group_size参数协调\n   - 输出格式需匹配LUT查表kernel的输入要求\n</info added on 2025-08-22T20:24:19.099Z>",
+        "testStrategy": "编写单元测试验证pack前后数据的正确性，测试SIMD和标量路径，使用性能测试对比重构前后的速度提升",
+        "subtasks": [
+          {
+            "id": 1,
+            "title": "分析现有pack实现并设计新架构",
+            "description": "深入分析qlutattn_pack_weights和qlutattn_pack_scales的实现逻辑，设计优化架构",
+            "status": "done",
+            "dependencies": [],
+            "details": "1. 搜索并分析qlutattn_pack_weights的现有实现\n2. 搜索并分析qlutattn_pack_scales的现有实现\n3. 理解pack过程的数据重排逻辑\n4. 研究六种量化格式(k1/k2/k4, v1/v2/v4)在pack过程中的特点\n5. 设计SIMD优化的数据访问模式\n6. 规划标量fallback的实现策略\n7. 创建pack函数的详细设计文档\n<info added on 2025-08-22T20:28:54.953Z>\n已完成现有pack实现的分析，关键发现：\n1. 当前实现分为两个阶段：位平面分离和SIMD布局重排\n2. 位平面分离从量化值中提取单个比特并将其分组用于LUT处理（g=4）\n3. 为SIMD优化进行复杂的三阶段重排：SIMD宽度重塑、组内重塑、块内重塑\n4. Pack函数支持1比特、2比特和4比特量化\n5. Scales与零点交错存储以提高缓存局部性\n6. 当前存在的问题：没有NEON优化、复杂的嵌套循环、低效的内存访问模式\n7. 量化在type_traits_cpu中单独完成（quantize_block_qlutattn_k/v函数）\n8. Pack函数仅处理已量化数据的重组\n</info added on 2025-08-22T20:28:54.953Z>",
+            "testStrategy": ""
+          },
+          {
+            "id": 2,
+            "title": "实现pack函数的基础版本",
+            "description": "重构qlutattn_pack_weights和qlutattn_pack_scales的基础实现，确保功能正确性",
+            "status": "done",
+            "dependencies": [
+              1
+            ],
+            "details": "1. 重构qlutattn_pack_weights基础版本\n2. 重构qlutattn_pack_scales基础版本\n3. 为六种量化格式适配pack逻辑\n4. 实现清晰的数据重排算法\n5. 添加参数验证和边界检查\n6. 确保与现有代码的兼容性\n7. 添加详细的代码注释说明pack逻辑\n<info added on 2025-08-22T21:08:04.664Z>\n实现完成情况：\n- 创建了独立的pack_weights.h/cpp模块，定义了优化的pack接口\n- 实现了完整的标量版本，包含bit-plane分离和SIMD数据重排逻辑\n- 保持与原有qlutattn_pack_weights和qlutattn_pack_scales的功能完全兼容\n- 设计了模块化架构，支持根据位宽（1/2/4-bit）分发到不同的优化实现\n- 预留了ARM NEON优化的接口，当前回退到标量实现\n- 更新了CMakeLists.txt构建配置，将新模块纳入编译\n- 下一步：需要在ops.cpp中集成新实现，替换原有的pack函数调用\n</info added on 2025-08-22T21:08:04.664Z>",
+            "testStrategy": ""
+          },
+          {
+            "id": 3,
+            "title": "ARM NEON SIMD优化实现",
+            "description": "使用ARM NEON指令集优化pack操作，提升性能",
+            "status": "pending",
+            "dependencies": [
+              2
+            ],
+            "details": "1. 使用NEON向量加载/存储指令优化内存访问\n2. 实现向量化的数据重排操作（vld1q, vst1q等）\n3. 使用NEON shuffle指令优化数据重组\n4. 优化pack_weights的SIMD实现\n5. 优化pack_scales的SIMD实现\n6. 添加内存对齐检查选择最优路径\n7. 使用预取指令优化cache性能",
+            "testStrategy": ""
+          },
+          {
+            "id": 4,
+            "title": "实现标量fallback路径",
+            "description": "为不支持SIMD的环境实现高效的标量计算路径",
+            "status": "done",
+            "dependencies": [
+              2
+            ],
+            "details": "1. 实现标量版本的pack_weights\n2. 实现标量版本的pack_scales\n3. 优化标量循环展开提升性能\n4. 添加编译时检测自动选择SIMD或标量路径\n5. 确保标量路径的结果与SIMD路径完全一致\n6. 实现运行时CPU特性检测\n7. 添加fallback路径的性能优化",
+            "testStrategy": ""
+          },
+          {
+            "id": 5,
+            "title": "批处理优化和内存访问优化",
+            "description": "实现批处理机制，优化内存访问模式以提升性能",
+            "status": "pending",
+            "dependencies": [
+              3,
+              4
+            ],
+            "details": "1. 实现批量pack处理减少函数调用开销\n2. 优化内存访问顺序提升cache命中率\n3. 实现分块处理适应不同cache大小\n4. 添加内存池管理减少分配开销\n5. 优化数据布局提升带宽利用率\n6. 实现并行化pack处理（如果适用）",
+            "testStrategy": ""
+          },
+          {
+            "id": 6,
+            "title": "创建单元测试和验证框架",
+            "description": "为pack函数创建全面的单元测试，验证SIMD和标量路径的正确性",
+            "status": "pending",
+            "dependencies": [
+              3,
+              4
+            ],
+            "details": "1. 创建pack测试数据生成器\n2. 实现pack结果验证函数\n3. 测试SIMD路径的正确性\n4. 测试标量fallback路径的正确性\n5. 验证SIMD和标量结果的一致性\n6. 测试各种输入尺寸和边界条件\n7. 测试非对齐内存访问场景\n8. 添加错误注入测试",
+            "testStrategy": ""
+          },
+          {
+            "id": 7,
+            "title": "性能基准测试和优化验证",
+            "description": "创建性能基准测试，对比优化前后的性能提升",
+            "status": "pending",
+            "dependencies": [
+              5,
+              6
+            ],
+            "details": "1. 创建pack性能基准测试框架\n2. 测试不同数据尺寸的性能表现\n3. 对比SIMD优化前后的速度提升\n4. 对比标量优化前后的性能\n5. 测量内存带宽利用率\n6. 生成详细的性能分析报告\n7. 识别性能瓶颈并进一步优化\n8. 对比不同量化格式的pack性能",
+            "testStrategy": ""
+          }
+        ]
       },
       {
         "id": 8,
@@ -189,7 +268,7 @@
     ],
     "metadata": {
       "created": "2025-08-22T18:28:38.625Z",
-      "updated": "2025-08-22T19:32:11.582Z",
+      "updated": "2025-08-22T21:10:13.852Z",
       "description": "Tasks for master context"
     }
   }
