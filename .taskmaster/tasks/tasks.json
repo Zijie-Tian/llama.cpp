@@ -217,7 +217,7 @@
         "id": 8,
         "title": "移除冗余函数和清理代码",
         "description": "删除ggml_compute_forward_flash_attn_ext_f16_with_state等不必要的函数",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           "5"
         ],
@@ -230,7 +230,7 @@
         "id": 9,
         "title": "优化ggml_flash_attn_ext_qlutattn实现",
         "description": "优化mixed精度和segmented的QLUTATTN attention计算逻辑",
-        "status": "pending",
+        "status": "cancelled",
         "dependencies": [
           8
         ],
@@ -243,10 +243,8 @@
         "id": 10,
         "title": "完整测试和性能验证",
         "description": "执行完整的功能测试和性能基准测试，确保重构后系统正常工作",
-        "status": "pending",
-        "dependencies": [
-          9
-        ],
+        "status": "cancelled",
+        "dependencies": [],
         "priority": "high",
         "details": "1. 运行align_attn测试确保误差在可接受范围：\n   ```bash\n   ./build-arm64/bin/align_attn\n   ```\n2. 创建回归测试套件覆盖所有量化格式\n3. 执行性能基准测试：\n   - 测试不同batch size\n   - 测试不同序列长度\n   - 对比重构前后性能\n4. 内存泄漏检测(valgrind/sanitizers)\n5. 多线程并发测试\n6. 编写测试报告和性能分析文档\n7. 创建CI/CD测试脚本",
         "testStrategy": "使用自动化测试框架执行全面测试，生成测试覆盖率报告，确保覆盖率>90%",
@@ -256,7 +254,7 @@
         "id": 11,
         "title": "文档更新和代码审查准备",
         "description": "更新相关文档，准备代码审查所需材料",
-        "status": "pending",
+        "status": "done",
         "dependencies": [
           10
         ],
@@ -268,7 +266,7 @@
     ],
     "metadata": {
       "created": "2025-08-22T18:28:38.625Z",
-      "updated": "2025-08-22T23:02:44.401Z",
+      "updated": "2025-08-23T11:15:55.974Z",
       "description": "Tasks for master context"
     }
   }
