@@ -4510,15 +4510,12 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {1024, 10, 1, 1}));
     test_cases.emplace_back(new test_argmax(GGML_TYPE_F32, {32000, 512, 1, 1}));
 
-    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 16416, 1, 128, {8,  1}, {4, 1}, {0, 2, 1, 3}));
-    test_cases.emplace_back(new test_mul_mat(GGML_TYPE_F16, GGML_TYPE_F32, 128, 1, 16416, {8,  1}, {4, 1}, {0, 1, 2, 3}, true));
-
-    for (int bs : {1, 2, 3, 4, 5, 8, 512}) {
-        for (ggml_type type_a : all_types) {
-            for (ggml_type type_b : {GGML_TYPE_F32}) {
-                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 4096, bs, 14336, {1,  1}, {1, 1}));
-            }
-        }
+    // MUL_MAT performance tests: M, N, K configurations
+    // Test configurations: (M=8640, K=3200, N=1), (M=3200, K=3200, N=1), (M=3200, K=8640, N=1)
+    for (ggml_type type_a : {GGML_TYPE_F16, GGML_TYPE_Q4_0}) {
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 8640, 1, 3200, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 3200, 1, 3200, {1, 1}, {1, 1}));
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 3200, 1, 8640, {1, 1}, {1, 1}));
     }
 
     for (int K : {3, 5}) {
@@ -4536,11 +4533,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     // GQA performance test: hsk=128, hsv=128, nh=8, nr=4, nb=1, kv=[16K, 32K, 64K]
     // Test with FP16 KV cache
     for (int kv : { 16*1024, 32*1024, 64*1024 }) {
-        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, 4, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
     }
     // Test with Q4_0 quantized KV cache
     for (int kv : { 16*1024, 32*1024, 64*1024 }) {
-        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, {4, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, 4, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
     }
 
     return test_cases;
