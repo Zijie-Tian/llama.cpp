@@ -4532,12 +4532,22 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
 
     // GQA performance test: hsk=128, hsv=128, nh=8, nr=4, nb=1, kv=[16K, 32K, 64K]
     // Test with FP16 KV cache
-    for (int kv : { 16*1024, 32*1024, 64*1024 }) {
+    for (int kv : { 1024, 4 * 1024, 16*1024, 32*1024, 64*1024, 128*1024 }) {
         test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, 4, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
     }
     // Test with Q4_0 quantized KV cache
-    for (int kv : { 16*1024, 32*1024, 64*1024 }) {
+    for (int kv : { 1024, 4 * 1024, 16*1024, 32*1024, 64*1024, 128*1024 }) {
         test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, 4, kv, 1, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
+    }
+
+    // GQA performance test: hsk=128, hsv=128, nh=8, nr=4, nb=1, kv=[16K, 32K, 64K]
+    // Test with FP16 KV cache Prefilling
+    for (int kv : { 1024, 4 * 1024, 16*1024, 32*1024, 64*1024, 128*1024 }) {
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, 4, kv, kv, true, 0, 0, GGML_PREC_F32, GGML_TYPE_F16));
+    }
+    // Test with Q4_0 quantized KV cache
+    for (int kv : { 1024, 4 * 1024, 16*1024, 32*1024, 64*1024, 128*1024 }) {
+        test_cases.emplace_back(new test_flash_attn_ext(128, 128, 8, 4, kv, kv, true, 0, 0, GGML_PREC_F32, GGML_TYPE_Q4_0));
     }
 
     return test_cases;
