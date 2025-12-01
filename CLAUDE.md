@@ -15,9 +15,14 @@ cmake --build build --config Release -j $(nproc)
 cmake -B build -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 
-# With CUDA (NVIDIA GPUs)
-cmake -B build -DGGML_CUDA=ON
-cmake --build build --config Release -j $(nproc)
+# With CUDA (NVIDIA GPUs) - Recommended build with Ninja and clang
+CFLAGS="-march=native" CXXFLAGS="-march=native" cmake \
+  -DCMAKE_C_COMPILER=clang \
+  -DCMAKE_CXX_COMPILER=clang++ \
+  -G Ninja \
+  -DGGML_CUDA=ON \
+  -B build-x86
+cmake --build build-x86 --config Release -j $(nproc)
 
 # With Metal (Apple Silicon)
 cmake -B build -DGGML_METAL=ON
